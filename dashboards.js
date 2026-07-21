@@ -30,8 +30,8 @@ const ROLE_META = {
   teacher: {
     icon: "users",
     tagline: "Manage your classes",
-    blurb: "Track attendance, plan lessons, and mark your learners' work.",
-    can: ["Take class attendance", "Plan & tick off lessons", "Grade assessments"],
+    blurb: "Create classes, enroll learners, assign work, and mark it.",
+    can: ["Create classes & grades", "Enroll learners in a class", "Assign & grade work"],
   },
   field_officer: {
     icon: "mapPin",
@@ -457,22 +457,55 @@ function scoreClass(v) {
   return v >= 80 ? "synced" : v >= 60 ? "pending" : "danger-pill";
 }
 
-/* -------- coach: assignment store, state & progress computations -------- */
-const K_ASSIGN = "hpf_assignments";
+/* -------- coach: class store, state & progress computations -------- */
+const K_ASSIGN = "hpf_assignments"; // legacy single-class store (migrated below)
+const K_CLASSES = "hpf_classes";
 const ASSIGN_TYPES = {
   lesson: { label: "Lesson", icon: "book", color: "oklch(58% 0.16 300)" },
   exercise: { label: "Exercise", icon: "target", color: "oklch(58% 0.18 264)" },
   quiz: { label: "Quiz", icon: "trophy", color: "oklch(62% 0.16 70)" },
 };
-const coachState = { tab: "overview", learnerId: null, openForm: false };
+const coachState = {
+  tab: "overview",
+  learnerId: null,
+  openForm: false,
+  classId: null,
+  openClassForm: false,
+  openLearnerForm: false,
+};
 
-function getAssignments() {
-  const stored = read(K_ASSIGN, null);
-  if (stored) return stored;
-  write(K_ASSIGN, KOLIBRI.coach.assignments);
-  return read(K_ASSIGN, []);
+/* Classes persist in localStorage; the demo class (and any legacy
+   assignment store) is migrated in on first run. */
+function getClasses() {
+  let classes = read(K_CLASSES, null);
+  if (!classes || !classes.length) {
+    classes = [
+      {
+        id: uid(),
+        name: KOLIBRI.coach.className,
+        learners: KOLIBRI.coach.learners,
+        assignments: read(K_ASSIGN, null) || KOLIBRI.coach.assignments,
+      },
+    ];
+    write(K_CLASSES, classes);
+  }
+  return classes;
 }
-const saveAssignments = (list) => write(K_ASSIGN, list);
+const saveClasses = (classes) => write(K_CLASSES, classes);
+
+function currentClass() {
+  const classes = getClasses();
+  const cls = classes.find((c) => c.id === coachState.classId) || classes[0];
+  coachState.classId = cls.id;
+  return { classes, cls };
+}
+
+/* registered learner accounts not yet enrolled in this class */
+function enrollableUsers(cls) {
+  return read(K_USERS, []).filter(
+    (u) => u.role === "learner" && !cls.learners.some((l) => l.id === u.id)
+  );
+}
 
 const statusOf = (pct) => (pct >= 100 ? "completed" : pct > 0 ? "in_progress" : "not_started");
 const avg = (arr) => (arr.length ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : 0);
@@ -616,39 +649,71 @@ function coachAssignments(list, learners) {
     </div>`;
 }
 
-function coachLearnersList(list, learners) {
+function coachLearnersList(list, learners, cls) {
   const rows = learners
     .map((l) => {
       const overall = learnerOverall(list, l.id);
-      const score = learnerAvgScore(list, l.id);
-      return `<div class="ut-row" data-learner-open="${l.id}" style="grid-template-columns:minmax(0,1.5fr) minmax(0,1fr) auto auto">
+      return `<div class="ut-row" data-learner-open="${l.id}" style="grid-template-columns:minmax(0,1.5fr) minmax(0,1fr) auto auto auto">
         <div class="ut-cell ut-user">
           <span class="avatar-sm">${esc(l.name.slice(0, 1))}</span>
-          <div><div class="ut-name">${esc(l.name)}</div><div class="ut-sub">Active ${esc(l.active)}</div></div>
+          <div><div class="ut-name">${esc(l.name)}${l.account ? ' <span class="ut-you">account</span>' : ""}</div>
+            <div class="ut-sub">Active ${esc(l.active)}</div></div>
         </div>
         <div class="ut-cell"><div class="hbar-track"><div class="hbar-fill" style="width:${overall}%;background:var(--primary)"></div></div></div>
         <div class="ut-cell"><span class="pill ${scoreClass(overall)}">${overall}%</span></div>
         <div class="ut-cell"><span class="pill ${overall >= 70 ? "synced" : "danger-pill"}">${overall >= 70 ? "On track" : "At risk"}</span></div>
+        <div class="ut-cell ut-actions"><button class="icon-btn danger" data-learner-remove="${l.id}" title="Remove from class">${icon("trash")}</button></div>
       </div>`;
     })
     .join("");
+
+  const accounts = enrollableUsers(cls);
+  const accountOpts =
+    `<option value="" selected>— pick a registered learner account —</option>` +
+    accounts
+      .map((u) => `<option value="${u.id}">${esc(u.fullName || u.username)} (${esc(u.username || u.email || "account")})</option>`)
+      .join("");
+
   return `
     <div class="panel">
-      <h2>Individual progress</h2>
-      <p class="panel-sub">Tap a learner to see every assignment they're working on</p>
-      <div class="user-table">
-        <div class="ut-row ut-head" style="grid-template-columns:minmax(0,1.5fr) minmax(0,1fr) auto auto">
-          <div class="ut-cell">Learner</div><div class="ut-cell">Overall completion</div>
-          <div class="ut-cell">Completion</div><div class="ut-cell">Status</div>
+      <div class="panel-head-row">
+        <div>
+          <h2>${esc(cls.name)} · learners</h2>
+          <p class="panel-sub" style="margin:0">${learners.length} enrolled · tap a learner for their detail</p>
         </div>
-        <div>${rows}</div>
+        <button class="btn btn-primary" data-add-learner-toggle>${icon("plus")} Add learner</button>
       </div>
+
+      <form id="addLearnerForm" class="add-user-form" ${coachState.openLearnerForm ? "" : "hidden"}>
+        <div class="form-row">
+          <div class="field"><label>Enroll a portal account</label>
+            <select class="select" name="userId">${accountOpts}</select>
+            <p class="hint">${accounts.length ? `${accounts.length} learner account${accounts.length === 1 ? "" : "s"} available to enroll.` : "No unenrolled learner accounts — add one by name instead."}</p></div>
+          <div class="field"><label>…or add by name</label>
+            <input class="input" name="name" maxlength="60" placeholder="e.g. Amina Hassan">
+            <p class="hint">Creates a roster entry without a portal account.</p></div>
+        </div>
+        <div class="add-user-actions">
+          <button class="btn btn-primary" type="submit">${icon("plus")} Add to ${esc(cls.name)}</button>
+          <button class="btn btn-outline" type="button" data-add-learner-cancel>Cancel</button>
+        </div>
+      </form>
+
+      ${learners.length
+        ? `<div class="user-table">
+            <div class="ut-row ut-head" style="grid-template-columns:minmax(0,1.5fr) minmax(0,1fr) auto auto auto">
+              <div class="ut-cell">Learner</div><div class="ut-cell">Overall completion</div>
+              <div class="ut-cell">Completion</div><div class="ut-cell">Status</div><div class="ut-cell"></div>
+            </div>
+            <div>${rows}</div>
+          </div>`
+        : `<div class="empty-state">No learners in this class yet.<br>Enroll a registered account or add one by name above.</div>`}
     </div>`;
 }
 
-function coachLearnerDetail(list, learners, id) {
+function coachLearnerDetail(list, learners, id, cls) {
   const l = learners.find((x) => x.id === id);
-  if (!l) return coachLearnersList(list, learners);
+  if (!l) return coachLearnersList(list, learners, cls);
   const overall = learnerOverall(list, id);
   const score = learnerAvgScore(list, id);
   const mine = list.filter((a) => a.results.some((r) => r.id === id));
@@ -695,10 +760,36 @@ function coachLearnerDetail(list, learners, id) {
     </div>`;
 }
 
+function classSwitcher(classes, cls) {
+  const chips = classes
+    .map(
+      (c) =>
+        `<button class="kchip ${c.id === cls.id ? "active" : ""}" data-class-switch="${c.id}">
+          ${icon("graduation")} ${esc(c.name)} <span class="kchip-count">${c.learners.length}</span>
+        </button>`
+    )
+    .join("");
+  return `
+    <div class="kchips" style="margin-bottom:1rem">
+      ${chips}
+      <button class="kchip kchip-add" data-new-class-toggle>${icon("plus")} New class</button>
+    </div>
+    <form id="newClassForm" class="add-user-form" ${coachState.openClassForm ? "" : "hidden"}>
+      <div class="form-row">
+        <div class="field"><label>Class / grade name</label>
+          <input class="input" name="name" required maxlength="60" placeholder="e.g. Grade 4 — Red"></div>
+        <div class="add-user-actions" style="align-self:end;margin-bottom:1rem">
+          <button class="btn btn-primary" type="submit">${icon("plus")} Create class</button>
+          <button class="btn btn-outline" type="button" data-class-cancel>Cancel</button>
+        </div>
+      </div>
+    </form>`;
+}
+
 function teacherBody() {
-  const c = KOLIBRI.coach;
-  const list = getAssignments();
-  const learners = c.learners;
+  const { classes, cls } = currentClass();
+  const list = cls.assignments;
+  const learners = cls.learners;
 
   const classCompletion = avg(list.map(assignmentCompletion));
   const scored = list.map(assignmentAvgScore).filter((v) => v !== null);
@@ -725,39 +816,47 @@ function teacherBody() {
   const atRisk = learners.filter((l) => learnerOverall(list, l.id) < 70);
   const weakestA = [...list].sort((a, b) => assignmentCompletion(a) - assignmentCompletion(b))[0];
   const top = [...learners].sort((a, b) => learnerOverall(list, b.id) - learnerOverall(list, a.id))[0];
-  const smart = insights([
-    atRisk.length
-      ? {
-          icon: "alert", tone: "bad",
-          html: `<strong>${atRisk.length} learner${atRisk.length === 1 ? " is" : "s are"} at risk</strong> (below 70%): ${atRisk.map((l) => esc(l.name.split(" ")[0])).join(", ")} — check the Learners tab.`,
-        }
-      : { icon: "check", tone: "good", html: `<strong>No learners at risk</strong> — everyone is at 70% completion or better.` },
-    weakestA && {
-      icon: "clipboard", tone: assignmentCompletion(weakestA) < 50 ? "warn" : "",
-      html: `“<strong>${esc(weakestA.title)}</strong>” has the lowest class completion (<strong>${assignmentCompletion(weakestA)}%</strong>) — consider a reminder or revision session.`,
-    },
-    top && {
-      icon: "award", tone: "good",
-      html: `<strong>${esc(top.name)}</strong> leads the class at <strong>${learnerOverall(list, top.id)}%</strong> overall completion.`,
-    },
-  ].filter(Boolean));
+  const smart = insights(
+    !learners.length
+      ? [{
+          icon: "lightbulb", tone: "warn",
+          html: `<strong>${esc(cls.name)}</strong> has no learners yet — open the <strong>Learners</strong> tab to enroll portal accounts or add names.`,
+        }]
+      : [
+          atRisk.length
+            ? {
+                icon: "alert", tone: "bad",
+                html: `<strong>${atRisk.length} learner${atRisk.length === 1 ? " is" : "s are"} at risk</strong> (below 70%): ${atRisk.map((l) => esc(l.name.split(" ")[0])).join(", ")} — check the Learners tab.`,
+              }
+            : { icon: "check", tone: "good", html: `<strong>No learners at risk</strong> — everyone is at 70% completion or better.` },
+          weakestA && {
+            icon: "clipboard", tone: assignmentCompletion(weakestA) < 50 ? "warn" : "",
+            html: `“<strong>${esc(weakestA.title)}</strong>” has the lowest class completion (<strong>${assignmentCompletion(weakestA)}%</strong>) — consider a reminder or revision session.`,
+          },
+          top && {
+            icon: "award", tone: "good",
+            html: `<strong>${esc(top.name)}</strong> leads the class at <strong>${learnerOverall(list, top.id)}%</strong> overall completion.`,
+          },
+        ].filter(Boolean)
+  );
 
   let content;
   if (coachState.tab === "assignments") content = coachAssignments(list, learners);
   else if (coachState.tab === "learners")
     content = coachState.learnerId
-      ? coachLearnerDetail(list, learners, coachState.learnerId)
-      : coachLearnersList(list, learners);
+      ? coachLearnerDetail(list, learners, coachState.learnerId, cls)
+      : coachLearnersList(list, learners, cls);
   else content = coachOverview(list, learners);
 
   return `
-    <div class="panel-head-row" style="margin-bottom:1.25rem">
+    <div class="panel-head-row" style="margin-bottom:1rem">
       <div>
-        <h2 style="font-size:1.15rem">${esc(c.className)} · Coach</h2>
-        <p class="panel-sub" style="margin:0">Assign work, track each learner, and review cumulative results</p>
+        <h2 style="font-size:1.15rem">${esc(cls.name)} · Coach</h2>
+        <p class="panel-sub" style="margin:0">Create classes, enroll learners, assign work, and track results</p>
       </div>
       <button class="btn btn-primary" data-new-assign>${icon("plus")} New assignment</button>
     </div>
+    ${classSwitcher(classes, cls)}
     ${metricTiles}
     ${smart}
     ${tabBar}
@@ -1102,8 +1201,8 @@ export function wireMyDashboard(user, events) {
       if (!ids.length) return toast("No learners selected", "Pick at least one learner.", "error");
       const withScore = data.type !== "lesson";
       const results = ids.map((id) => (withScore ? { id, pct: 0, score: 0 } : { id, pct: 0 }));
-      const list = getAssignments();
-      list.unshift({
+      const { classes, cls } = currentClass();
+      cls.assignments.unshift({
         id: uid(),
         type: data.type || "lesson",
         title: data.title.trim(),
@@ -1111,7 +1210,7 @@ export function wireMyDashboard(user, events) {
         due: (data.due || "").trim() || "no due date",
         results,
       });
-      saveAssignments(list);
+      saveClasses(classes);
       coachState.openForm = false;
       toast("Assignment created", `“${data.title.trim()}” assigned to ${ids.length} learner${ids.length === 1 ? "" : "s"}.`, "success");
       renderRole("teacher");
@@ -1127,6 +1226,93 @@ export function wireMyDashboard(user, events) {
       coachState.learnerId = null;
       renderRole("teacher");
     });
+
+    // coach: switch between classes
+    body.querySelectorAll("[data-class-switch]").forEach((chip) =>
+      chip.addEventListener("click", () => {
+        coachState.classId = chip.dataset.classSwitch;
+        coachState.learnerId = null;
+        coachState.openForm = false;
+        coachState.openLearnerForm = false;
+        renderRole("teacher");
+      })
+    );
+
+    // coach: create a class / grade
+    body.querySelector("[data-new-class-toggle]")?.addEventListener("click", () => {
+      coachState.openClassForm = !coachState.openClassForm;
+      renderRole("teacher");
+    });
+    body.querySelector("[data-class-cancel]")?.addEventListener("click", () => {
+      coachState.openClassForm = false;
+      renderRole("teacher");
+    });
+    body.querySelector("#newClassForm")?.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const name = (new FormData(e.currentTarget).get("name") || "").trim();
+      if (!name) return toast("Name required", "Give the class a name, e.g. Grade 4 — Red.", "error");
+      const classes = getClasses();
+      if (classes.some((c) => c.name.toLowerCase() === name.toLowerCase()))
+        return toast("Duplicate class", `A class called “${name}” already exists.`, "error");
+      const cls = { id: uid(), name, learners: [], assignments: [] };
+      classes.push(cls);
+      saveClasses(classes);
+      coachState.classId = cls.id;
+      coachState.openClassForm = false;
+      coachState.tab = "learners";
+      coachState.openLearnerForm = true;
+      toast("Class created", `“${name}” is ready — now add learners to it.`, "success");
+      renderRole("teacher");
+    });
+
+    // coach: enroll a learner into the current class
+    body.querySelector("[data-add-learner-toggle]")?.addEventListener("click", () => {
+      coachState.openLearnerForm = !coachState.openLearnerForm;
+      renderRole("teacher");
+    });
+    body.querySelector("[data-add-learner-cancel]")?.addEventListener("click", () => {
+      coachState.openLearnerForm = false;
+      renderRole("teacher");
+    });
+    body.querySelector("#addLearnerForm")?.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const data = Object.fromEntries(new FormData(e.currentTarget).entries());
+      const { classes, cls } = currentClass();
+      let entry;
+      if (data.userId) {
+        const u = read(K_USERS, []).find((x) => x.id === data.userId);
+        if (!u) return toast("Account not found", "", "error");
+        entry = { id: u.id, name: u.fullName || u.username, active: "just now", account: true };
+      } else {
+        const name = (data.name || "").trim();
+        if (!name) return toast("Pick an account or type a name", "", "error");
+        if (cls.learners.some((l) => l.name.toLowerCase() === name.toLowerCase()))
+          return toast("Already enrolled", `${name} is already in ${cls.name}.`, "error");
+        entry = { id: uid(), name, active: "just now" };
+      }
+      cls.learners.push(entry);
+      saveClasses(classes);
+      coachState.openLearnerForm = false;
+      toast("Learner added", `${entry.name} enrolled in ${cls.name}.`, "success");
+      renderRole("teacher");
+    });
+
+    // coach: remove a learner from the class (also strips their results)
+    body.querySelectorAll("[data-learner-remove]").forEach((btn) =>
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const id = btn.dataset.learnerRemove;
+        const { classes, cls } = currentClass();
+        const l = cls.learners.find((x) => x.id === id);
+        cls.learners = cls.learners.filter((x) => x.id !== id);
+        cls.assignments.forEach((a) => {
+          a.results = a.results.filter((r) => r.id !== id);
+        });
+        saveClasses(classes);
+        toast("Learner removed", l ? `${l.name} removed from ${cls.name}.` : "", "success");
+        renderRole("teacher");
+      })
+    );
 
     // school leader
     body.querySelector("[data-generate-report]")?.addEventListener("click", (e) => {

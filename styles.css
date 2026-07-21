@@ -1877,6 +1877,36 @@ textarea.input:focus {
   color: var(--primary-foreground);
 }
 
+.kchip svg {
+  width: 13px;
+  height: 13px;
+  vertical-align: -2px;
+}
+
+.kchip-count {
+  display: inline-block;
+  min-width: 18px;
+  text-align: center;
+  font-size: 0.72rem;
+  padding: 0 0.3rem;
+  border-radius: 999px;
+  background: oklch(0% 0 0 / 0.08);
+}
+
+.kchip.active .kchip-count {
+  background: oklch(100% 0 0 / 0.2);
+}
+
+.kchip-add {
+  border-style: dashed;
+  color: var(--primary);
+}
+
+.kchip-add:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
 .pill.danger-pill {
   background: oklch(58% 0.22 27 / 0.14);
   color: oklch(50% 0.2 27);
