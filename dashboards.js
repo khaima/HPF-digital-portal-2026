@@ -1244,38 +1244,51 @@ function assessmentAnalytics(a, cls) {
     </div>`;
 }
 
-/* the publish dialog: grade/class dropdown + whole-class-or-individuals */
+/* learners of a class, either as checkboxes (individual) or read-only chips
+   (whole class) — so the teacher always sees exactly who will receive it */
+function rosterHtml(learners, audience, targetIds = []) {
+  if (!learners.length) return `<span class="hint">This grade/class has no learners yet.</span>`;
+  if (audience === "individual")
+    return learners
+      .map(
+        (l) => `<label class="lchk"><input type="checkbox" name="ptarget" value="${l.id}" ${targetIds.includes(l.id) ? "checked" : ""}> ${esc(l.name)}</label>`
+      )
+      .join("");
+  return learners.map((l) => `<span class="roster-chip">${icon("graduation")} ${esc(l.name)}</span>`).join("");
+}
+
+/* the publish dialog: pick School → Grade/class (filtered), then the system
+   auto-lists the learners of that school+grade; audience whole-class or individual */
 function publishPanel(a, cls, classes) {
-  const classOpts = classes
-    .map(
-      (c) => `<option value="${c.id}" ${c.id === cls.id ? "selected" : ""}>${esc(c.name)} · ${esc(c.school || "")} (${c.learners.length})</option>`
-    )
+  const schools = [...new Set(classes.map((c) => c.school))];
+  const school = cls.school;
+  const schoolOpts = schools.map((s) => `<option ${s === school ? "selected" : ""}>${esc(s)}</option>`).join("");
+  const grades = classes.filter((c) => c.school === school);
+  const gradeOpts = grades
+    .map((c) => `<option value="${c.id}" ${c.id === cls.id ? "selected" : ""}>${esc(c.name)} (${c.learners.length})</option>`)
     .join("");
   const audience = a.audience || "all";
   const targetIds = a.targetIds || [];
-  const checklist = cls.learners
-    .map(
-      (l) => `<label class="lchk"><input type="checkbox" name="ptarget" value="${l.id}" ${audience === "individual" && targetIds.includes(l.id) ? "checked" : ""}> ${esc(l.name)}</label>`
-    )
-    .join("");
   const allChecked = audience === "individual" && cls.learners.length && cls.learners.every((l) => targetIds.includes(l.id));
   return `
     <form class="add-user-form publish-form" data-publish-form="${a.id}">
       <div class="form-row">
-        <div class="field"><label>Publish to grade / class</label>
-          <select class="select" name="classId" data-publish-class>${classOpts}</select></div>
-        <div class="field"><label>Audience</label>
-          <select class="select" name="audience" data-publish-audience>
-            <option value="all" ${audience === "all" ? "selected" : ""}>Whole class — all students</option>
-            <option value="individual" ${audience === "individual" ? "selected" : ""}>Individual learner(s)</option>
-          </select></div>
+        <div class="field"><label>School</label>
+          <select class="select" name="school" data-publish-school>${schoolOpts}</select></div>
+        <div class="field"><label>Grade / class</label>
+          <select class="select" name="classId" data-publish-class>${gradeOpts}</select></div>
       </div>
-      <div class="field" data-publish-picker ${audience === "individual" ? "" : "hidden"}>
+      <div class="field"><label>Audience</label>
+        <select class="select" name="audience" data-publish-audience>
+          <option value="all" ${audience === "all" ? "selected" : ""}>Whole class — all students</option>
+          <option value="individual" ${audience === "individual" ? "selected" : ""}>Individual learner(s)</option>
+        </select></div>
+      <div class="field" data-publish-picker>
         <div class="picker-head">
-          <label style="margin-bottom:0">Pick learner(s)</label>
-          <label class="lchk select-all-chk"><input type="checkbox" data-publish-select-all ${allChecked ? "checked" : ""}> Select all</label>
+          <label style="margin-bottom:0">Learners in <span data-roster-name>${esc(cls.name)}</span><span class="hint" data-roster-count> · ${cls.learners.length} enrolled</span></label>
+          <label class="lchk select-all-chk" data-selectall-wrap style="${audience === "individual" ? "" : "display:none"}"><input type="checkbox" data-publish-select-all ${allChecked ? "checked" : ""}> Select all</label>
         </div>
-        <div class="assign-learners" data-publish-learners>${checklist || `<span class="hint">This class has no learners yet.</span>`}</div>
+        <div class="assign-learners" data-publish-learners>${rosterHtml(cls.learners, audience, targetIds)}</div>
       </div>
       <div class="add-user-actions">
         <button class="btn btn-primary" type="submit">${icon("send")} ${a.published ? "Update & re-publish" : "Publish now"}</button>
@@ -2241,24 +2254,38 @@ export function wireMyDashboard(user, events) {
       coachState.publishId = null;
       renderRole("teacher");
     });
-    // rebuild the learner picker when the target class changes
-    const pubClass = body.querySelector("[data-publish-class]");
-    const pubAudience = body.querySelector("[data-publish-audience]");
-    const pubPicker = body.querySelector("[data-publish-picker]");
-    pubAudience?.addEventListener("change", () => {
-      if (pubPicker) pubPicker.hidden = pubAudience.value !== "individual";
-    });
-    pubClass?.addEventListener("change", () => {
+    // publish dialog: School → Grade cascade auto-fills the class's learners
+    const pubForm = body.querySelector("[data-publish-form]");
+    const pubSchool = pubForm?.querySelector("[data-publish-school]");
+    const pubClass = pubForm?.querySelector("[data-publish-class]");
+    const pubAudience = pubForm?.querySelector("[data-publish-audience]");
+    const pubPicker = pubForm?.querySelector("[data-publish-picker]");
+
+    function rebuildRoster() {
+      if (!pubPicker) return;
       const target = getClasses().find((c) => c.id === pubClass.value);
-      const wrap = pubPicker?.querySelector("[data-publish-learners]");
-      if (target && wrap) {
-        wrap.innerHTML = target.learners.length
-          ? target.learners.map((l) => `<label class="lchk"><input type="checkbox" name="ptarget" value="${l.id}"> ${esc(l.name)}</label>`).join("")
-          : `<span class="hint">This class has no learners yet.</span>`;
-        const master = pubPicker.querySelector("[data-publish-select-all]");
-        if (master) { master.checked = false; master.indeterminate = false; }
-      }
+      const audience = pubAudience.value;
+      pubPicker.querySelector("[data-publish-learners]").innerHTML = target
+        ? rosterHtml(target.learners, audience, [])
+        : `<span class="hint">Pick a grade/class.</span>`;
+      pubPicker.querySelector("[data-roster-name]").textContent = target ? target.name : "—";
+      pubPicker.querySelector("[data-roster-count]").textContent = target ? ` · ${target.learners.length} enrolled` : "";
+      const sa = pubPicker.querySelector("[data-selectall-wrap]");
+      if (sa) sa.style.display = audience === "individual" ? "" : "none";
+      const master = pubPicker.querySelector("[data-publish-select-all]");
+      if (master) { master.checked = false; master.indeterminate = false; }
+    }
+
+    // choosing a school filters the grade dropdown to that school's classes
+    pubSchool?.addEventListener("change", () => {
+      const grades = getClasses().filter((c) => c.school === pubSchool.value);
+      pubClass.innerHTML = grades.length
+        ? grades.map((c) => `<option value="${c.id}">${esc(c.name)} (${c.learners.length})</option>`).join("")
+        : `<option value="">— no classes in this school —</option>`;
+      rebuildRoster();
     });
+    pubClass?.addEventListener("change", rebuildRoster);
+    pubAudience?.addEventListener("change", rebuildRoster);
     pubPicker?.addEventListener("change", (e) => {
       const boxes = [...pubPicker.querySelectorAll('input[name="ptarget"]')];
       const master = pubPicker.querySelector("[data-publish-select-all]");

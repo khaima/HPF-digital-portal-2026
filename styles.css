@@ -2230,6 +2230,32 @@ textarea.input:focus {
   border-top: 1px dashed var(--border);
 }
 
+/* read-only learner chips shown in the publish dialog for whole-class */
+.roster-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: var(--accent-foreground);
+  background: var(--card);
+  border: 1px solid var(--border);
+  padding: 0.3rem 0.65rem;
+  border-radius: 999px;
+}
+
+.roster-chip svg {
+  width: 12px;
+  height: 12px;
+  color: var(--primary);
+}
+
+[data-publish-learners] {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.75rem;
+}
+
 .kchip-add:hover {
   border-color: var(--primary);
   color: var(--primary);
