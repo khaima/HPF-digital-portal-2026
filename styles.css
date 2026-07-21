@@ -1902,6 +1902,21 @@ textarea.input:focus {
   color: var(--primary);
 }
 
+/* learner-picker header with the select-all toggle */
+.picker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.5rem;
+}
+
+.select-all-chk {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--primary);
+}
+
 /* "areas needing help" chips in the Results tab */
 .weak-cell {
   display: flex;

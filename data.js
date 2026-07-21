@@ -159,14 +159,10 @@ export const COUNTIES = [
 
 /* HPF-supported schools (teachers pick one when creating a class) */
 export const SCHOOLS = [
-  "Nyeri Hill Primary School",
-  "Kisumu Central Academy",
-  "Turkana Star School",
-  "Mombasa Coast Primary School",
-  "St. Mary's School — Nakuru",
-  "Kakamega Forest Primary",
-  "Machakos Hills Academy",
-  "Baringo Valley Primary",
+  "Aitong School",
+  "Naboisho School",
+  "Ololomei School",
+  "Olkimitare School",
 ];
 
 /* Field Officer data-collection form: visit types */

@@ -490,9 +490,10 @@ function getClasses() {
     ];
     write(K_CLASSES, classes);
   }
-  // migrate classes created before schools existed
-  if (classes.some((c) => !c.school)) {
-    classes.forEach((c) => { if (!c.school) c.school = SCHOOLS[0]; });
+  // migrate classes created before schools existed or whose school was
+  // removed from the supported list
+  if (classes.some((c) => !SCHOOLS.includes(c.school))) {
+    classes.forEach((c) => { if (!SCHOOLS.includes(c.school)) c.school = SCHOOLS[0]; });
     write(K_CLASSES, classes);
   }
   return classes;
@@ -745,7 +746,10 @@ function coachAssignments(list, learners, cls, classes) {
             <input class="input" name="due" placeholder="e.g. in 1 week"></div>
         </div>
         <div class="field" data-assign-picker hidden>
-          <label>Pick the learner(s)</label>
+          <div class="picker-head">
+            <label style="margin-bottom:0">Pick the learner(s)</label>
+            <label class="lchk select-all-chk"><input type="checkbox" data-select-all> Select all</label>
+          </div>
           <div class="assign-learners">${learnerChecklist(cls.learners, false)}</div>
         </div>
         <div class="add-user-actions">
@@ -1315,11 +1319,25 @@ export function wireMyDashboard(user, events) {
     const pickerWrap = assignForm?.querySelector("[data-assign-picker]");
     classSel?.addEventListener("change", () => {
       const target = getClasses().find((c) => c.id === classSel.value);
-      if (target && pickerWrap)
+      if (target && pickerWrap) {
         pickerWrap.querySelector(".assign-learners").innerHTML = learnerChecklist(target.learners, false);
+        const master = pickerWrap.querySelector("[data-select-all]");
+        if (master) { master.checked = false; master.indeterminate = false; }
+      }
     });
     audienceSel?.addEventListener("change", () => {
       if (pickerWrap) pickerWrap.hidden = audienceSel.value !== "individual";
+    });
+    // select all / unselect all learners in one click
+    pickerWrap?.addEventListener("change", (e) => {
+      const boxes = [...pickerWrap.querySelectorAll('input[name="learner"]')];
+      const master = pickerWrap.querySelector("[data-select-all]");
+      if (e.target.matches("[data-select-all]")) {
+        boxes.forEach((b) => { b.checked = e.target.checked; });
+      } else if (e.target.name === "learner" && master) {
+        master.checked = boxes.length > 0 && boxes.every((b) => b.checked);
+        master.indeterminate = !master.checked && boxes.some((b) => b.checked);
+      }
     });
 
     assignForm?.addEventListener("submit", (e) => {
