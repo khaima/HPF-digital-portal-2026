@@ -1,5 +1,7 @@
 # Human Practice Foundation — Digital Portal
 
+**Live site:** https://khaima.github.io/HPF-digital-portal-2026/
+
 A faithful rebuild of the HPF Digital Portal, running fully on **localhost** with
 **zero build step and zero dependencies** — just Python (already on your machine).
 
