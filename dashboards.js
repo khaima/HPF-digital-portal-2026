@@ -370,8 +370,10 @@ function liveSessionsFor(userId) {
         out.push({ kind: "assignment", cls: c, a });
     });
     (c.assessments || []).forEach((a) => {
-      if ((a.session || "planned") === "active" && c.learners.some((l) => l.id === userId))
-        out.push({ kind: "assessment", cls: c, a });
+      if (!a.published || (a.session || "planned") !== "active") return;
+      if (!c.learners.some((l) => l.id === userId)) return;
+      if ((a.audience || "all") === "individual" && !(a.targetIds || []).includes(userId)) return;
+      out.push({ kind: "assessment", cls: c, a });
     });
   });
   return out;
@@ -606,6 +608,7 @@ const coachState = {
   openTeacherForm: false,
   openAssessForm: false,
   analyzeId: null, // assessment whose analytics panel is expanded
+  publishId: null, // assessment whose publish dialog is open
 };
 
 /* A seeded MCQ assessment (with auto-marked submissions) so the demo class
@@ -634,7 +637,8 @@ function seedAssessment() {
     return { learnerId: l.id, name: l.name, answers, correct, total: questions.length,
       pct: Math.round((correct / questions.length) * 100), at: Date.now() - 864e5 };
   });
-  return { id: uid(), title: "Fractions Check — MCQ", session: "ended", questions, submissions };
+  return { id: uid(), title: "Fractions Check — MCQ", session: "ended",
+    published: true, audience: "all", targetIds: [], questions, submissions };
 }
 
 /* Classes persist in localStorage; the demo class (and any legacy
@@ -659,6 +663,15 @@ function getClasses() {
     // migrate classes created before schools / assessments existed
     if (!SCHOOLS.includes(c.school)) { c.school = SCHOOLS[0]; dirty = true; }
     if (!Array.isArray(c.assessments)) { c.assessments = []; dirty = true; }
+    // migrate assessments created before publish/audience existed
+    c.assessments.forEach((a) => {
+      if (a.published === undefined) {
+        a.published = a.session === "active" || a.session === "ended";
+        a.audience = a.audience || "all";
+        a.targetIds = a.targetIds || [];
+        dirty = true;
+      }
+    });
   });
   if (dirty) write(K_CLASSES, classes);
   return classes;
@@ -1148,7 +1161,7 @@ function assessBuilder(cls) {
 function assessmentAnalytics(a, cls) {
   const subs = a.submissions || [];
   if (!subs.length)
-    return `<div class="empty-state">No submissions yet. Start a session so learners can take it, or use “Simulate responses”.</div>`;
+    return `<div class="empty-state">No submissions yet. Publish it so learners can take it, or use “Simulate” to preview the analytics.</div>`;
 
   const st = assessStats(a);
   const tiles = `<div class="stat-row" style="margin:1rem 0">
@@ -1231,20 +1244,74 @@ function assessmentAnalytics(a, cls) {
     </div>`;
 }
 
-function assessCard(a, cls) {
+/* the publish dialog: grade/class dropdown + whole-class-or-individuals */
+function publishPanel(a, cls, classes) {
+  const classOpts = classes
+    .map(
+      (c) => `<option value="${c.id}" ${c.id === cls.id ? "selected" : ""}>${esc(c.name)} · ${esc(c.school || "")} (${c.learners.length})</option>`
+    )
+    .join("");
+  const audience = a.audience || "all";
+  const targetIds = a.targetIds || [];
+  const checklist = cls.learners
+    .map(
+      (l) => `<label class="lchk"><input type="checkbox" name="ptarget" value="${l.id}" ${audience === "individual" && targetIds.includes(l.id) ? "checked" : ""}> ${esc(l.name)}</label>`
+    )
+    .join("");
+  const allChecked = audience === "individual" && cls.learners.length && cls.learners.every((l) => targetIds.includes(l.id));
+  return `
+    <form class="add-user-form publish-form" data-publish-form="${a.id}">
+      <div class="form-row">
+        <div class="field"><label>Publish to grade / class</label>
+          <select class="select" name="classId" data-publish-class>${classOpts}</select></div>
+        <div class="field"><label>Audience</label>
+          <select class="select" name="audience" data-publish-audience>
+            <option value="all" ${audience === "all" ? "selected" : ""}>Whole class — all students</option>
+            <option value="individual" ${audience === "individual" ? "selected" : ""}>Individual learner(s)</option>
+          </select></div>
+      </div>
+      <div class="field" data-publish-picker ${audience === "individual" ? "" : "hidden"}>
+        <div class="picker-head">
+          <label style="margin-bottom:0">Pick learner(s)</label>
+          <label class="lchk select-all-chk"><input type="checkbox" data-publish-select-all ${allChecked ? "checked" : ""}> Select all</label>
+        </div>
+        <div class="assign-learners" data-publish-learners>${checklist || `<span class="hint">This class has no learners yet.</span>`}</div>
+      </div>
+      <div class="add-user-actions">
+        <button class="btn btn-primary" type="submit">${icon("send")} ${a.published ? "Update & re-publish" : "Publish now"}</button>
+        <button class="btn btn-outline" type="button" data-publish-cancel>Cancel</button>
+      </div>
+    </form>`;
+}
+
+function assessCard(a, cls, classes) {
   const st = assessStats(a);
+  const published = !!a.published;
+  const audience = a.audience || "all";
   const state = a.session || "planned";
-  const badge =
-    state === "active"
-      ? `<span class="session-badge live">${icon("radio")} Live · learners taking it</span>`
-      : state === "ended"
-      ? `<span class="session-badge ended">Session ended</span>`
-      : `<span class="session-badge planned">Planned · not yet live</span>`;
-  const sessionBtn =
-    state === "active"
-      ? `<button class="btn btn-outline btn-xs session-end" data-assess-session="${a.id}">${icon("stop")} End session</button>`
-      : `<button class="btn btn-primary btn-xs" data-assess-session="${a.id}">${icon("play")} ${state === "ended" ? "Restart" : "Start"} session</button>`;
   const analyzing = coachState.analyzeId === a.id;
+  const publishing = coachState.publishId === a.id;
+
+  const statusBadge = !published
+    ? `<span class="session-badge planned">${icon("clipboard")} Draft — not published</span>`
+    : state === "active"
+    ? `<span class="session-badge live">${icon("radio")} Live · ${audience === "individual" ? `${(a.targetIds || []).length} learner(s)` : "whole class"}</span>`
+    : state === "ended"
+    ? `<span class="session-badge ended">Published · session ended</span>`
+    : `<span class="session-badge planned">Published · paused</span>`;
+
+  const targetLine = !published
+    ? "Not published yet — publish to a grade/class or specific learners."
+    : audience === "individual"
+    ? `Published to ${(a.targetIds || []).length} learner(s) in ${esc(cls.name)}`
+    : `Published to ${esc(cls.name)} · whole class`;
+
+  const publishBtn = `<button class="btn ${published ? "btn-outline" : "btn-primary"} btn-xs" data-publish-toggle="${a.id}">${icon("send")} ${published ? "Edit audience" : "Publish"}</button>`;
+  const sessionBtn = !published
+    ? ""
+    : state === "active"
+    ? `<button class="btn btn-outline btn-xs session-end" data-assess-session="${a.id}">${icon("stop")} End session</button>`
+    : `<button class="btn btn-primary btn-xs" data-assess-session="${a.id}">${icon("play")} ${state === "ended" ? "Restart" : "Resume"} session</button>`;
 
   return `
     <div class="panel" style="margin-top:1.5rem">
@@ -1259,30 +1326,32 @@ function assessCard(a, cls) {
         </div>
       </div>
       <div class="session-bar">
-        ${badge}
-        <span class="session-audience">${icon("users")} ${cls.learners.length} enrolled</span>
-        <button class="btn btn-outline btn-xs" data-sim-assess="${a.id}" title="Generate demo submissions">${icon("activity")} Simulate responses</button>
+        ${statusBadge}
+        <span class="session-audience">${targetLine}</span>
+        <button class="btn btn-outline btn-xs" data-sim-assess="${a.id}" title="Generate demo submissions">${icon("activity")} Simulate</button>
+        ${publishBtn}
         ${sessionBtn}
       </div>
+      ${publishing ? publishPanel(a, cls, classes) : ""}
       ${analyzing ? assessmentAnalytics(a, cls) : ""}
     </div>`;
 }
 
-function coachAssessments(cls) {
+function coachAssessments(cls, classes) {
   const list = cls.assessments || [];
   return `
     <div class="panel">
       <div class="panel-head-row">
         <div>
           <h2>Assessments — ${esc(cls.name)}</h2>
-          <p class="panel-sub" style="margin:0">Build multiple-choice tests — the system auto-marks, scores, analyzes, and exports</p>
+          <p class="panel-sub" style="margin:0">Build multiple-choice tests, publish to a grade/class or individuals — auto-marked, analyzed, and exportable</p>
         </div>
         <button class="btn btn-primary" data-new-assess-toggle>${icon("plus")} New assessment</button>
       </div>
       ${assessBuilder(cls)}
-      ${list.length ? "" : `<div class="empty-state">No assessments yet. Create one with multiple-choice questions and mark the correct answers — learners are auto-marked when they take it.</div>`}
+      ${list.length ? "" : `<div class="empty-state">No assessments yet. Create one with multiple-choice questions and mark the correct answers — then publish it to your class or specific learners.</div>`}
     </div>
-    ${list.map((a) => assessCard(a, cls)).join("")}`;
+    ${list.map((a) => assessCard(a, cls, classes)).join("")}`;
 }
 
 /* rows for assessment exports: header + one row per submission */
@@ -1406,7 +1475,7 @@ function teacherBody() {
 
   let content;
   if (coachState.tab === "assignments") content = coachAssignments(list, learners, cls, classes);
-  else if (coachState.tab === "assessments") content = coachAssessments(cls);
+  else if (coachState.tab === "assessments") content = coachAssessments(cls, classes);
   else if (coachState.tab === "results") content = coachResults(list, learners, cls);
   else if (coachState.tab === "learners")
     content = coachState.learnerId
@@ -2099,10 +2168,16 @@ export function wireMyDashboard(user, events) {
         questions.push({ id: uid(), text, options: kept, correct });
       }
       const { classes, cls } = currentClass();
-      cls.assessments.unshift({ id: uid(), title, session: "planned", questions, submissions: [] });
+      const newId = uid();
+      cls.assessments.unshift({
+        id: newId, title, session: "planned",
+        published: false, audience: "all", targetIds: [],
+        questions, submissions: [],
+      });
       saveClasses(classes);
       coachState.openAssessForm = false;
-      toast("Assessment created", `“${title}” (${questions.length} questions) saved. Start a session to make it live.`, "success");
+      coachState.publishId = newId; // open the publish dialog right away
+      toast("Assessment saved", `“${title}” (${questions.length} questions) is a draft — publish it to a class or learners.`, "success");
       renderRole("teacher");
     });
 
@@ -2153,6 +2228,83 @@ export function wireMyDashboard(user, events) {
         renderRole("teacher");
       })
     );
+
+    // coach: publish an assessment to a grade/class or individuals
+    body.querySelectorAll("[data-publish-toggle]").forEach((btn) =>
+      btn.addEventListener("click", () => {
+        const id = btn.dataset.publishToggle;
+        coachState.publishId = coachState.publishId === id ? null : id;
+        renderRole("teacher");
+      })
+    );
+    body.querySelector("[data-publish-cancel]")?.addEventListener("click", () => {
+      coachState.publishId = null;
+      renderRole("teacher");
+    });
+    // rebuild the learner picker when the target class changes
+    const pubClass = body.querySelector("[data-publish-class]");
+    const pubAudience = body.querySelector("[data-publish-audience]");
+    const pubPicker = body.querySelector("[data-publish-picker]");
+    pubAudience?.addEventListener("change", () => {
+      if (pubPicker) pubPicker.hidden = pubAudience.value !== "individual";
+    });
+    pubClass?.addEventListener("change", () => {
+      const target = getClasses().find((c) => c.id === pubClass.value);
+      const wrap = pubPicker?.querySelector("[data-publish-learners]");
+      if (target && wrap) {
+        wrap.innerHTML = target.learners.length
+          ? target.learners.map((l) => `<label class="lchk"><input type="checkbox" name="ptarget" value="${l.id}"> ${esc(l.name)}</label>`).join("")
+          : `<span class="hint">This class has no learners yet.</span>`;
+        const master = pubPicker.querySelector("[data-publish-select-all]");
+        if (master) { master.checked = false; master.indeterminate = false; }
+      }
+    });
+    pubPicker?.addEventListener("change", (e) => {
+      const boxes = [...pubPicker.querySelectorAll('input[name="ptarget"]')];
+      const master = pubPicker.querySelector("[data-publish-select-all]");
+      if (e.target.matches("[data-publish-select-all]")) {
+        boxes.forEach((b) => { b.checked = e.target.checked; });
+      } else if (e.target.name === "ptarget" && master) {
+        master.checked = boxes.length > 0 && boxes.every((b) => b.checked);
+        master.indeterminate = !master.checked && boxes.some((b) => b.checked);
+      }
+    });
+    body.querySelector("[data-publish-form]")?.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const form = e.currentTarget;
+      const assessId = form.dataset.publishForm;
+      const classId = form.querySelector("[data-publish-class]").value;
+      const audience = form.querySelector("[data-publish-audience]").value;
+      const ids = [...form.querySelectorAll('input[name="ptarget"]:checked')].map((c) => c.value);
+
+      const classes = getClasses();
+      const target = classes.find((c) => c.id === classId);
+      if (!target) return toast("Pick a class", "Choose the grade/class to publish to.", "error");
+      if (!target.learners.length) return toast("Class is empty", `“${target.name}” has no learners — enroll some first.`, "error");
+      if (audience === "individual" && !ids.length) return toast("Pick learner(s)", "Select at least one learner, or choose Whole class.", "error");
+
+      // detach the assessment from whichever class currently holds it
+      let assessment;
+      classes.forEach((c) => {
+        const i = c.assessments.findIndex((x) => x.id === assessId);
+        if (i > -1) { assessment = c.assessments[i]; c.assessments.splice(i, 1); }
+      });
+      if (!assessment) return;
+
+      assessment.published = true;
+      assessment.audience = audience;
+      assessment.targetIds = audience === "individual" ? ids : [];
+      assessment.session = "active";
+      assessment.startedAt = Date.now();
+      target.assessments.unshift(assessment);
+
+      saveClasses(classes);
+      coachState.classId = target.id; // follow the assessment to its class
+      coachState.publishId = null;
+      const who = audience === "individual" ? `${ids.length} learner${ids.length === 1 ? "" : "s"}` : `all of ${target.name}`;
+      toast("Assessment published", `“${assessment.title}” is now live for ${who}.`, "success");
+      renderRole("teacher");
+    });
 
     // coach: downloadable results (CSV / Excel / PDF)
     const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
