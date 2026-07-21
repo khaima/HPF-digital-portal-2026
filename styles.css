@@ -2073,6 +2073,163 @@ textarea.input:focus {
   color: var(--muted-foreground);
 }
 
+/* ---------------------------------------------------------- assessment builder */
+.qblock {
+  border: 1px solid var(--border);
+  border-radius: 0.8rem;
+  background: var(--muted);
+  padding: 1rem;
+  margin-bottom: 0.85rem;
+}
+
+.qblock-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.6rem;
+}
+
+.qnum {
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--primary);
+}
+
+.qblock [data-qtext] {
+  margin-bottom: 0.6rem;
+}
+
+.qoptions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+}
+
+.qopt {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.qopt input[type="radio"] {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  accent-color: var(--primary);
+}
+
+.qopt .input {
+  flex: 1;
+}
+
+@media (max-width: 640px) {
+  .qoptions { grid-template-columns: 1fr; }
+}
+
+/* ---------------------------------------------------------- take-assessment modal */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: grid;
+  place-items: center;
+  padding: 1.5rem;
+  background: oklch(20% 0.04 150 / 0.5);
+  backdrop-filter: blur(2px);
+  animation: fade-in 0.2s ease;
+}
+
+.modal {
+  width: 100%;
+  max-width: 560px;
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--card);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+
+.modal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.25rem 1.4rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.modal-head h2 {
+  font-size: 1.15rem;
+  font-weight: 700;
+}
+
+.modal-body {
+  overflow-y: auto;
+  padding: 1.25rem 1.4rem;
+}
+
+.modal-foot {
+  display: flex;
+  gap: 0.6rem;
+  padding: 1rem 1.4rem;
+  border-top: 1px solid var(--border);
+}
+
+.qtake {
+  padding-bottom: 1.1rem;
+  margin-bottom: 1.1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.qtake:last-child {
+  border-bottom: none;
+  margin-bottom: 0;
+}
+
+.qtake-q {
+  font-size: 0.95rem;
+  margin-bottom: 0.6rem;
+}
+
+.qtake-opts {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.qtake-opt {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.6rem;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.qtake-opt:hover {
+  border-color: var(--primary);
+  background: var(--accent);
+}
+
+.qtake-opt input[type="radio"] {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  accent-color: var(--primary);
+}
+
+.assess-analytics {
+  margin-top: 1rem;
+  padding-top: 0.5rem;
+  border-top: 1px dashed var(--border);
+}
+
 .kchip-add:hover {
   border-color: var(--primary);
   color: var(--primary);

@@ -359,15 +359,19 @@ function adminBody(ctx) {
     </div>`;
 }
 
-/* Live sessions a learner can join: active-session assignments in any class
-   they're enrolled in (matched by their portal-account id). */
+/* Live things a learner can join: active-session assignments (matched by
+   results) and active assessments (open to everyone enrolled in the class). */
 function liveSessionsFor(userId) {
   const out = [];
   if (!userId) return out;
   read(K_CLASSES, []).forEach((c) => {
     (c.assignments || []).forEach((a) => {
       if ((a.session || "planned") === "active" && a.results.some((r) => r.id === userId))
-        out.push({ cls: c, a });
+        out.push({ kind: "assignment", cls: c, a });
+    });
+    (c.assessments || []).forEach((a) => {
+      if ((a.session || "planned") === "active" && c.learners.some((l) => l.id === userId))
+        out.push({ kind: "assessment", cls: c, a });
     });
   });
   return out;
@@ -383,7 +387,21 @@ function liveSessionPanel(userId) {
           <p class="panel-sub" style="margin:0">Your teacher has started ${live.length} session${live.length === 1 ? "" : "s"} you can join</p></div>
       </div>
       <div class="live-list">${live
-        .map(({ cls, a }) => {
+        .map(({ kind, cls, a }) => {
+          if (kind === "assessment") {
+            const mine = (a.submissions || []).find((s) => s.learnerId === userId);
+            const cta = mine
+              ? `<span class="pill ${scoreClass(mine.pct)}">${icon("check")} ${mine.pct}%</span>`
+              : `<button class="btn btn-primary btn-xs" data-take-assess="${a.id}" data-take-class="${cls.id}">${icon("clipboard")} Take</button>`;
+            return `<div class="live-row">
+              <span class="assign-badge" style="background:var(--primary)">${icon("clipboard")}</span>
+              <div class="live-main">
+                <div class="live-title">${esc(a.title)}</div>
+                <div class="live-meta">Assessment · ${a.questions.length} questions · ${esc(cls.name)} · ${esc(cls.school || "")}</div>
+              </div>
+              ${cta}
+            </div>`;
+          }
           const t = ASSIGN_TYPES[a.type] || ASSIGN_TYPES.lesson;
           return `<div class="live-row">
             <span class="assign-badge" style="background:${t.color}">${icon(t.icon)}</span>
@@ -396,6 +414,78 @@ function liveSessionPanel(userId) {
         })
         .join("")}</div>
     </div>`;
+}
+
+/* ---------- learner: take an assessment (modal, auto-marked) ---------- */
+function openAssessModal(classId, assessId, userId, onDone) {
+  const cls = read(K_CLASSES, []).find((c) => c.id === classId);
+  const a = cls?.assessments.find((x) => x.id === assessId);
+  if (!a) return;
+
+  const body = a.questions
+    .map(
+      (q, qi) => `<div class="qtake">
+        <div class="qtake-q"><strong>Q${qi + 1}.</strong> ${esc(q.text)}</div>
+        <div class="qtake-opts">${q.options
+          .map(
+            (o, oi) => `<label class="qtake-opt"><input type="radio" name="take-${qi}" value="${oi}"> <span>${esc(o)}</span></label>`
+          )
+          .join("")}</div>
+      </div>`
+    )
+    .join("");
+
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay";
+  overlay.innerHTML = `
+    <div class="modal" role="dialog" aria-modal="true">
+      <div class="modal-head">
+        <div>
+          <h2>${esc(a.title)}</h2>
+          <p class="panel-sub" style="margin:0">${a.questions.length} questions · ${esc(cls.name)} · answer all, then submit</p>
+        </div>
+        <button class="icon-btn" data-modal-close aria-label="Close">✕</button>
+      </div>
+      <form id="takeForm" class="modal-body">${body}</form>
+      <div class="modal-foot">
+        <button class="btn btn-primary" data-take-submit>${icon("check")} Submit answers</button>
+        <button class="btn btn-outline" data-modal-close>Cancel</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+
+  const close = () => overlay.remove();
+  overlay.querySelectorAll("[data-modal-close]").forEach((b) => b.addEventListener("click", close));
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+
+  overlay.querySelector("[data-take-submit]").addEventListener("click", () => {
+    const form = overlay.querySelector("#takeForm");
+    const answers = a.questions.map((q, qi) => {
+      const sel = form.querySelector(`input[name="take-${qi}"]:checked`);
+      return sel ? +sel.value : null;
+    });
+    if (answers.some((v) => v === null))
+      return toast("Answer every question", "Please choose an option for each question.", "error");
+
+    const correct = a.questions.reduce((n, q, i) => n + (answers[i] === q.correct ? 1 : 0), 0);
+    const pct = Math.round((correct / a.questions.length) * 100);
+
+    // persist submission (replace any earlier attempt), auto-marked
+    const classes = read(K_CLASSES, []);
+    const tc = classes.find((c) => c.id === classId);
+    const ta = tc.assessments.find((x) => x.id === assessId);
+    const learner = tc.learners.find((l) => l.id === userId);
+    ta.submissions = (ta.submissions || []).filter((s) => s.learnerId !== userId);
+    ta.submissions.push({
+      learnerId: userId, name: learner ? learner.name : "You",
+      answers, correct, total: a.questions.length, pct, at: Date.now(),
+    });
+    write(K_CLASSES, classes);
+
+    close();
+    toast("Assessment submitted", `You scored ${correct}/${a.questions.length} (${pct}%). Auto-marked instantly.`, "success");
+    if (onDone) onDone();
+  });
 }
 
 function learnerBody(ctx) {
@@ -514,7 +604,38 @@ const coachState = {
   openClassForm: false,
   openLearnerForm: false,
   openTeacherForm: false,
+  openAssessForm: false,
+  analyzeId: null, // assessment whose analytics panel is expanded
 };
+
+/* A seeded MCQ assessment (with auto-marked submissions) so the demo class
+   shows the assessment analytics out of the box. */
+function seedAssessment() {
+  const L = KOLIBRI.coach.learners; // l1..l6
+  const questions = [
+    { id: "q1", text: "What is 1/2 + 1/4?", options: ["1/6", "2/6", "3/4", "1/3"], correct: 2 },
+    { id: "q2", text: "Which fraction is largest?", options: ["1/2", "2/3", "1/4", "3/8"], correct: 1 },
+    { id: "q3", text: "Simplify 4/8.", options: ["1/2", "2/4", "4/8", "1/4"], correct: 0 },
+    { id: "q4", text: "What is 3/5 of 20?", options: ["10", "12", "15", "9"], correct: 1 },
+    { id: "q5", text: "0.75 as a fraction is…", options: ["3/4", "7/5", "1/4", "2/3"], correct: 0 },
+  ];
+  // pre-filled answers per learner (indexes) → auto-marked below
+  const picks = {
+    l1: [2, 1, 0, 1, 0], // 5/5
+    l2: [2, 1, 0, 1, 3], // 4/5
+    l3: [2, 0, 0, 1, 0], // 4/5
+    l4: [0, 1, 2, 3, 0], // 2/5
+    l5: [2, 1, 0, 0, 0], // 4/5
+    l6: [1, 0, 2, 3, 1], // 0/5
+  };
+  const submissions = L.map((l) => {
+    const answers = picks[l.id] || [];
+    const correct = questions.reduce((n, q, i) => n + (answers[i] === q.correct ? 1 : 0), 0);
+    return { learnerId: l.id, name: l.name, answers, correct, total: questions.length,
+      pct: Math.round((correct / questions.length) * 100), at: Date.now() - 864e5 };
+  });
+  return { id: uid(), title: "Fractions Check — MCQ", session: "ended", questions, submissions };
+}
 
 /* Classes persist in localStorage; the demo class (and any legacy
    assignment store) is migrated in on first run. */
@@ -528,16 +649,18 @@ function getClasses() {
         school: SCHOOLS[0],
         learners: KOLIBRI.coach.learners,
         assignments: read(K_ASSIGN, null) || KOLIBRI.coach.assignments,
+        assessments: [seedAssessment()],
       },
     ];
     write(K_CLASSES, classes);
   }
-  // migrate classes created before schools existed or whose school was
-  // removed from the supported list
-  if (classes.some((c) => !SCHOOLS.includes(c.school))) {
-    classes.forEach((c) => { if (!SCHOOLS.includes(c.school)) c.school = SCHOOLS[0]; });
-    write(K_CLASSES, classes);
-  }
+  let dirty = false;
+  classes.forEach((c) => {
+    // migrate classes created before schools / assessments existed
+    if (!SCHOOLS.includes(c.school)) { c.school = SCHOOLS[0]; dirty = true; }
+    if (!Array.isArray(c.assessments)) { c.assessments = []; dirty = true; }
+  });
+  if (dirty) write(K_CLASSES, classes);
   return classes;
 }
 const saveClasses = (classes) => write(K_CLASSES, classes);
@@ -956,6 +1079,244 @@ function coachLearnerDetail(list, learners, id, cls) {
     </div>`;
 }
 
+/* ============================================================
+   Assessments — teacher-built MCQ, auto-marked, analyzed
+   ============================================================ */
+
+const OPT_LETTERS = ["A", "B", "C", "D", "E", "F"];
+
+function assessStats(a) {
+  const subs = a.submissions || [];
+  const pcts = subs.map((s) => s.pct);
+  const avg = pcts.length ? Math.round(pcts.reduce((x, y) => x + y, 0) / pcts.length) : 0;
+  const passed = subs.filter((s) => s.pct >= 50).length;
+  return {
+    subs: subs.length,
+    avg,
+    passRate: subs.length ? Math.round((passed / subs.length) * 100) : 0,
+    high: pcts.length ? Math.max(...pcts) : 0,
+    low: pcts.length ? Math.min(...pcts) : 0,
+  };
+}
+
+/* % of submissions that answered each question correctly (item analysis) */
+function questionCorrectPct(a) {
+  const subs = a.submissions || [];
+  return a.questions.map((q, qi) => {
+    if (!subs.length) return 0;
+    const right = subs.filter((s) => s.answers[qi] === q.correct).length;
+    return Math.round((right / subs.length) * 100);
+  });
+}
+
+/* one editable question in the builder (radios scoped by unique group name) */
+function questionBlock(n, group) {
+  const opts = OPT_LETTERS.slice(0, 4)
+    .map(
+      (L, oi) => `<label class="qopt">
+        <input type="radio" name="${group}" data-correct value="${oi}" ${oi === 0 ? "checked" : ""}>
+        <input class="input" data-opt maxlength="120" placeholder="Option ${L}">
+      </label>`
+    )
+    .join("");
+  return `<div class="qblock" data-qblock>
+    <div class="qblock-head">
+      <span class="qnum">Question <span data-qn>${n}</span></span>
+      <button type="button" class="icon-btn danger" data-remove-q title="Remove question">${icon("trash")}</button>
+    </div>
+    <input class="input" data-qtext maxlength="240" placeholder="Type the question…">
+    <div class="qoptions">${opts}</div>
+    <p class="hint">Tick the circle next to the correct answer — the system marks against it.</p>
+  </div>`;
+}
+
+function assessBuilder(cls) {
+  return `
+    <form id="assessForm" class="add-user-form" ${coachState.openAssessForm ? "" : "hidden"}>
+      <div class="field"><label>Assessment title</label>
+        <input class="input" name="title" required maxlength="80" placeholder="e.g. Fractions Test 1"></div>
+      <div id="assessQuestions">${questionBlock(1, "correct-q0")}</div>
+      <button type="button" class="btn btn-outline btn-xs" data-add-question style="margin-bottom:1rem">${icon("plus")} Add question</button>
+      <div class="add-user-actions">
+        <button class="btn btn-primary" type="submit">${icon("check")} Save assessment</button>
+        <button class="btn btn-outline" type="button" data-assess-cancel>Cancel</button>
+      </div>
+    </form>`;
+}
+
+/* score-distribution buckets + item analysis + per-student table */
+function assessmentAnalytics(a, cls) {
+  const subs = a.submissions || [];
+  if (!subs.length)
+    return `<div class="empty-state">No submissions yet. Start a session so learners can take it, or use “Simulate responses”.</div>`;
+
+  const st = assessStats(a);
+  const tiles = `<div class="stat-row" style="margin:1rem 0">
+    <div class="stat-tile"><div class="st-label">${icon("inbox")} Submissions</div><div class="st-num">${countNum(st.subs)}</div></div>
+    <div class="stat-tile"><div class="st-label">${icon("trophy")} Average</div><div class="st-num">${countNum(st.avg, "%")}</div></div>
+    <div class="stat-tile"><div class="st-label">${icon("check")} Pass rate</div><div class="st-num">${countNum(st.passRate, "%")}</div></div>
+    <div class="stat-tile"><div class="st-label">${icon("trendingUp")} Highest</div><div class="st-num">${countNum(st.high, "%")}</div></div>
+  </div>`;
+
+  // score distribution across four bands
+  const bands = [
+    { label: "0–49", lo: 0, hi: 49 },
+    { label: "50–69", lo: 50, hi: 69 },
+    { label: "70–84", lo: 70, hi: 84 },
+    { label: "85–100", lo: 85, hi: 100 },
+  ];
+  const dist = bands.map((b) => subs.filter((s) => s.pct >= b.lo && s.pct <= b.hi).length);
+  const distChart = barChart(dist, bands.map((b) => b.label), " learners");
+
+  // per-question item analysis (lower % = harder)
+  const pcts = questionCorrectPct(a);
+  const hardestIdx = pcts.indexOf(Math.min(...pcts));
+  const items = a.questions
+    .map((q, qi) => {
+      const p = pcts[qi];
+      const color = p >= 75 ? "var(--success)" : p >= 50 ? "oklch(78% 0.15 75)" : "var(--destructive)";
+      return hbar(`Q${qi + 1}. ${q.text}`, p, 100, color, "%");
+    })
+    .join("");
+
+  // per-student results
+  const rows = subs
+    .slice()
+    .sort((x, y) => y.pct - x.pct)
+    .map(
+      (s) => `<div class="ut-row" style="grid-template-columns:minmax(0,1.4fr) auto auto auto">
+        <div class="ut-cell ut-user">
+          <span class="avatar-sm">${esc(s.name.slice(0, 1))}</span>
+          <div><div class="ut-name">${esc(s.name)}</div><div class="ut-sub">${s.correct}/${s.total} correct</div></div>
+        </div>
+        <div class="ut-cell"><div class="hbar-track"><div class="hbar-fill" style="width:${s.pct}%;background:var(--primary)"></div></div></div>
+        <div class="ut-cell"><span class="pill ${scoreClass(s.pct)}">${s.pct}%</span></div>
+        <div class="ut-cell"><span class="pill ${s.pct >= 50 ? "synced" : "danger-pill"}">${s.pct >= 50 ? "Pass" : "Fail"}</span></div>
+      </div>`
+    )
+    .join("");
+
+  return `
+    <div class="assess-analytics">
+      ${tiles}
+      <div class="dash-grid">
+        <div class="panel">
+          <h2>Score distribution</h2>
+          <p class="panel-sub">How many learners fall in each band</p>
+          ${distChart}
+        </div>
+        <div class="panel">
+          <h2>Question difficulty</h2>
+          <p class="panel-sub">% who answered each question correctly · hardest: <strong>Q${hardestIdx + 1}</strong></p>
+          <div class="legend">${items}</div>
+        </div>
+      </div>
+      <div class="panel" style="margin-top:1.5rem">
+        <div class="panel-head-row">
+          <div><h2>Per-student results</h2><p class="panel-sub" style="margin:0">Auto-marked · sorted by score</p></div>
+          <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+            <button class="btn btn-outline btn-xs" data-assess-csv="${a.id}">${icon("download")} CSV</button>
+            <button class="btn btn-outline btn-xs" data-assess-xls="${a.id}">${icon("download")} Excel</button>
+            <button class="btn btn-outline btn-xs" data-assess-pdf="${a.id}">${icon("download")} PDF</button>
+          </div>
+        </div>
+        <div class="user-table">
+          <div class="ut-row ut-head" style="grid-template-columns:minmax(0,1.4fr) auto auto auto">
+            <div class="ut-cell">Student</div><div class="ut-cell">Score</div>
+            <div class="ut-cell">Percent</div><div class="ut-cell">Result</div>
+          </div>
+          <div>${rows}</div>
+        </div>
+      </div>
+    </div>`;
+}
+
+function assessCard(a, cls) {
+  const st = assessStats(a);
+  const state = a.session || "planned";
+  const badge =
+    state === "active"
+      ? `<span class="session-badge live">${icon("radio")} Live · learners taking it</span>`
+      : state === "ended"
+      ? `<span class="session-badge ended">Session ended</span>`
+      : `<span class="session-badge planned">Planned · not yet live</span>`;
+  const sessionBtn =
+    state === "active"
+      ? `<button class="btn btn-outline btn-xs session-end" data-assess-session="${a.id}">${icon("stop")} End session</button>`
+      : `<button class="btn btn-primary btn-xs" data-assess-session="${a.id}">${icon("play")} ${state === "ended" ? "Restart" : "Start"} session</button>`;
+  const analyzing = coachState.analyzeId === a.id;
+
+  return `
+    <div class="panel" style="margin-top:1.5rem">
+      <div class="panel-head-row">
+        <div>
+          <h2>${icon("clipboard")} ${esc(a.title)}</h2>
+          <p class="panel-sub" style="margin:0">${a.questions.length} question${a.questions.length === 1 ? "" : "s"} · ${st.subs} submission${st.subs === 1 ? "" : "s"} · avg <strong>${st.avg}%</strong> · pass rate ${st.passRate}%</p>
+        </div>
+        <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
+          <button class="btn ${analyzing ? "btn-primary" : "btn-outline"} btn-xs" data-analyze="${a.id}">${icon("chartColumn")} ${analyzing ? "Hide analysis" : "Analyze"}</button>
+          <button class="icon-btn danger" data-remove-assess="${a.id}" title="Delete assessment">${icon("trash")}</button>
+        </div>
+      </div>
+      <div class="session-bar">
+        ${badge}
+        <span class="session-audience">${icon("users")} ${cls.learners.length} enrolled</span>
+        <button class="btn btn-outline btn-xs" data-sim-assess="${a.id}" title="Generate demo submissions">${icon("activity")} Simulate responses</button>
+        ${sessionBtn}
+      </div>
+      ${analyzing ? assessmentAnalytics(a, cls) : ""}
+    </div>`;
+}
+
+function coachAssessments(cls) {
+  const list = cls.assessments || [];
+  return `
+    <div class="panel">
+      <div class="panel-head-row">
+        <div>
+          <h2>Assessments — ${esc(cls.name)}</h2>
+          <p class="panel-sub" style="margin:0">Build multiple-choice tests — the system auto-marks, scores, analyzes, and exports</p>
+        </div>
+        <button class="btn btn-primary" data-new-assess-toggle>${icon("plus")} New assessment</button>
+      </div>
+      ${assessBuilder(cls)}
+      ${list.length ? "" : `<div class="empty-state">No assessments yet. Create one with multiple-choice questions and mark the correct answers — learners are auto-marked when they take it.</div>`}
+    </div>
+    ${list.map((a) => assessCard(a, cls)).join("")}`;
+}
+
+/* rows for assessment exports: header + one row per submission */
+function buildAssessmentRows(a) {
+  const header = ["Student", "Score", "Total", "Percent %", "Result", ...a.questions.map((q, i) => `Q${i + 1}`)];
+  const rows = (a.submissions || []).map((s) => [
+    s.name,
+    String(s.correct),
+    String(s.total),
+    String(s.pct),
+    s.pct >= 50 ? "Pass" : "Fail",
+    ...a.questions.map((q, qi) => (s.answers[qi] === q.correct ? "correct" : "wrong")),
+  ]);
+  return { header, rows };
+}
+
+/* fabricate plausible submissions for enrolled learners (demo aid) */
+function simulateAssessment(a, cls) {
+  const done = new Set((a.submissions || []).map((s) => s.learnerId));
+  cls.learners
+    .filter((l) => !done.has(l.id))
+    .forEach((l) => {
+      // ~68% chance of the correct answer per question
+      const answers = a.questions.map((q) =>
+        Math.random() < 0.68 ? q.correct : Math.floor(Math.random() * q.options.length)
+      );
+      const correct = a.questions.reduce((n, q, i) => n + (answers[i] === q.correct ? 1 : 0), 0);
+      a.submissions.push({
+        learnerId: l.id, name: l.name, answers, correct, total: a.questions.length,
+        pct: Math.round((correct / a.questions.length) * 100), at: Date.now(),
+      });
+    });
+}
+
 function classSwitcher(classes, cls) {
   const chips = classes
     .map(
@@ -1006,6 +1367,7 @@ function teacherBody() {
   const tabBar = `<div class="ksubtabs">${[
     { id: "overview", label: "Overview" },
     { id: "assignments", label: "Assignments" },
+    { id: "assessments", label: "Assessments" },
     { id: "learners", label: "Learners" },
     { id: "results", label: "Results" },
   ]
@@ -1044,6 +1406,7 @@ function teacherBody() {
 
   let content;
   if (coachState.tab === "assignments") content = coachAssignments(list, learners, cls, classes);
+  else if (coachState.tab === "assessments") content = coachAssessments(cls);
   else if (coachState.tab === "results") content = coachResults(list, learners, cls);
   else if (coachState.tab === "learners")
     content = coachState.learnerId
@@ -1390,6 +1753,17 @@ export function wireMyDashboard(user, events) {
       })
     );
 
+    // learner: take a live assessment (opens the auto-marked modal)
+    body.querySelectorAll("[data-take-assess]").forEach((btn) =>
+      btn.addEventListener("click", () => {
+        const uid2 = ctx?.user?.id;
+        openAssessModal(btn.dataset.takeClass, btn.dataset.takeAssess, uid2, () => {
+          const active = document.querySelector(".role-tab.active")?.dataset.role || "learner";
+          renderRole(active);
+        });
+      })
+    );
+
     // library: channel chips + search filter
     const grid = body.querySelector("[data-library-grid]");
     const chips = [...body.querySelectorAll("[data-channel].kchip")];
@@ -1678,6 +2052,108 @@ export function wireMyDashboard(user, events) {
       })
     );
 
+    // coach: assessment builder — open/close, add/remove questions
+    body.querySelector("[data-new-assess-toggle]")?.addEventListener("click", () => {
+      coachState.openAssessForm = !coachState.openAssessForm;
+      renderRole("teacher");
+    });
+    body.querySelector("[data-assess-cancel]")?.addEventListener("click", () => {
+      coachState.openAssessForm = false;
+      renderRole("teacher");
+    });
+    const qContainer = body.querySelector("#assessQuestions");
+    const renumberQ = () =>
+      qContainer?.querySelectorAll("[data-qblock]").forEach((b, i) => {
+        b.querySelector("[data-qn]").textContent = i + 1;
+      });
+    body.querySelector("[data-add-question]")?.addEventListener("click", () => {
+      const n = qContainer.querySelectorAll("[data-qblock]").length + 1;
+      qContainer.insertAdjacentHTML("beforeend", questionBlock(n, "correct-" + uid()));
+    });
+    qContainer?.addEventListener("click", (e) => {
+      const rm = e.target.closest("[data-remove-q]");
+      if (!rm) return;
+      if (qContainer.querySelectorAll("[data-qblock]").length <= 1)
+        return toast("Keep at least one question", "An assessment needs a question.", "error");
+      rm.closest("[data-qblock]").remove();
+      renumberQ();
+    });
+    body.querySelector("#assessForm")?.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const form = e.currentTarget;
+      const title = form.querySelector('[name="title"]').value.trim();
+      if (!title) return toast("Title required", "Give the assessment a title.", "error");
+      const blocks = [...form.querySelectorAll("[data-qblock]")];
+      const questions = [];
+      for (let i = 0; i < blocks.length; i++) {
+        const b = blocks[i];
+        const text = b.querySelector("[data-qtext]").value.trim();
+        const rawOpts = [...b.querySelectorAll("[data-opt]")].map((o) => o.value.trim());
+        const checkedEl = b.querySelector("[data-correct]:checked");
+        const correctRaw = checkedEl ? +checkedEl.value : -1;
+        if (!text) return toast(`Question ${i + 1} needs text`, "Type the question.", "error");
+        const kept = []; let correct = -1;
+        rawOpts.forEach((o, oi) => { if (o) { if (oi === correctRaw) correct = kept.length; kept.push(o); } });
+        if (kept.length < 2) return toast(`Question ${i + 1} needs 2+ options`, "Fill at least two options.", "error");
+        if (correct < 0) return toast(`Mark the answer for question ${i + 1}`, "The correct option can't be blank.", "error");
+        questions.push({ id: uid(), text, options: kept, correct });
+      }
+      const { classes, cls } = currentClass();
+      cls.assessments.unshift({ id: uid(), title, session: "planned", questions, submissions: [] });
+      saveClasses(classes);
+      coachState.openAssessForm = false;
+      toast("Assessment created", `“${title}” (${questions.length} questions) saved. Start a session to make it live.`, "success");
+      renderRole("teacher");
+    });
+
+    // coach: analyze / delete / simulate / start-end session on an assessment
+    body.querySelectorAll("[data-analyze]").forEach((btn) =>
+      btn.addEventListener("click", () => {
+        coachState.analyzeId = coachState.analyzeId === btn.dataset.analyze ? null : btn.dataset.analyze;
+        renderRole("teacher");
+      })
+    );
+    body.querySelectorAll("[data-remove-assess]").forEach((btn) =>
+      btn.addEventListener("click", () => {
+        const { classes, cls } = currentClass();
+        cls.assessments = cls.assessments.filter((x) => x.id !== btn.dataset.removeAssess);
+        saveClasses(classes);
+        toast("Assessment deleted", "", "success");
+        renderRole("teacher");
+      })
+    );
+    body.querySelectorAll("[data-sim-assess]").forEach((btn) =>
+      btn.addEventListener("click", () => {
+        const { classes, cls } = currentClass();
+        const a = cls.assessments.find((x) => x.id === btn.dataset.simAssess);
+        if (!a) return;
+        if (!cls.learners.length) return toast("No learners", "Enroll learners first.", "error");
+        const before = a.submissions.length;
+        simulateAssessment(a, cls);
+        saveClasses(classes);
+        coachState.analyzeId = a.id;
+        const added = a.submissions.length - before;
+        toast("Responses simulated", added ? `${added} demo submission${added === 1 ? "" : "s"} auto-marked.` : "Everyone already submitted.", "success");
+        renderRole("teacher");
+      })
+    );
+    body.querySelectorAll("[data-assess-session]").forEach((btn) =>
+      btn.addEventListener("click", () => {
+        const { classes, cls } = currentClass();
+        const a = cls.assessments.find((x) => x.id === btn.dataset.assessSession);
+        if (!a) return;
+        if ((a.session || "planned") === "active") {
+          a.session = "ended"; a.endedAt = Date.now();
+          toast("Session ended", `“${a.title}” is closed.`, "success");
+        } else {
+          a.session = "active"; a.startedAt = Date.now();
+          toast("Session started", `“${a.title}” is live — ${cls.name} learners can take it.`, "success");
+        }
+        saveClasses(classes);
+        renderRole("teacher");
+      })
+    );
+
     // coach: downloadable results (CSV / Excel / PDF)
     const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
     function downloadBlob(blob, filename) {
@@ -1728,6 +2204,56 @@ export function wireMyDashboard(user, events) {
       w.document.close();
       toast("PDF export", "Choose “Save as PDF” in the print dialog.", "success");
     });
+
+    // coach: downloadable ASSESSMENT results (auto-marked) — CSV / Excel / PDF
+    const assessOf = (id) => currentClass().cls.assessments.find((x) => x.id === id);
+    body.querySelectorAll("[data-assess-csv]").forEach((btn) =>
+      btn.addEventListener("click", () => {
+        const a = assessOf(btn.dataset.assessCsv); if (!a) return;
+        const { header, rows } = buildAssessmentRows(a);
+        const q = (v) => `"${String(v).replace(/"/g, '""')}"`;
+        const csv = "﻿" + [header, ...rows].map((r) => r.map(q).join(",")).join("\r\n");
+        downloadBlob(new Blob([csv], { type: "text/csv;charset=utf-8" }), `${slug(a.title)}-results.csv`);
+        toast("CSV downloaded", `${a.title} — ${rows.length} submission${rows.length === 1 ? "" : "s"}.`, "success");
+      })
+    );
+    body.querySelectorAll("[data-assess-xls]").forEach((btn) =>
+      btn.addEventListener("click", () => {
+        const a = assessOf(btn.dataset.assessXls); if (!a) return;
+        const { header, rows } = buildAssessmentRows(a);
+        const cell = (v, tag) => `<${tag} style="border:1px solid #ccc;padding:4px 8px">${esc(String(v))}</${tag}>`;
+        const html = `<html><head><meta charset="utf-8"></head><body>
+          <h3>${esc(a.title)} · auto-marked results</h3>
+          <table border="1"><tr>${header.map((h) => cell(h, "th")).join("")}</tr>
+          ${rows.map((r) => `<tr>${r.map((v) => cell(v, "td")).join("")}</tr>`).join("")}</table></body></html>`;
+        downloadBlob(new Blob([html], { type: "application/vnd.ms-excel" }), `${slug(a.title)}-results.xls`);
+        toast("Excel downloaded", `${a.title} — ${rows.length} submission${rows.length === 1 ? "" : "s"}.`, "success");
+      })
+    );
+    body.querySelectorAll("[data-assess-pdf]").forEach((btn) =>
+      btn.addEventListener("click", () => {
+        const a = assessOf(btn.dataset.assessPdf); if (!a) return;
+        const { header, rows } = buildAssessmentRows(a);
+        const st = assessStats(a);
+        const w = window.open("", "_blank");
+        if (!w) return toast("Popup blocked", "Allow popups for this site to export PDF.", "error");
+        w.document.write(`<html><head><title>${esc(a.title)} — Results</title><style>
+          body{font-family:system-ui,sans-serif;padding:24px;color:#111}
+          h1{font-size:18px;margin:0} p{color:#555;margin:4px 0 16px;font-size:13px}
+          table{border-collapse:collapse;width:100%;font-size:12px}
+          th,td{border:1px solid #bbb;padding:5px 8px;text-align:left}
+          th{background:#eef3ee}
+          @media print{@page{size:landscape;margin:12mm}}
+        </style></head><body>
+          <h1>Human Practice Foundation — ${esc(a.title)}</h1>
+          <p>Auto-marked assessment · ${rows.length} submissions · average ${st.avg}% · pass rate ${st.passRate}% · generated ${new Date().toLocaleDateString()}</p>
+          <table><tr>${header.map((h) => `<th>${esc(h)}</th>`).join("")}</tr>
+          ${rows.map((r) => `<tr>${r.map((v) => `<td>${esc(String(v))}</td>`).join("")}</tr>`).join("")}</table>
+          <script>window.onload=()=>window.print()</` + `script></body></html>`);
+        w.document.close();
+        toast("PDF export", "Choose “Save as PDF” in the print dialog.", "success");
+      })
+    );
 
     // school leader
     body.querySelector("[data-generate-report]")?.addEventListener("click", (e) => {
