@@ -4,7 +4,7 @@
    ============================================================ */
 
 import { icon } from "./icons.js";
-import { DASH, ROLES, ORG_TYPES, COUNTIES, KOLIBRI, CONTENT_KINDS } from "./data.js";
+import { DASH, ROLES, ORG_TYPES, COUNTIES, KOLIBRI, CONTENT_KINDS, SCHOOLS } from "./data.js";
 import { esc, timeAgo, runCounters, read, write, toast, uid } from "./util.js";
 
 const K_USERS = "hpf_users";
@@ -483,10 +483,16 @@ function getClasses() {
       {
         id: uid(),
         name: KOLIBRI.coach.className,
+        school: SCHOOLS[0],
         learners: KOLIBRI.coach.learners,
         assignments: read(K_ASSIGN, null) || KOLIBRI.coach.assignments,
       },
     ];
+    write(K_CLASSES, classes);
+  }
+  // migrate classes created before schools existed
+  if (classes.some((c) => !c.school)) {
+    classes.forEach((c) => { if (!c.school) c.school = SCHOOLS[0]; });
     write(K_CLASSES, classes);
   }
   return classes;
@@ -531,6 +537,92 @@ function learnerAvgScore(list, id) {
     if (r && r.pct >= 100 && typeof r.score === "number") s.push(r.score);
   });
   return s.length ? avg(s) : null;
+}
+
+/* assignments where a learner is struggling: barely started, or low score */
+function weakAreas(list, id) {
+  const out = [];
+  list.forEach((a) => {
+    const r = a.results.find((x) => x.id === id);
+    if (!r) return;
+    if (r.pct < 50 || (r.pct >= 100 && typeof r.score === "number" && r.score < 60))
+      out.push(a.title);
+  });
+  return out;
+}
+
+/* rows for the Results table and all exports: header + one row per learner */
+function buildResultRows(cls) {
+  const list = cls.assignments;
+  const header = [
+    "Student", "Overall completion %", "Average score %",
+    ...list.map((a) => a.title),
+    "Areas needing help",
+  ];
+  const rows = cls.learners.map((l) => {
+    const cells = list.map((a) => {
+      const r = a.results.find((x) => x.id === l.id);
+      if (!r) return "—";
+      return r.pct >= 100 && typeof r.score === "number" ? `${r.score}% score` : `${r.pct}% done`;
+    });
+    const weak = weakAreas(list, l.id);
+    const score = learnerAvgScore(list, l.id);
+    return [
+      l.name,
+      String(learnerOverall(list, l.id)),
+      score === null ? "—" : String(score),
+      ...cells,
+      weak.length ? weak.join("; ") : "None",
+    ];
+  });
+  return { header, rows };
+}
+
+function coachResults(list, learners, cls) {
+  const rows = learners
+    .map((l) => {
+      const overall = learnerOverall(list, l.id);
+      const score = learnerAvgScore(list, l.id);
+      const weak = weakAreas(list, l.id);
+      return `<div class="ut-row" data-learner-open="${l.id}" style="grid-template-columns:minmax(0,1.2fr) auto auto minmax(0,1.6fr)">
+        <div class="ut-cell ut-user">
+          <span class="avatar-sm">${esc(l.name.slice(0, 1))}</span>
+          <div><div class="ut-name">${esc(l.name)}</div><div class="ut-sub">${list.length} assignment${list.length === 1 ? "" : "s"}</div></div>
+        </div>
+        <div class="ut-cell"><span class="pill ${scoreClass(overall)}">${overall}% done</span></div>
+        <div class="ut-cell"><span class="pill ${score === null ? "" : scoreClass(score)}">${score === null ? "no scores" : "avg " + score + "%"}</span></div>
+        <div class="ut-cell weak-cell">${
+          weak.length
+            ? weak.map((w) => `<span class="weak-chip">${icon("alert")} ${esc(w)}</span>`).join("")
+            : `<span class="pill synced">${icon("check")} No areas flagged</span>`
+        }</div>
+      </div>`;
+    })
+    .join("");
+
+  return `
+    <div class="panel">
+      <div class="panel-head-row">
+        <div>
+          <h2>Results — ${esc(cls.name)}</h2>
+          <p class="panel-sub" style="margin:0">${esc(cls.school || "")} · per-student results and areas needing help</p>
+        </div>
+        <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+          <button class="btn btn-outline btn-xs" data-export-csv>${icon("download")} CSV</button>
+          <button class="btn btn-outline btn-xs" data-export-xls>${icon("download")} Excel</button>
+          <button class="btn btn-outline btn-xs" data-export-pdf>${icon("download")} PDF</button>
+        </div>
+      </div>
+      ${learners.length
+        ? `<div class="user-table">
+            <div class="ut-row ut-head" style="grid-template-columns:minmax(0,1.2fr) auto auto minmax(0,1.6fr)">
+              <div class="ut-cell">Student</div><div class="ut-cell">Completion</div>
+              <div class="ut-cell">Avg score</div><div class="ut-cell">Areas needing help</div>
+            </div>
+            <div>${rows}</div>
+          </div>`
+        : `<div class="empty-state">No learners in this class yet — enroll some in the Learners tab.</div>`}
+    </div>`;
 }
 
 function typeBadge(type) {
@@ -605,24 +697,41 @@ function coachOverview(list, learners) {
     </div>`;
 }
 
-function coachAssignments(list, learners) {
+function learnerChecklist(learners, checked) {
+  return learners
+    .map(
+      (l) => `<label class="lchk"><input type="checkbox" name="learner" value="${l.id}" ${checked ? "checked" : ""}> ${esc(l.name)}</label>`
+    )
+    .join("");
+}
+
+function coachAssignments(list, learners, cls, classes) {
   const typeOpts = Object.entries(ASSIGN_TYPES)
     .map(([v, t]) => `<option value="${v}">${t.label}</option>`)
     .join("");
-  const learnerChecks = learners
+  const classOpts = classes
     .map(
-      (l) => `<label class="lchk"><input type="checkbox" name="learner" value="${l.id}" checked> ${esc(l.name)}</label>`
+      (c) => `<option value="${c.id}" ${c.id === cls.id ? "selected" : ""}>${esc(c.name)} · ${esc(c.school || "")} (${c.learners.length})</option>`
     )
     .join("");
 
   return `
     <div class="panel">
       <div class="panel-head-row">
-        <div><h2>Assignments</h2><p class="panel-sub" style="margin:0">Assign a lesson, exercise, or quiz — then track it</p></div>
+        <div><h2>Assignments</h2><p class="panel-sub" style="margin:0">Assign a lesson, exercise, or quiz — to a whole class or an individual</p></div>
         <button class="btn btn-primary" data-new-assign-toggle>${icon("plus")} New assignment</button>
       </div>
 
       <form id="assignForm" class="add-user-form" ${coachState.openForm ? "" : "hidden"}>
+        <div class="form-row">
+          <div class="field"><label>Assign to class</label>
+            <select class="select" name="classId" data-assign-class>${classOpts}</select></div>
+          <div class="field"><label>Audience</label>
+            <select class="select" name="audience" data-assign-audience>
+              <option value="all" selected>Whole class — all students</option>
+              <option value="individual">Individual learner(s)</option>
+            </select></div>
+        </div>
         <div class="form-row">
           <div class="field"><label>Type</label>
             <select class="select" name="type">${typeOpts}</select></div>
@@ -635,17 +744,17 @@ function coachAssignments(list, learners) {
           <div class="field"><label>Due</label>
             <input class="input" name="due" placeholder="e.g. in 1 week"></div>
         </div>
-        <div class="field">
-          <label>Assign to <span style="font-weight:400;color:var(--muted-foreground)">(uncheck to exclude a learner)</span></label>
-          <div class="assign-learners">${learnerChecks}</div>
+        <div class="field" data-assign-picker hidden>
+          <label>Pick the learner(s)</label>
+          <div class="assign-learners">${learnerChecklist(cls.learners, false)}</div>
         </div>
         <div class="add-user-actions">
-          <button class="btn btn-primary" type="submit">${icon("send")} Assign to class</button>
+          <button class="btn btn-primary" type="submit">${icon("send")} Assign</button>
           <button class="btn btn-outline" type="button" data-assign-cancel>Cancel</button>
         </div>
       </form>
 
-      <div class="assign-list">${list.map(assignmentRow).join("")}</div>
+      <div class="assign-list">${list.length ? list.map(assignmentRow).join("") : `<div class="empty-state">No assignments in this class yet.</div>`}</div>
     </div>`;
 }
 
@@ -778,10 +887,15 @@ function classSwitcher(classes, cls) {
       <div class="form-row">
         <div class="field"><label>Class / grade name</label>
           <input class="input" name="name" required maxlength="60" placeholder="e.g. Grade 4 — Red"></div>
-        <div class="add-user-actions" style="align-self:end;margin-bottom:1rem">
-          <button class="btn btn-primary" type="submit">${icon("plus")} Create class</button>
-          <button class="btn btn-outline" type="button" data-class-cancel>Cancel</button>
-        </div>
+        <div class="field"><label>School (HPF-supported)</label>
+          <select class="select" name="school" required>
+            <option value="" disabled selected>Select your school</option>
+            ${SCHOOLS.map((s) => `<option>${esc(s)}</option>`).join("")}
+          </select></div>
+      </div>
+      <div class="add-user-actions">
+        <button class="btn btn-primary" type="submit">${icon("plus")} Create class</button>
+        <button class="btn btn-outline" type="button" data-class-cancel>Cancel</button>
       </div>
     </form>`;
 }
@@ -806,6 +920,7 @@ function teacherBody() {
     { id: "overview", label: "Overview" },
     { id: "assignments", label: "Assignments" },
     { id: "learners", label: "Learners" },
+    { id: "results", label: "Results" },
   ]
     .map(
       (t) => `<button class="ksubtab ${t.id === coachState.tab ? "active" : ""}" data-coach-tab="${t.id}">${t.label}</button>`
@@ -841,7 +956,8 @@ function teacherBody() {
   );
 
   let content;
-  if (coachState.tab === "assignments") content = coachAssignments(list, learners);
+  if (coachState.tab === "assignments") content = coachAssignments(list, learners, cls, classes);
+  else if (coachState.tab === "results") content = coachResults(list, learners, cls);
   else if (coachState.tab === "learners")
     content = coachState.learnerId
       ? coachLearnerDetail(list, learners, coachState.learnerId, cls)
@@ -852,7 +968,7 @@ function teacherBody() {
     <div class="panel-head-row" style="margin-bottom:1rem">
       <div>
         <h2 style="font-size:1.15rem">${esc(cls.name)} · Coach</h2>
-        <p class="panel-sub" style="margin:0">Create classes, enroll learners, assign work, and track results</p>
+        <p class="panel-sub" style="margin:0">${icon("school")} ${esc(cls.school || "")} — create classes, enroll learners, assign work, and track results</p>
       </div>
       <button class="btn btn-primary" data-new-assign>${icon("plus")} New assignment</button>
     </div>
@@ -1192,17 +1308,40 @@ export function wireMyDashboard(user, events) {
       coachState.openForm = false;
       renderRole("teacher");
     });
-    body.querySelector("#assignForm")?.addEventListener("submit", (e) => {
+    // assign form: switching the target class rebuilds the learner picker
+    const assignForm = body.querySelector("#assignForm");
+    const classSel = assignForm?.querySelector("[data-assign-class]");
+    const audienceSel = assignForm?.querySelector("[data-assign-audience]");
+    const pickerWrap = assignForm?.querySelector("[data-assign-picker]");
+    classSel?.addEventListener("change", () => {
+      const target = getClasses().find((c) => c.id === classSel.value);
+      if (target && pickerWrap)
+        pickerWrap.querySelector(".assign-learners").innerHTML = learnerChecklist(target.learners, false);
+    });
+    audienceSel?.addEventListener("change", () => {
+      if (pickerWrap) pickerWrap.hidden = audienceSel.value !== "individual";
+    });
+
+    assignForm?.addEventListener("submit", (e) => {
       e.preventDefault();
       const form = e.currentTarget;
       const data = Object.fromEntries(new FormData(form).entries());
-      const ids = [...form.querySelectorAll('input[name="learner"]:checked')].map((c) => c.value);
       if (!(data.title || "").trim()) return toast("Title required", "Give the assignment a title.", "error");
+
+      const classes = getClasses();
+      const target = classes.find((c) => c.id === data.classId) || classes[0];
+      if (!target.learners.length)
+        return toast("Class is empty", `“${target.name}” has no learners yet — enroll some first.`, "error");
+
+      const ids =
+        data.audience === "individual"
+          ? [...form.querySelectorAll('input[name="learner"]:checked')].map((c) => c.value)
+          : target.learners.map((l) => l.id);
       if (!ids.length) return toast("No learners selected", "Pick at least one learner.", "error");
+
       const withScore = data.type !== "lesson";
       const results = ids.map((id) => (withScore ? { id, pct: 0, score: 0 } : { id, pct: 0 }));
-      const { classes, cls } = currentClass();
-      cls.assignments.unshift({
+      target.assignments.unshift({
         id: uid(),
         type: data.type || "lesson",
         title: data.title.trim(),
@@ -1211,8 +1350,13 @@ export function wireMyDashboard(user, events) {
         results,
       });
       saveClasses(classes);
+      coachState.classId = target.id;
       coachState.openForm = false;
-      toast("Assignment created", `“${data.title.trim()}” assigned to ${ids.length} learner${ids.length === 1 ? "" : "s"}.`, "success");
+      toast(
+        "Assignment created",
+        `“${data.title.trim()}” assigned to ${data.audience === "individual" ? `${ids.length} learner${ids.length === 1 ? "" : "s"}` : `the whole of ${target.name}`}.`,
+        "success"
+      );
       renderRole("teacher");
     });
     body.querySelectorAll("[data-learner-open]").forEach((row) =>
@@ -1249,12 +1393,15 @@ export function wireMyDashboard(user, events) {
     });
     body.querySelector("#newClassForm")?.addEventListener("submit", (e) => {
       e.preventDefault();
-      const name = (new FormData(e.currentTarget).get("name") || "").trim();
+      const fd = new FormData(e.currentTarget);
+      const name = (fd.get("name") || "").trim();
+      const school = fd.get("school") || "";
       if (!name) return toast("Name required", "Give the class a name, e.g. Grade 4 — Red.", "error");
+      if (!school) return toast("School required", "Pick the HPF-supported school this class belongs to.", "error");
       const classes = getClasses();
       if (classes.some((c) => c.name.toLowerCase() === name.toLowerCase()))
         return toast("Duplicate class", `A class called “${name}” already exists.`, "error");
-      const cls = { id: uid(), name, learners: [], assignments: [] };
+      const cls = { id: uid(), name, school, learners: [], assignments: [] };
       classes.push(cls);
       saveClasses(classes);
       coachState.classId = cls.id;
@@ -1313,6 +1460,57 @@ export function wireMyDashboard(user, events) {
         renderRole("teacher");
       })
     );
+
+    // coach: downloadable results (CSV / Excel / PDF)
+    const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+    function downloadBlob(blob, filename) {
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = filename;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    }
+    body.querySelector("[data-export-csv]")?.addEventListener("click", () => {
+      const { cls } = currentClass();
+      const { header, rows } = buildResultRows(cls);
+      const q = (v) => `"${String(v).replace(/"/g, '""')}"`;
+      // BOM so Excel opens the UTF-8 CSV with accents intact
+      const csv = "﻿" + [header, ...rows].map((r) => r.map(q).join(",")).join("\r\n");
+      downloadBlob(new Blob([csv], { type: "text/csv;charset=utf-8" }), `${slug(cls.name)}-results.csv`);
+      toast("CSV downloaded", `Results for ${cls.name} (${rows.length} students).`, "success");
+    });
+    body.querySelector("[data-export-xls]")?.addEventListener("click", () => {
+      const { cls } = currentClass();
+      const { header, rows } = buildResultRows(cls);
+      const cell = (v, tag) => `<${tag} style="border:1px solid #ccc;padding:4px 8px">${esc(String(v))}</${tag}>`;
+      const html = `<html><head><meta charset="utf-8"></head><body>
+        <h3>${esc(cls.name)} — ${esc(cls.school || "")} · Results</h3>
+        <table border="1"><tr>${header.map((h) => cell(h, "th")).join("")}</tr>
+        ${rows.map((r) => `<tr>${r.map((v) => cell(v, "td")).join("")}</tr>`).join("")}</table></body></html>`;
+      downloadBlob(new Blob([html], { type: "application/vnd.ms-excel" }), `${slug(cls.name)}-results.xls`);
+      toast("Excel downloaded", `Results for ${cls.name} (${rows.length} students).`, "success");
+    });
+    body.querySelector("[data-export-pdf]")?.addEventListener("click", () => {
+      const { cls } = currentClass();
+      const { header, rows } = buildResultRows(cls);
+      const w = window.open("", "_blank");
+      if (!w) return toast("Popup blocked", "Allow popups for this site to export PDF.", "error");
+      w.document.write(`<html><head><title>${esc(cls.name)} — Results</title><style>
+        body{font-family:system-ui,sans-serif;padding:24px;color:#111}
+        h1{font-size:18px;margin:0} p{color:#555;margin:4px 0 16px;font-size:13px}
+        table{border-collapse:collapse;width:100%;font-size:12px}
+        th,td{border:1px solid #bbb;padding:5px 8px;text-align:left;vertical-align:top}
+        th{background:#eef3ee}
+        @media print{@page{size:landscape;margin:12mm}}
+      </style></head><body>
+        <h1>Human Practice Foundation — ${esc(cls.name)} results</h1>
+        <p>${esc(cls.school || "")} · ${rows.length} students · generated ${new Date().toLocaleDateString()}</p>
+        <table><tr>${header.map((h) => `<th>${esc(h)}</th>`).join("")}</tr>
+        ${rows.map((r) => `<tr>${r.map((v) => `<td>${esc(String(v))}</td>`).join("")}</tr>`).join("")}</table>
+        <script>window.onload=()=>window.print()</` + `script></body></html>`);
+      w.document.close();
+      toast("PDF export", "Choose “Save as PDF” in the print dialog.", "success");
+    });
 
     // school leader
     body.querySelector("[data-generate-report]")?.addEventListener("click", (e) => {

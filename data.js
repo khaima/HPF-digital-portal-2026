@@ -157,6 +157,18 @@ export const COUNTIES = [
   "Trans Nzoia", "Turkana", "Uasin Gishu", "Vihiga", "Wajir", "West Pokot",
 ];
 
+/* HPF-supported schools (teachers pick one when creating a class) */
+export const SCHOOLS = [
+  "Nyeri Hill Primary School",
+  "Kisumu Central Academy",
+  "Turkana Star School",
+  "Mombasa Coast Primary School",
+  "St. Mary's School — Nakuru",
+  "Kakamega Forest Primary",
+  "Machakos Hills Academy",
+  "Baringo Valley Primary",
+];
+
 /* Field Officer data-collection form: visit types */
 export const VISIT_TYPES = [
   "Monitoring & Evaluation Visit",

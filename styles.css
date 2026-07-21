@@ -1902,6 +1902,31 @@ textarea.input:focus {
   color: var(--primary);
 }
 
+/* "areas needing help" chips in the Results tab */
+.weak-cell {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.weak-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: oklch(48% 0.18 27);
+  background: oklch(62% 0.24 27 / 0.1);
+  border: 1px solid oklch(62% 0.24 27 / 0.25);
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+}
+
+.weak-chip svg {
+  width: 12px;
+  height: 12px;
+}
+
 .kchip-add:hover {
   border-color: var(--primary);
   color: var(--primary);
