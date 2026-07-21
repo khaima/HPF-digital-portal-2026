@@ -14,6 +14,11 @@ import {
 } from "./util.js";
 import { myDashboardMain, wireMyDashboard } from "./dashboards.js";
 
+/* Base path of the deployment ("" on localhost / custom domains,
+   "/<repo>" on GitHub Pages project sites). Derived from this module's URL
+   so the same build runs anywhere. */
+const BASE = new URL(".", import.meta.url).pathname.replace(/\/$/, "");
+
 /* ------------------------------------------------------------ storage keys */
 const K_USERS = "hpf_users";
 const K_SESSION = "hpf_session";
@@ -226,7 +231,7 @@ function pageHome() {
         </div>
         <div class="hero-media">
           <div class="hero-frame">
-            <img src="/assets/hero-classroom.jpg" width="1024" height="1024"
+            <img src="${BASE}/assets/hero-classroom.jpg" width="1024" height="1024"
               alt="Human Practice Foundation teacher with young learners in a Kenyan classroom" />
           </div>
           <div class="hero-float">
@@ -640,10 +645,12 @@ function titleFor(path) {
 }
 
 function render() {
-  let path = location.pathname.replace(/\/+$/, "") || "/";
+  let path = location.pathname;
+  if (BASE && path.startsWith(BASE)) path = path.slice(BASE.length);
+  path = path.replace(/\/+$/, "") || "/";
   // login-gated routes redirect to /auth, like the original portal
   if ((path === "/field-officer" || path === "/dashboard") && !Auth.isAuthed()) {
-    history.replaceState({}, "", "/auth");
+    history.replaceState({}, "", BASE + "/auth");
     path = "/auth";
   }
   const view = ROUTES[path] || pageNotFound;
@@ -656,7 +663,7 @@ function render() {
 }
 
 function navigate(to) {
-  if (to !== location.pathname) history.pushState({}, "", to);
+  if (BASE + to !== location.pathname) history.pushState({}, "", BASE + to);
   render();
 }
 
@@ -777,7 +784,7 @@ document.addEventListener("click", (e) => {
   const link = e.target.closest("a[data-link]");
   if (link) {
     e.preventDefault();
-    navigate(new URL(link.href).pathname);
+    navigate(link.getAttribute("href"));
     return;
   }
   const logout = e.target.closest("[data-logout]");
