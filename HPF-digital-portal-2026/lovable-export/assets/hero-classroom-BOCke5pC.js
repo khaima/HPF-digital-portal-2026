@@ -1,0 +1,1 @@
+var e=`/assets/hero-classroom-Cd-oehoU.jpg`;export{e as t};

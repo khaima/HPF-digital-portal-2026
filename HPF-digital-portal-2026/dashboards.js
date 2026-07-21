@@ -34,13 +34,13 @@ const ROLE_META = {
     can: ["Take class attendance", "Plan & tick off lessons", "Grade assessments"],
   },
   field_officer: {
-    icon: "mapPin",
+    icon: "clipboard",
     tagline: "Collect field data",
     blurb: "Log school visits, sync monitoring reports, and track the schools you support.",
     can: ["Log school visits", "Sync field reports", "Track assigned schools"],
   },
   school_leader: {
-    icon: "school",
+    icon: "sparkles",
     tagline: "Lead your school",
     blurb: "Watch your whole-school KPIs, coach your staff, and report on progress.",
     can: ["Track school KPIs", "Review staff performance", "Generate term reports"],
@@ -69,30 +69,13 @@ function countNum(count, suffix = "", compact = false, cls = "") {
   } data-suffix="${esc(suffix)}">0${esc(suffix)}</span>`;
 }
 
-function trendBadge(trend) {
-  if (typeof trend !== "number" || trend === 0) return "";
-  const up = trend > 0;
-  return `<span class="trend ${up ? "up" : "down"}" title="vs last period">
-    ${icon(up ? "trendingUp" : "trendingDown")} ${up ? "+" : ""}${trend}%</span>`;
-}
-
 function statTiles(stats) {
   return `<div class="stat-row">${stats
     .map(
       (s) => `<div class="stat-tile">
         <div class="st-label">${icon(s.icon)} ${esc(s.label)}</div>
-        <div class="st-num">${countNum(s.count, s.suffix, s.compact)}${trendBadge(s.trend)}</div>
+        <div class="st-num">${countNum(s.count, s.suffix, s.compact)}</div>
       </div>`
-    )
-    .join("")}</div>`;
-}
-
-/* smart-insight strip: [{ icon, tone: good|warn|bad|"", html }] */
-function insights(items) {
-  if (!items.length) return "";
-  return `<div class="insights">${items
-    .map(
-      (i) => `<div class="insight ${i.tone || ""}">${icon(i.icon || "lightbulb")}<span>${i.html}</span></div>`
     )
     .join("")}</div>`;
 }
@@ -169,7 +152,7 @@ function userManagementPanel(currentUser) {
             <div class="ut-cell ut-actions">
               <button class="icon-btn danger" data-remove-user="${u.id}" title="Remove user" ${
                 isSelf ? "disabled" : ""
-              }>${icon("trash")}</button>
+              }>${icon("logout")}</button>
             </div>
           </div>`;
         })
@@ -277,7 +260,7 @@ function adminBody(ctx) {
         .slice(0, 8)
         .map(
           (e) => `<div class="submission">
-            <span class="s-icon">${icon(e.type === "signup" ? "plus" : "login")}</span>
+            <span class="s-icon">${icon(e.type === "signup" ? "users" : "logout")}</span>
             <div>
               <div class="s-title">${esc(e.name || e.identifier)}</div>
               <div class="s-meta">${e.type === "signup" ? "New signup" : "Login"} ·
@@ -291,33 +274,8 @@ function adminBody(ctx) {
 
   const totalRoles = d.roleBreakdown.reduce((a, b) => a + b.value, 0);
 
-  // computed insights: busiest day, week-over-day delta, top role share
-  const peak = Math.max(...d.weekly);
-  const peakDay = DAYS[d.weekly.indexOf(peak)];
-  const prev = d.weekly[d.weekly.length - 2] || 1;
-  const delta = Math.round(((d.weekly[d.weekly.length - 1] - prev) / prev) * 100);
-  const topRole = d.roleBreakdown.reduce((a, b) => (b.value > a.value ? b : a));
-  const signupsToday = events.filter((e) => e.type === "signup" && Date.now() - e.at < 864e5).length;
-  const smart = insights([
-    {
-      icon: "trendingUp", tone: delta >= 0 ? "good" : "bad",
-      html: `Logins are <strong>${delta >= 0 ? "up " + delta : "down " + Math.abs(delta)}%</strong> vs yesterday — busiest day this week was <strong>${peakDay}</strong> (${peak}).`,
-    },
-    {
-      icon: "users", tone: "",
-      html: `<strong>${topRole.label}</strong> are your largest group — <strong>${Math.round((topRole.value / totalRoles) * 100)}%</strong> of all ${totalRoles.toLocaleString()} accounts.`,
-    },
-    {
-      icon: "inbox", tone: signupsToday ? "warn" : "",
-      html: signupsToday
-        ? `<strong>${signupsToday} new signup${signupsToday === 1 ? "" : "s"}</strong> in the last 24h — review them in the inbox below.`
-        : `No new signups in the last 24h. Invite links can be shared from <strong>User management</strong>.`,
-    },
-  ]);
-
   return `
     ${statTiles(d.stats)}
-    ${smart}
     <div class="notice">${icon("info")}
       <span>Every login and signup across the portal is pushed to
       <strong>patrick@humanpractice.org</strong> and logged in the repository below.</span>
@@ -350,7 +308,7 @@ function adminBody(ctx) {
       <div>${d.activity
         .map(
           (a) => `<div class="submission">
-            <span class="s-icon">${icon("activity")}</span>
+            <span class="s-icon">${icon("sparkles")}</span>
             <div><div class="s-title">${esc(a.who)}</div>
               <div class="s-meta">${esc(a.act)} · ${esc(ROLE_LABEL[a.role] || a.role)}</div></div>
           </div>`
@@ -362,26 +320,6 @@ function adminBody(ctx) {
 function learnerBody() {
   const d = DASH.learner;
   const k = KOLIBRI.learner;
-
-  // computed insights: nearly-done resource, weakest course, streak nudge
-  const inProgress = k.continue.filter((r) => r.progress > 0 && r.progress < 100);
-  const almostDone = inProgress.sort((a, b) => b.progress - a.progress)[0];
-  const weakest = [...d.courses].sort((a, b) => a.progress - b.progress)[0];
-  const streak = d.stats.find((s) => s.label === "Day streak")?.count || 0;
-  const smart = insights([
-    almostDone && {
-      icon: "target", tone: "good",
-      html: `You're <strong>${100 - almostDone.progress}% away</strong> from finishing “<strong>${esc(almostDone.title)}</strong>” — a quick session will complete it.`,
-    },
-    weakest && {
-      icon: "lightbulb", tone: "warn",
-      html: `<strong>${esc(weakest.name)}</strong> is your least-advanced course (${weakest.progress}%). Try one lesson today to keep it moving.`,
-    },
-    {
-      icon: "flame", tone: "",
-      html: `Your streak is <strong>${streak} days</strong> — learn anything today to make it ${streak + 1}.`,
-    },
-  ].filter(Boolean));
 
   const classCards = k.classes
     .map(
@@ -404,7 +342,6 @@ function learnerBody() {
 
   return `
     ${statTiles(d.stats)}
-    ${smart}
     ${subTabs(
       [
         { id: "home", label: "Home" },
@@ -564,7 +501,7 @@ function coachOverview(list, learners) {
       <p class="panel-sub">Recent learner activity</p>
       <div>${KOLIBRI.coach.activity
         .map(
-          (a) => `<div class="submission"><span class="s-icon">${icon("activity")}</span>
+          (a) => `<div class="submission"><span class="s-icon">${icon("sparkles")}</span>
             <div><div class="s-title">${esc(a.who)}</div>
             <div class="s-meta">${esc(a.what)} · ${esc(a.when)}</div></div></div>`
         )
@@ -721,27 +658,6 @@ function teacherBody() {
     )
     .join("")}</div>`;
 
-  // computed insights: at-risk learners, weakest assignment, top performer
-  const atRisk = learners.filter((l) => learnerOverall(list, l.id) < 70);
-  const weakestA = [...list].sort((a, b) => assignmentCompletion(a) - assignmentCompletion(b))[0];
-  const top = [...learners].sort((a, b) => learnerOverall(list, b.id) - learnerOverall(list, a.id))[0];
-  const smart = insights([
-    atRisk.length
-      ? {
-          icon: "alert", tone: "bad",
-          html: `<strong>${atRisk.length} learner${atRisk.length === 1 ? " is" : "s are"} at risk</strong> (below 70%): ${atRisk.map((l) => esc(l.name.split(" ")[0])).join(", ")} — check the Learners tab.`,
-        }
-      : { icon: "check", tone: "good", html: `<strong>No learners at risk</strong> — everyone is at 70% completion or better.` },
-    weakestA && {
-      icon: "clipboard", tone: assignmentCompletion(weakestA) < 50 ? "warn" : "",
-      html: `“<strong>${esc(weakestA.title)}</strong>” has the lowest class completion (<strong>${assignmentCompletion(weakestA)}%</strong>) — consider a reminder or revision session.`,
-    },
-    top && {
-      icon: "award", tone: "good",
-      html: `<strong>${esc(top.name)}</strong> leads the class at <strong>${learnerOverall(list, top.id)}%</strong> overall completion.`,
-    },
-  ].filter(Boolean));
-
   let content;
   if (coachState.tab === "assignments") content = coachAssignments(list, learners);
   else if (coachState.tab === "learners")
@@ -759,40 +675,14 @@ function teacherBody() {
       <button class="btn btn-primary" data-new-assign>${icon("plus")} New assignment</button>
     </div>
     ${metricTiles}
-    ${smart}
     ${tabBar}
     <div>${content}</div>`;
 }
 
 function fieldOfficerBody() {
   const d = DASH.field_officer;
-
-  // computed insights: priority visit, unsynced reports, weekly pace
-  const priority = [...d.schools].sort((a, b) => a.health - b.health)[0];
-  const unsynced = d.stats.find((s) => s.label === "Reports synced");
-  const visits = d.stats.find((s) => s.label === "Visits this month");
-  const backlog = visits && unsynced ? visits.count - unsynced.count : 0;
-  const openTasks = d.tasks.filter((t) => !t.done).length;
-  const smart = insights([
-    priority && {
-      icon: "alert", tone: priority.health < 60 ? "bad" : "warn",
-      html: `<strong>${esc(priority.name)}</strong> has the lowest school-health score (<strong>${priority.health}%</strong>) — schedule it as your next visit.`,
-    },
-    {
-      icon: "cloud", tone: backlog > 0 ? "warn" : "good",
-      html: backlog > 0
-        ? `<strong>${backlog} report${backlog === 1 ? "" : "s"} not yet synced</strong> — connect to sync before your next field day.`
-        : `All field reports are synced — you're fully up to date.`,
-    },
-    {
-      icon: "clipboard", tone: "",
-      html: `<strong>${openTasks} open task${openTasks === 1 ? "" : "s"}</strong> today — tick them off in the Field tasks panel.`,
-    },
-  ].filter(Boolean));
-
   return `
     ${statTiles(d.stats)}
-    ${smart}
     <div class="dash-grid">
       <div class="panel">
         <h2>Assigned schools</h2>
@@ -829,38 +719,15 @@ function fieldOfficerBody() {
 
 function schoolLeaderBody() {
   const d = DASH.school_leader;
-
-  // computed insights: strongest/weakest grade, attendance trend, top teacher
-  const best = d.grades.reduce((a, b) => (b.value > a.value ? b : a));
-  const worst = d.grades.reduce((a, b) => (b.value < a.value ? b : a));
-  const att = d.weekly;
-  const attDelta = att[att.length - 1] - att[0];
-  const topT = d.teachers.reduce((a, b) => (b.rating > a.rating ? b : a));
-  const smart = insights([
-    {
-      icon: "lightbulb", tone: "warn",
-      html: `<strong>${esc(worst.label)}</strong> is your weakest grade (${worst.value}%) — <strong>${best.value - worst.value} points</strong> behind ${esc(best.label)}. Consider targeted coaching there.`,
-    },
-    {
-      icon: attDelta >= 0 ? "trendingUp" : "trendingDown", tone: attDelta >= 0 ? "good" : "bad",
-      html: `Attendance is <strong>${attDelta >= 0 ? "up" : "down"} ${Math.abs(attDelta)} point${Math.abs(attDelta) === 1 ? "" : "s"}</strong> across the week, ending at <strong>${att[att.length - 1]}%</strong>.`,
-    },
-    {
-      icon: "star", tone: "good",
-      html: `<strong>${esc(topT.name)}</strong> (${esc(topT.subject)}) is your top-rated teacher at <strong>★ ${topT.rating}</strong> — a great peer-coaching lead.`,
-    },
-  ]);
-
   return `
     <div class="panel-head-row" style="margin-bottom:1.25rem">
       <div>
         <h2 style="font-size:1.15rem">School overview</h2>
         <p class="panel-sub" style="margin:0">Your whole-school snapshot for this term</p>
       </div>
-      <button class="btn btn-primary" data-generate-report>${icon("download")} Generate term report</button>
+      <button class="btn btn-primary" data-generate-report>${icon("file")} Generate term report</button>
     </div>
     ${statTiles(d.stats)}
-    ${smart}
     <div class="dash-grid">
       <div class="panel">
         <h2>Performance by grade</h2>

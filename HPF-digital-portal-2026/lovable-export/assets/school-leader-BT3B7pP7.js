@@ -1,0 +1,1 @@
+import{a as e}from"./client-D85HcOvy.js";import{t}from"./role-home-DhuXsxdm.js";var n=e(),r=()=>(0,n.jsx)(t,{role:`school_leader`});export{r as component};

@@ -72,13 +72,6 @@ img {
   display: block;
 }
 
-/* sane default for the inline icon set — specific components override */
-svg {
-  width: 16px;
-  height: 16px;
-  flex: none;
-}
-
 ::selection {
   background: oklch(55% 0.22 264 / 0.2);
 }
@@ -1090,122 +1083,23 @@ textarea.input:focus {
 .stat-tile {
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 1rem 1.15rem;
+  padding: 1.25rem 1.4rem;
   background: var(--card);
 }
 
 .stat-tile .st-label {
-  font-size: 0.78rem;
+  font-size: 0.82rem;
   color: var(--muted-foreground);
   display: flex;
   align-items: center;
   gap: 0.4rem;
 }
 
-.stat-tile .st-label svg {
-  width: 14px;
-  height: 14px;
-  color: var(--primary);
-}
-
 .stat-tile .st-num {
-  font-size: 1.5rem;
-  font-weight: 700;
+  font-size: 1.8rem;
+  font-weight: 800;
   letter-spacing: -0.02em;
-  margin-top: 0.3rem;
-  display: flex;
-  align-items: baseline;
-  gap: 0.5rem;
-}
-
-/* trend badge inside a stat tile */
-.trend {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.2rem;
-  font-size: 0.72rem;
-  font-weight: 600;
-  padding: 0.1rem 0.45rem;
-  border-radius: 999px;
-}
-
-.trend svg {
-  width: 12px;
-  height: 12px;
-}
-
-.trend.up {
-  color: oklch(45% 0.12 155);
-  background: oklch(68% 0.17 155 / 0.14);
-}
-
-.trend.down {
-  color: oklch(48% 0.18 27);
-  background: oklch(62% 0.24 27 / 0.12);
-}
-
-/* smart-insight cards */
-.insights {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 0.75rem;
-  margin-bottom: 1.5rem;
-}
-
-.insight {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.65rem;
-  border-radius: 16px;
-  padding: 0.8rem 0.95rem;
-  font-size: 0.85rem;
-  line-height: 1.35;
-  background: var(--muted);
-  border: 1px solid var(--border);
-}
-
-.insight svg {
-  width: 15px;
-  height: 15px;
-  margin-top: 0.1rem;
-  color: var(--primary);
-}
-
-.insight strong {
-  font-weight: 600;
-}
-
-.insight.good {
-  background: oklch(68% 0.17 155 / 0.1);
-  border-color: oklch(68% 0.17 155 / 0.3);
-}
-
-.insight.good svg {
-  color: oklch(50% 0.14 155);
-}
-
-.insight.warn {
-  background: oklch(78% 0.15 75 / 0.12);
-  border-color: oklch(78% 0.15 75 / 0.4);
-}
-
-.insight.warn svg {
-  color: oklch(55% 0.13 65);
-}
-
-.insight.bad {
-  background: oklch(62% 0.24 27 / 0.08);
-  border-color: oklch(62% 0.24 27 / 0.25);
-}
-
-.insight.bad svg {
-  color: oklch(52% 0.2 27);
-}
-
-@media (max-width: 900px) {
-  .insights {
-    grid-template-columns: 1fr;
-  }
+  margin-top: 0.35rem;
 }
 
 .dash-grid {
@@ -1219,11 +1113,11 @@ textarea.input:focus {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--card);
-  padding: 1.35rem;
+  padding: 1.6rem;
 }
 
 .panel h2 {
-  font-size: 1.05rem;
+  font-size: 1.15rem;
   font-weight: 700;
 }
 
@@ -1531,18 +1425,18 @@ textarea.input:focus {
 /* role capability banner */
 .role-banner {
   display: flex;
-  gap: 1rem;
+  gap: 1.1rem;
   align-items: flex-start;
   background: linear-gradient(120deg, var(--accent), var(--muted));
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 1.1rem 1.25rem;
-  margin-bottom: 1.25rem;
+  padding: 1.4rem 1.5rem;
+  margin-bottom: 1.5rem;
 }
 
 .rb-icon {
-  width: 40px;
-  height: 40px;
+  width: 48px;
+  height: 48px;
   border-radius: 0.8rem;
   background: var(--primary);
   color: var(--primary-foreground);
@@ -1553,8 +1447,8 @@ textarea.input:focus {
 }
 
 .rb-icon svg {
-  width: 20px;
-  height: 20px;
+  width: 24px;
+  height: 24px;
 }
 
 .rb-tagline {

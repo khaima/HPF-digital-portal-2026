@@ -174,10 +174,10 @@ export const VISIT_TYPES = [
 export const DASH = {
   admin: {
     stats: [
-      { label: "Total users", count: 1284, suffix: "", icon: "users", trend: 4.2 },
-      { label: "Active schools", count: 32, suffix: "", icon: "school", trend: 6.7 },
-      { label: "Login requests (today)", count: 148, suffix: "", icon: "inbox", trend: 64 },
-      { label: "Learners reached", count: 10000, suffix: "+", compact: true, icon: "trendingUp", trend: 12 },
+      { label: "Total users", count: 1284, suffix: "", icon: "users" },
+      { label: "Active schools", count: 32, suffix: "", icon: "graduation" },
+      { label: "Login requests (today)", count: 148, suffix: "", icon: "cloud" },
+      { label: "Learners reached", count: 10000, suffix: "+", compact: true, icon: "sparkles" },
     ],
     roleBreakdown: [
       { label: "Learners", value: 820, color: "oklch(52% 0.14 148)" },
@@ -199,9 +199,9 @@ export const DASH = {
   learner: {
     stats: [
       { label: "Courses enrolled", count: 6, suffix: "", icon: "book" },
-      { label: "Lessons completed", count: 48, suffix: "", icon: "check", trend: 14 },
-      { label: "Day streak", count: 12, suffix: "", icon: "flame", trend: 9 },
-      { label: "Badges earned", count: 9, suffix: "", icon: "award", trend: 2 },
+      { label: "Lessons completed", count: 48, suffix: "", icon: "check" },
+      { label: "Day streak", count: 12, suffix: "", icon: "sparkles" },
+      { label: "Badges earned", count: 9, suffix: "", icon: "graduation" },
     ],
     courses: [
       { name: "Foundational Literacy", progress: 82 },
@@ -242,10 +242,10 @@ export const DASH = {
 
   field_officer: {
     stats: [
-      { label: "Assigned schools", count: 14, suffix: "", icon: "school" },
-      { label: "Visits this month", count: 27, suffix: "", icon: "mapPin", trend: 8 },
-      { label: "Reports synced", count: 24, suffix: "", icon: "cloud", trend: 4 },
-      { label: "Pending reviews", count: 3, suffix: "", icon: "clock", trend: -25 },
+      { label: "Assigned schools", count: 14, suffix: "", icon: "graduation" },
+      { label: "Visits this month", count: 27, suffix: "", icon: "clipboard" },
+      { label: "Reports synced", count: 24, suffix: "", icon: "cloud" },
+      { label: "Pending reviews", count: 3, suffix: "", icon: "clock" },
     ],
     schools: [
       { name: "Nyeri Hill Primary", county: "Nyeri", status: "Visited", health: 86 },
@@ -264,10 +264,10 @@ export const DASH = {
 
   school_leader: {
     stats: [
-      { label: "Enrolled learners", count: 640, suffix: "", icon: "graduation", trend: 3 },
+      { label: "Enrolled learners", count: 640, suffix: "", icon: "graduation" },
       { label: "Teaching staff", count: 28, suffix: "", icon: "users" },
-      { label: "Attendance rate", count: 93, suffix: "%", icon: "userCheck", trend: 2 },
-      { label: "Improvement score", count: 78, suffix: "/100", icon: "trendingUp", trend: 6 },
+      { label: "Attendance rate", count: 93, suffix: "%", icon: "check" },
+      { label: "Improvement score", count: 78, suffix: "/100", icon: "sparkles" },
     ],
     grades: [
       { label: "Grade 4", value: 88 },
