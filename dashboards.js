@@ -30,8 +30,8 @@ const ROLE_META = {
   teacher: {
     icon: "users",
     tagline: "Manage your classes",
-    blurb: "Create classes, enroll learners, assign work, and mark it.",
-    can: ["Create classes & grades", "Enroll learners in a class", "Assign & grade work"],
+    blurb: "Create classes, enroll learners in bulk, add staff, and run live sessions.",
+    can: ["Enroll learners (bulk or one by one)", "Add teachers to your school", "Run live lesson/quiz sessions"],
   },
   field_officer: {
     icon: "mapPin",
@@ -359,9 +359,49 @@ function adminBody(ctx) {
     </div>`;
 }
 
-function learnerBody() {
+/* Live sessions a learner can join: active-session assignments in any class
+   they're enrolled in (matched by their portal-account id). */
+function liveSessionsFor(userId) {
+  const out = [];
+  if (!userId) return out;
+  read(K_CLASSES, []).forEach((c) => {
+    (c.assignments || []).forEach((a) => {
+      if ((a.session || "planned") === "active" && a.results.some((r) => r.id === userId))
+        out.push({ cls: c, a });
+    });
+  });
+  return out;
+}
+
+function liveSessionPanel(userId) {
+  const live = liveSessionsFor(userId);
+  if (!live.length) return "";
+  return `
+    <div class="panel live-panel" style="margin-bottom:1.5rem">
+      <div class="panel-head-row">
+        <div><h2>${icon("radio")} Live now — join your session${live.length === 1 ? "" : "s"}</h2>
+          <p class="panel-sub" style="margin:0">Your teacher has started ${live.length} session${live.length === 1 ? "" : "s"} you can join</p></div>
+      </div>
+      <div class="live-list">${live
+        .map(({ cls, a }) => {
+          const t = ASSIGN_TYPES[a.type] || ASSIGN_TYPES.lesson;
+          return `<div class="live-row">
+            <span class="assign-badge" style="background:${t.color}">${icon(t.icon)}</span>
+            <div class="live-main">
+              <div class="live-title">${esc(a.title)}</div>
+              <div class="live-meta">${t.label} · ${esc(a.detail)} · ${esc(cls.name)} · ${esc(cls.school || "")}</div>
+            </div>
+            <button class="btn btn-primary btn-xs" data-join-session="${a.id}" data-join-title="${esc(a.title)}">${icon("play")} Join</button>
+          </div>`;
+        })
+        .join("")}</div>
+    </div>`;
+}
+
+function learnerBody(ctx) {
   const d = DASH.learner;
   const k = KOLIBRI.learner;
+  const liveHtml = liveSessionPanel(ctx?.user?.id);
 
   // computed insights: nearly-done resource, weakest course, streak nudge
   const inProgress = k.continue.filter((r) => r.progress > 0 && r.progress < 100);
@@ -415,6 +455,7 @@ function learnerBody() {
     )}
 
     <div data-subpanel="home">
+      ${liveHtml}
       <div class="panel">
         <h2>Your classes</h2>
         <p class="panel-sub">Classes your teacher has enrolled you in</p>
@@ -472,6 +513,7 @@ const coachState = {
   classId: null,
   openClassForm: false,
   openLearnerForm: false,
+  openTeacherForm: false,
 };
 
 /* Classes persist in localStorage; the demo class (and any legacy
@@ -758,8 +800,44 @@ function coachAssignments(list, learners, cls, classes) {
         </div>
       </form>
 
-      <div class="assign-list">${list.length ? list.map(assignmentRow).join("") : `<div class="empty-state">No assignments in this class yet.</div>`}</div>
+      <div class="assign-list">${
+        list.length
+          ? list
+              .map(
+                (a) => `<div class="assign-item">${assignmentRow(a)}${sessionBar(a, cls)}</div>`
+              )
+              .join("")
+          : `<div class="empty-state">No assignments in this class yet.</div>`
+      }</div>
     </div>`;
+}
+
+/* session state on an assignment: planned | active | ended (default planned) */
+const sessionOf = (a) => a.session || "planned";
+
+/* the start/end session control + live status shown under each assignment
+   in the Assignments tab. An active session is accessible to learners. */
+function sessionBar(a, cls) {
+  const state = sessionOf(a);
+  const audience =
+    a.results.length >= cls.learners.length && cls.learners.length
+      ? "Whole class"
+      : `${a.results.length} learner${a.results.length === 1 ? "" : "s"}`;
+  const badge =
+    state === "active"
+      ? `<span class="session-badge live">${icon("radio")} Live · learners can join</span>`
+      : state === "ended"
+      ? `<span class="session-badge ended">Session ended</span>`
+      : `<span class="session-badge planned">Planned · not yet live</span>`;
+  const btn =
+    state === "active"
+      ? `<button class="btn btn-outline btn-xs session-end" data-session-toggle="${a.id}">${icon("stop")} End session</button>`
+      : `<button class="btn btn-primary btn-xs" data-session-toggle="${a.id}">${icon("play")} ${state === "ended" ? "Restart" : "Start"} session</button>`;
+  return `<div class="session-bar">
+    <span class="session-audience">${icon("users")} ${audience}</span>
+    ${badge}
+    ${btn}
+  </div>`;
 }
 
 function coachLearnersList(list, learners, cls) {
@@ -801,10 +879,15 @@ function coachLearnersList(list, learners, cls) {
         <div class="form-row">
           <div class="field"><label>Enroll a portal account</label>
             <select class="select" name="userId">${accountOpts}</select>
-            <p class="hint">${accounts.length ? `${accounts.length} learner account${accounts.length === 1 ? "" : "s"} available to enroll.` : "No unenrolled learner accounts — add one by name instead."}</p></div>
-          <div class="field"><label>…or add by name</label>
+            <p class="hint">${accounts.length ? `${accounts.length} learner account${accounts.length === 1 ? "" : "s"} available to enroll.` : "No unenrolled learner accounts — add by name(s) instead."}</p></div>
+          <div class="field"><label>…or add one by name</label>
             <input class="input" name="name" maxlength="60" placeholder="e.g. Amina Hassan">
             <p class="hint">Creates a roster entry without a portal account.</p></div>
+        </div>
+        <div class="field">
+          <label>${icon("list")} …or add many at once (bulk)</label>
+          <textarea class="input" name="bulk" rows="4" placeholder="Paste one learner per line, e.g.&#10;Amina Hassan&#10;Brian Kimani&#10;Catherine Auma"></textarea>
+          <p class="hint">One name per line (commas or semicolons also work). Duplicates are skipped automatically.</p>
         </div>
         <div class="add-user-actions">
           <button class="btn btn-primary" type="submit">${icon("plus")} Add to ${esc(cls.name)}</button>
@@ -972,15 +1055,45 @@ function teacherBody() {
     <div class="panel-head-row" style="margin-bottom:1rem">
       <div>
         <h2 style="font-size:1.15rem">${esc(cls.name)} · Coach</h2>
-        <p class="panel-sub" style="margin:0">${icon("school")} ${esc(cls.school || "")} — create classes, enroll learners, assign work, and track results</p>
+        <p class="panel-sub" style="margin:0">${icon("school")} ${esc(cls.school || "")} — create classes, enroll learners, run sessions, and track results</p>
       </div>
-      <button class="btn btn-primary" data-new-assign>${icon("plus")} New assignment</button>
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+        <button class="btn btn-outline" data-add-teacher-toggle>${icon("userPlus")} Add teacher</button>
+        <button class="btn btn-primary" data-new-assign>${icon("plus")} New assignment</button>
+      </div>
     </div>
+    ${addTeacherForm(cls)}
     ${classSwitcher(classes, cls)}
     ${metricTiles}
     ${smart}
     ${tabBar}
     <div>${content}</div>`;
+}
+
+/* teacher-adds-teacher form — school is mandatory */
+function addTeacherForm(cls) {
+  return `
+    <form id="addTeacherForm" class="add-user-form" ${coachState.openTeacherForm ? "" : "hidden"}>
+      <div class="form-row">
+        <div class="field"><label>Teacher full name</label>
+          <input class="input" name="fullName" required maxlength="80" placeholder="e.g. Grace Achieng"></div>
+        <div class="field"><label>School (required)</label>
+          <select class="select" name="school" required>
+            <option value="" disabled ${SCHOOLS.includes(cls.school) ? "" : "selected"}>Select the school</option>
+            ${SCHOOLS.map((s) => `<option ${s === cls.school ? "selected" : ""}>${esc(s)}</option>`).join("")}
+          </select></div>
+      </div>
+      <div class="form-row">
+        <div class="field"><label>Email</label>
+          <input class="input" name="email" type="email" required placeholder="teacher@example.org"></div>
+        <div class="field"><label>Temporary password</label>
+          <input class="input" name="password" type="password" minlength="6" required placeholder="min. 6 characters"></div>
+      </div>
+      <div class="add-user-actions">
+        <button class="btn btn-primary" type="submit">${icon("userPlus")} Add teacher</button>
+        <button class="btn btn-outline" type="button" data-add-teacher-cancel>Cancel</button>
+      </div>
+    </form>`;
 }
 
 function fieldOfficerBody() {
@@ -1268,6 +1381,15 @@ export function wireMyDashboard(user, events) {
       btn.addEventListener("click", () => toast("Opening class", `“${btn.dataset.class}” lessons & quizzes.`))
     );
 
+    // learner: join a live session started by their teacher
+    body.querySelectorAll("[data-join-session]").forEach((btn) =>
+      btn.addEventListener("click", () => {
+        btn.innerHTML = `${icon("check")} Joined`;
+        btn.disabled = true;
+        toast("Session joined", `You're in “${btn.dataset.joinTitle}”. Work through it before your teacher ends the session.`, "success");
+      })
+    );
+
     // library: channel chips + search filter
     const grid = body.querySelector("[data-library-grid]");
     const chips = [...body.querySelectorAll("[data-channel].kchip")];
@@ -1365,6 +1487,7 @@ export function wireMyDashboard(user, events) {
         title: data.title.trim(),
         detail: (data.detail || "").trim() || (withScore ? "questions" : "resources"),
         due: (data.due || "").trim() || "no due date",
+        session: "planned",
         results,
       });
       saveClasses(classes);
@@ -1443,22 +1566,42 @@ export function wireMyDashboard(user, events) {
       e.preventDefault();
       const data = Object.fromEntries(new FormData(e.currentTarget).entries());
       const { classes, cls } = currentClass();
-      let entry;
+      const has = (name) => cls.learners.some((l) => l.name.toLowerCase() === name.toLowerCase());
+      let added = 0, skipped = 0, lastName = "";
+
+      // 1) enroll a registered portal account
       if (data.userId) {
         const u = read(K_USERS, []).find((x) => x.id === data.userId);
         if (!u) return toast("Account not found", "", "error");
-        entry = { id: u.id, name: u.fullName || u.username, active: "just now", account: true };
-      } else {
-        const name = (data.name || "").trim();
-        if (!name) return toast("Pick an account or type a name", "", "error");
-        if (cls.learners.some((l) => l.name.toLowerCase() === name.toLowerCase()))
-          return toast("Already enrolled", `${name} is already in ${cls.name}.`, "error");
-        entry = { id: uid(), name, active: "just now" };
+        cls.learners.push({ id: u.id, name: u.fullName || u.username, active: "just now", account: true });
+        added++; lastName = u.fullName || u.username;
       }
-      cls.learners.push(entry);
+
+      // 2) single name field
+      const single = (data.name || "").trim();
+      if (single) {
+        if (has(single)) skipped++;
+        else { cls.learners.push({ id: uid(), name: single, active: "just now" }); added++; lastName = single; }
+      }
+
+      // 3) bulk paste — split on newlines, commas or semicolons
+      (data.bulk || "")
+        .split(/[\n,;]+/)
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .forEach((name) => {
+          if (has(name)) { skipped++; return; }
+          cls.learners.push({ id: uid(), name, active: "just now" });
+          added++; lastName = name;
+        });
+
+      if (!added && !skipped) return toast("Nothing to add", "Pick an account, type a name, or paste a list.", "error");
+      if (!added) return toast("All duplicates", `Everyone you listed is already in ${cls.name}.`, "error");
+
       saveClasses(classes);
       coachState.openLearnerForm = false;
-      toast("Learner added", `${entry.name} enrolled in ${cls.name}.`, "success");
+      const msg = added === 1 ? `${lastName} enrolled in ${cls.name}.` : `${added} learners enrolled in ${cls.name}.`;
+      toast("Learners added", skipped ? `${msg} (${skipped} duplicate${skipped === 1 ? "" : "s"} skipped.)` : msg, "success");
       renderRole("teacher");
     });
 
@@ -1475,6 +1618,62 @@ export function wireMyDashboard(user, events) {
         });
         saveClasses(classes);
         toast("Learner removed", l ? `${l.name} removed from ${cls.name}.` : "", "success");
+        renderRole("teacher");
+      })
+    );
+
+    // coach: add another teacher (school is mandatory)
+    body.querySelector("[data-add-teacher-toggle]")?.addEventListener("click", () => {
+      coachState.openTeacherForm = !coachState.openTeacherForm;
+      renderRole("teacher");
+    });
+    body.querySelector("[data-add-teacher-cancel]")?.addEventListener("click", () => {
+      coachState.openTeacherForm = false;
+      renderRole("teacher");
+    });
+    body.querySelector("#addTeacherForm")?.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const data = Object.fromEntries(new FormData(e.currentTarget).entries());
+      const fullName = (data.fullName || "").trim();
+      const email = (data.email || "").trim().toLowerCase();
+      if (!fullName) return toast("Name required", "Enter the teacher's full name.", "error");
+      if (!data.school || !SCHOOLS.includes(data.school))
+        return toast("School required", "You must specify the teacher's school.", "error");
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return toast("Valid email required", "Enter a valid email address.", "error");
+      if ((data.password || "").length < 6) return toast("Weak password", "Min. 6 characters.", "error");
+
+      const users = read(K_USERS, []);
+      if (users.some((u) => (u.email || "").toLowerCase() === email))
+        return toast("Duplicate account", "A user with that email already exists.", "error");
+
+      users.push({
+        id: uid(), fullName, role: "teacher", email,
+        password: data.password, school: data.school, orgType: "", county: "",
+        createdAt: Date.now(),
+      });
+      write(K_USERS, users);
+      coachState.openTeacherForm = false;
+      toast("Teacher added", `${fullName} added as a teacher at ${data.school}.`, "success");
+      renderRole("teacher");
+    });
+
+    // coach: start / end a live session on an assignment
+    body.querySelectorAll("[data-session-toggle]").forEach((btn) =>
+      btn.addEventListener("click", () => {
+        const { classes, cls } = currentClass();
+        const a = cls.assignments.find((x) => x.id === btn.dataset.sessionToggle);
+        if (!a) return;
+        const now = sessionOf(a);
+        if (now === "active") {
+          a.session = "ended";
+          a.endedAt = Date.now();
+          toast("Session ended", `“${a.title}” is closed — learners can no longer join.`, "success");
+        } else {
+          a.session = "active";
+          a.startedAt = Date.now();
+          toast("Session started", `“${a.title}” is now live for ${cls.name} learners.`, "success");
+        }
+        saveClasses(classes);
         renderRole("teacher");
       })
     );

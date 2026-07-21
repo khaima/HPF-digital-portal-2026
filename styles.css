@@ -1942,6 +1942,137 @@ textarea.input:focus {
   height: 12px;
 }
 
+/* ---------------------------------------------------------- sessions */
+.assign-item {
+  border-bottom: 1px solid var(--border);
+}
+
+.assign-item:last-child {
+  border-bottom: none;
+}
+
+.assign-item .assign-row {
+  border-bottom: none;
+}
+
+.session-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  padding: 0 0 0.9rem 0;
+}
+
+.session-audience {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.78rem;
+  color: var(--muted-foreground);
+}
+
+.session-audience svg {
+  width: 13px;
+  height: 13px;
+}
+
+.session-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+}
+
+.session-badge svg {
+  width: 13px;
+  height: 13px;
+}
+
+.session-badge.planned {
+  color: var(--muted-foreground);
+  background: var(--muted);
+}
+
+.session-badge.ended {
+  color: oklch(48% 0.18 27);
+  background: oklch(62% 0.24 27 / 0.1);
+}
+
+.session-badge.live {
+  color: oklch(45% 0.14 155);
+  background: oklch(68% 0.17 155 / 0.15);
+}
+
+.session-badge.live svg {
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+.session-bar .btn-xs {
+  margin-left: auto;
+}
+
+.session-end {
+  color: var(--destructive);
+  border-color: oklch(62% 0.24 27 / 0.4);
+}
+
+/* learner: live-session panel */
+.live-panel {
+  border-color: oklch(68% 0.17 155 / 0.5);
+  background: oklch(68% 0.17 155 / 0.05);
+}
+
+.live-panel h2 {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.live-panel h2 svg {
+  width: 18px;
+  height: 18px;
+  color: oklch(52% 0.14 155);
+}
+
+.live-list {
+  display: grid;
+  gap: 0.6rem;
+  margin-top: 0.5rem;
+}
+
+.live-row {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: 0.7rem;
+  background: var(--card);
+}
+
+.live-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.live-title {
+  font-weight: 600;
+  font-size: 0.92rem;
+}
+
+.live-meta {
+  font-size: 0.78rem;
+  color: var(--muted-foreground);
+}
+
 .kchip-add:hover {
   border-color: var(--primary);
   color: var(--primary);
