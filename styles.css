@@ -1493,6 +1493,32 @@ textarea.input:focus {
   color: oklch(92% 0.03 264);
 }
 
+/* impersonation banner — shown while "in" another user's account */
+.impersonate-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  background: oklch(78% 0.15 75 / 0.15);
+  border: 1px solid oklch(78% 0.15 75 / 0.5);
+  border-radius: var(--radius);
+  padding: 0.85rem 1.1rem;
+  margin-bottom: 1.25rem;
+  font-size: 0.9rem;
+}
+
+.impersonate-banner svg {
+  width: 18px;
+  height: 18px;
+  color: oklch(55% 0.13 65);
+  flex: none;
+}
+
+.impersonate-banner span {
+  flex: 1;
+  min-width: 12rem;
+}
+
 /* role switcher */
 .role-switch {
   display: flex;

@@ -9,9 +9,52 @@ import { esc, timeAgo, runCounters, read, write, toast, uid } from "./util.js";
 
 const K_USERS = "hpf_users";
 const K_SESSION = "hpf_session";
+const K_IMPERSONATE = "hpf_impersonate"; // stores the real user while "in" someone's account
 const ROLE_LABEL = Object.fromEntries(ROLES.map((r) => [r.value, r.label]));
 const DASH_ROLES = ["admin", "learner", "teacher", "field_officer", "school_leader"];
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+/* which role workspaces each role may view via the switcher:
+   admin sees everyone, teacher sees teacher+learner, others only themselves */
+const VIEWABLE = {
+  admin: ["admin", "teacher", "learner", "field_officer", "school_leader"],
+  teacher: ["teacher", "learner"],
+  field_officer: ["field_officer"],
+  school_leader: ["school_leader"],
+  learner: ["learner"],
+};
+
+/* which roles a user is allowed to "enter" (impersonate to help remotely) */
+const CAN_ENTER = {
+  admin: ["admin", "teacher", "learner", "field_officer", "school_leader"],
+  teacher: ["learner"],
+};
+
+/* Enter another user's account: stash the real user, swap the session to the
+   target, and re-render the whole app as them. Used by admins (any user) and
+   teachers (their learners) to assist during a live session. */
+function enterAccount(targetId) {
+  const target = read(K_USERS, []).find((u) => u.id === targetId);
+  if (!target) return toast("Account not found", "", "error");
+  const me = read(K_SESSION, null);
+  const allowed = (CAN_ENTER[me?.role] || []).includes(target.role);
+  if (!allowed) return toast("Not allowed", `You can't enter a ${ROLE_LABEL[target.role] || target.role} account.`, "error");
+  if (!read(K_IMPERSONATE, null)) write(K_IMPERSONATE, me); // keep the original impersonator
+  const { password, ...safe } = target;
+  write(K_SESSION, safe);
+  toast("Entered account", `You're now in ${safe.fullName || safe.username}'s account — helping remotely.`, "success");
+  window.dispatchEvent(new PopStateEvent("popstate"));
+  window.scrollTo(0, 0);
+}
+
+function exitAccount() {
+  const me = read(K_IMPERSONATE, null);
+  if (me) write(K_SESSION, me);
+  localStorage.removeItem(K_IMPERSONATE);
+  toast("Back to your account", me ? `Signed back in as ${me.fullName || me.username}.` : "", "success");
+  window.dispatchEvent(new PopStateEvent("popstate"));
+  window.scrollTo(0, 0);
+}
 
 /* What each role's workspace is for, and what they can do in it. */
 const ROLE_META = {
@@ -167,6 +210,9 @@ function userManagementPanel(currentUser) {
               </select>
             </div>
             <div class="ut-cell ut-actions">
+              <button class="icon-btn" data-enter-account="${u.id}" title="Enter this account" ${
+                isSelf ? "disabled" : ""
+              }>${icon("login")}</button>
               <button class="icon-btn danger" data-remove-user="${u.id}" title="Remove user" ${
                 isSelf ? "disabled" : ""
               }>${icon("trash")}</button>
@@ -1094,7 +1140,10 @@ function coachLearnersList(list, learners, cls) {
         <div class="ut-cell"><div class="hbar-track"><div class="hbar-fill" style="width:${overall}%;background:var(--primary)"></div></div></div>
         <div class="ut-cell"><span class="pill ${scoreClass(overall)}">${overall}%</span></div>
         <div class="ut-cell"><span class="pill ${overall >= 70 ? "synced" : "danger-pill"}">${overall >= 70 ? "On track" : "At risk"}</span></div>
-        <div class="ut-cell ut-actions"><button class="icon-btn danger" data-learner-remove="${l.id}" title="Remove from class">${icon("trash")}</button></div>
+        <div class="ut-cell ut-actions">
+          ${l.account ? `<button class="icon-btn" data-enter-account="${l.id}" title="Enter this learner's account to help">${icon("login")}</button>` : ""}
+          <button class="icon-btn danger" data-learner-remove="${l.id}" title="Remove from class">${icon("trash")}</button>
+        </div>
       </div>`;
     })
     .join("");
@@ -1795,25 +1844,48 @@ export function dashboardBody(role, ctx) {
 
 /* ---------------------------------------------------------- page shell */
 export function myDashboardMain(user, events) {
-  const current = DASH_ROLES.includes(user.role) ? user.role : "admin";
-  const tabs = DASH_ROLES.map(
-    (r) =>
-      `<button class="role-tab ${r === current ? "active" : ""}" data-role="${r}">${ROLE_LABEL[r]}</button>`
-  ).join("");
+  const impersonator = read(K_IMPERSONATE, null);
+  const allowed = VIEWABLE[user.role] || [user.role];
+  const current = allowed.includes(user.role) ? user.role : allowed[0];
+  const tabs = allowed
+    .map(
+      (r) =>
+        `<button class="role-tab ${r === current ? "active" : ""}" data-role="${r}">${ROLE_LABEL[r]}</button>`
+    )
+    .join("");
+  const switcher = allowed.length > 1 ? `<div class="role-switch">${tabs}</div>` : "";
+  const firstName = (user.fullName || user.username || "there").split(" ")[0];
+
+  const intro =
+    allowed.length > 1
+      ? `Signed in as <strong>${esc(ROLE_LABEL[user.role] || user.role)}</strong>. Switch the view below${user.role === "teacher" ? " between your Teacher and Learner workspaces" : ""}.`
+      : `Signed in as <strong>${esc(ROLE_LABEL[user.role] || user.role)}</strong>.`;
+
+  const topBtn = impersonator
+    ? `<button class="btn btn-outline" data-exit-account>${icon("login")} Exit account</button>`
+    : `<button class="btn btn-outline" data-logout>${icon("logout")} Sign out</button>`;
+
+  const banner = impersonator
+    ? `<div class="impersonate-banner">
+        ${icon("userCheck")}
+        <span>You're in <strong>${esc(user.fullName || user.username)}</strong>'s account (${esc(ROLE_LABEL[user.role] || user.role)}), helping remotely as <strong>${esc(impersonator.fullName || impersonator.username)}</strong>.</span>
+        <button class="btn btn-primary btn-xs" data-exit-account>${icon("login")} Exit to your account</button>
+      </div>`
+    : "";
 
   return `
     <section class="dash">
       <div class="container">
+        ${banner}
         <div class="dash-head">
           <div>
             <span class="eyebrow">My Dashboard</span>
-            <h1>Welcome back, ${esc((user.fullName || user.username || "there").split(" ")[0])}</h1>
-            <p>Signed in as <strong>${esc(ROLE_LABEL[user.role] || user.role)}</strong>.
-              Switch the view below to explore each role's workspace.</p>
+            <h1>Welcome back, ${esc(firstName)}</h1>
+            <p>${intro}</p>
           </div>
-          <button class="btn btn-outline" data-logout>${icon("logout")} Sign out</button>
+          ${topBtn}
         </div>
-        <div class="role-switch">${tabs}</div>
+        ${switcher}
         <div id="dashBody">${dashboardBody(current, { user, events })}</div>
       </div>
     </section>`;
@@ -2592,6 +2664,13 @@ export function wireMyDashboard(user, events) {
     wireTasks();
     wireRoleActions();
     if (role === "admin") wireAdmin();
+    // "Enter account" buttons live inside the body (admin table, coach learners)
+    body.querySelectorAll("[data-enter-account]").forEach((btn) =>
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation(); // don't also trigger the row's learner-detail open
+        enterAccount(btn.dataset.enterAccount);
+      })
+    );
     runCounters();
   }
 
@@ -2603,6 +2682,11 @@ export function wireMyDashboard(user, events) {
     void body.offsetWidth; // restart animation
     body.classList.add("fade-in");
   }
+
+  // exit-account buttons (banner + header) live outside the re-rendered body
+  document.querySelectorAll("[data-exit-account]").forEach((btn) =>
+    btn.addEventListener("click", exitAccount)
+  );
 
   tabs.forEach((t) => t.addEventListener("click", () => renderRole(t.dataset.role)));
   const current = tabs.find((t) => t.classList.contains("active"))?.dataset.role || user.role;

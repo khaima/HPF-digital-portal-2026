@@ -82,6 +82,7 @@ const Auth = {
   },
   logout() {
     localStorage.removeItem(K_SESSION);
+    localStorage.removeItem("hpf_impersonate"); // never leave an orphan impersonation
   },
 };
 
