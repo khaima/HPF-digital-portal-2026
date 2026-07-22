@@ -605,7 +605,7 @@ const coachState = {
   classId: null,
   openClassForm: false,
   openLearnerForm: false,
-  openTeacherForm: false,
+  openUserForm: false,
   openAssessForm: false,
   analyzeId: null, // assessment whose analytics panel is expanded
   publishId: null, // assessment whose publish dialog is open
@@ -1512,11 +1512,11 @@ function teacherBody() {
         <p class="panel-sub" style="margin:0">${icon("school")} ${esc(cls.school || "")} — create classes, enroll learners, run sessions, and track results</p>
       </div>
       <div style="display:flex;gap:.5rem;flex-wrap:wrap">
-        <button class="btn btn-outline" data-add-teacher-toggle>${icon("userPlus")} Add teacher</button>
+        <button class="btn btn-outline" data-add-user-toggle>${icon("userPlus")} Add user</button>
         <button class="btn btn-primary" data-new-assign>${icon("plus")} Plan work</button>
       </div>
     </div>
-    ${addTeacherForm(cls)}
+    ${addUserForm(cls)}
     ${classSwitcher(classes, cls)}
     ${metricTiles}
     ${smart}
@@ -1524,28 +1524,37 @@ function teacherBody() {
     <div>${content}</div>`;
 }
 
-/* teacher-adds-teacher form — school is mandatory */
-function addTeacherForm(cls) {
+/* add a user — pick Teacher or Learner, then role-specific fields + password */
+function addUserForm(cls) {
   return `
-    <form id="addTeacherForm" class="add-user-form" ${coachState.openTeacherForm ? "" : "hidden"}>
+    <form id="addUserForm" class="add-user-form" ${coachState.openUserForm ? "" : "hidden"}>
       <div class="form-row">
-        <div class="field"><label>Teacher full name</label>
-          <input class="input" name="fullName" required maxlength="80" placeholder="e.g. Grace Achieng"></div>
-        <div class="field"><label>School (required)</label>
-          <select class="select" name="school" required>
-            <option value="" disabled ${SCHOOLS.includes(cls.school) ? "" : "selected"}>Select the school</option>
-            ${SCHOOLS.map((s) => `<option ${s === cls.school ? "selected" : ""}>${esc(s)}</option>`).join("")}
+        <div class="field"><label>Role</label>
+          <select class="select" name="role" data-adduser-role>
+            <option value="teacher">Teacher</option>
+            <option value="learner">Learner</option>
           </select></div>
+        <div class="field"><label>Full name</label>
+          <input class="input" name="fullName" required maxlength="80" placeholder="e.g. Grace Achieng"></div>
       </div>
       <div class="form-row">
-        <div class="field"><label>Email</label>
-          <input class="input" name="email" type="email" required placeholder="teacher@example.org"></div>
-        <div class="field"><label>Temporary password</label>
+        <div class="field" data-adduser-email><label>Email</label>
+          <input class="input" name="email" type="email" placeholder="teacher@example.org"></div>
+        <div class="field" data-adduser-username hidden><label>Username</label>
+          <input class="input" name="username" maxlength="40" placeholder="e.g. grace_a"></div>
+        <div class="field"><label>Password</label>
           <input class="input" name="password" type="password" minlength="6" required placeholder="min. 6 characters"></div>
       </div>
+      <div class="field" data-adduser-school><label>School (required for teachers)</label>
+        <select class="select" name="school">
+          <option value="" disabled ${SCHOOLS.includes(cls.school) ? "" : "selected"}>Select the school</option>
+          ${SCHOOLS.map((s) => `<option ${s === cls.school ? "selected" : ""}>${esc(s)}</option>`).join("")}
+        </select>
+        <p class="hint" data-adduser-hint>Teachers sign in with email. Learners get a username and are enrolled in <strong>${esc(cls.name)}</strong>.</p>
+      </div>
       <div class="add-user-actions">
-        <button class="btn btn-primary" type="submit">${icon("userPlus")} Add teacher</button>
-        <button class="btn btn-outline" type="button" data-add-teacher-cancel>Cancel</button>
+        <button class="btn btn-primary" type="submit">${icon("userPlus")} Add user</button>
+        <button class="btn btn-outline" type="button" data-add-user-cancel>Cancel</button>
       </div>
     </form>`;
 }
@@ -2090,38 +2099,63 @@ export function wireMyDashboard(user, events) {
       })
     );
 
-    // coach: add another teacher (school is mandatory)
-    body.querySelector("[data-add-teacher-toggle]")?.addEventListener("click", () => {
-      coachState.openTeacherForm = !coachState.openTeacherForm;
+    // coach: add a user — role dropdown toggles the email/username fields
+    body.querySelector("[data-add-user-toggle]")?.addEventListener("click", () => {
+      coachState.openUserForm = !coachState.openUserForm;
       renderRole("teacher");
     });
-    body.querySelector("[data-add-teacher-cancel]")?.addEventListener("click", () => {
-      coachState.openTeacherForm = false;
+    body.querySelector("[data-add-user-cancel]")?.addEventListener("click", () => {
+      coachState.openUserForm = false;
       renderRole("teacher");
     });
-    body.querySelector("#addTeacherForm")?.addEventListener("submit", (e) => {
+    const addUserFormEl = body.querySelector("#addUserForm");
+    const roleSel = addUserFormEl?.querySelector("[data-adduser-role]");
+    roleSel?.addEventListener("change", () => {
+      const learner = roleSel.value === "learner";
+      addUserFormEl.querySelector("[data-adduser-email]").hidden = learner;
+      addUserFormEl.querySelector("[data-adduser-username]").hidden = !learner;
+      const hint = addUserFormEl.querySelector("[data-adduser-hint]");
+      hint.innerHTML = learner
+        ? `Learners sign in with a username and are enrolled in <strong>${esc(currentClass().cls.name)}</strong>. School is optional.`
+        : `Teachers sign in with email. A school is required.`;
+    });
+    addUserFormEl?.addEventListener("submit", (e) => {
       e.preventDefault();
       const data = Object.fromEntries(new FormData(e.currentTarget).entries());
       const fullName = (data.fullName || "").trim();
-      const email = (data.email || "").trim().toLowerCase();
-      if (!fullName) return toast("Name required", "Enter the teacher's full name.", "error");
-      if (!data.school || !SCHOOLS.includes(data.school))
-        return toast("School required", "You must specify the teacher's school.", "error");
-      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return toast("Valid email required", "Enter a valid email address.", "error");
-      if ((data.password || "").length < 6) return toast("Weak password", "Min. 6 characters.", "error");
+      const role = data.role === "learner" ? "learner" : "teacher";
+      if (!fullName) return toast("Name required", "Enter the person's full name.", "error");
+      if ((data.password || "").length < 6) return toast("Weak password", "Password must be at least 6 characters.", "error");
 
       const users = read(K_USERS, []);
-      if (users.some((u) => (u.email || "").toLowerCase() === email))
-        return toast("Duplicate account", "A user with that email already exists.", "error");
 
-      users.push({
-        id: uid(), fullName, role: "teacher", email,
-        password: data.password, school: data.school, orgType: "", county: "",
-        createdAt: Date.now(),
-      });
+      if (role === "teacher") {
+        const email = (data.email || "").trim().toLowerCase();
+        if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return toast("Valid email required", "Teachers sign in with an email.", "error");
+        if (!data.school || !SCHOOLS.includes(data.school)) return toast("School required", "Choose the teacher's school.", "error");
+        if (users.some((u) => (u.email || "").toLowerCase() === email))
+          return toast("Duplicate account", "A user with that email already exists.", "error");
+        users.push({ id: uid(), fullName, role: "teacher", email, password: data.password, school: data.school, orgType: "", county: "", createdAt: Date.now() });
+        write(K_USERS, users);
+        coachState.openUserForm = false;
+        toast("Teacher added", `${fullName} added as a teacher at ${data.school}.`, "success");
+        return renderRole("teacher");
+      }
+
+      // learner: username + password, auto-enrolled in the current class
+      const username = (data.username || "").trim();
+      if (username.length < 3) return toast("Username required", "Learners sign in with a username (3+ characters).", "error");
+      if (users.some((u) => (u.username || "").toLowerCase() === username.toLowerCase()))
+        return toast("Duplicate username", "That username is already taken.", "error");
+      const id = uid();
+      users.push({ id, fullName, role: "learner", username, password: data.password, school: data.school || "", orgType: "", county: "", createdAt: Date.now() });
       write(K_USERS, users);
-      coachState.openTeacherForm = false;
-      toast("Teacher added", `${fullName} added as a teacher at ${data.school}.`, "success");
+      // enroll the new learner account into the current class
+      const { classes, cls } = currentClass();
+      cls.learners.push({ id, name: fullName, active: "just now", account: true });
+      saveClasses(classes);
+      coachState.openUserForm = false;
+      toast("Learner added", `${fullName} created and enrolled in ${cls.name}.`, "success");
       renderRole("teacher");
     });
 
