@@ -2073,6 +2073,89 @@ textarea.input:focus {
   color: var(--muted-foreground);
 }
 
+/* learner: My assignments folder */
+.la-head {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.95rem;
+  font-weight: 700;
+  margin-bottom: 0.6rem;
+}
+
+.la-head svg {
+  width: 15px;
+  height: 15px;
+  color: var(--primary);
+}
+
+.la-list {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.la-row {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  padding: 0.8rem 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: 0.8rem;
+  background: var(--card);
+}
+
+.la-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.la-title {
+  font-weight: 600;
+  font-size: 0.92rem;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.la-meta {
+  font-size: 0.78rem;
+  color: var(--muted-foreground);
+  margin-top: 0.1rem;
+}
+
+.la-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.25rem;
+  flex: none;
+}
+
+.la-pct {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--muted-foreground);
+}
+
+.la-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: oklch(45% 0.14 155);
+  background: oklch(68% 0.17 155 / 0.15);
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+}
+
+.la-live svg {
+  width: 11px;
+  height: 11px;
+}
+
 /* ---------------------------------------------------------- assessment builder */
 .qblock {
   border: 1px solid var(--border);

@@ -418,6 +418,95 @@ function liveSessionPanel(userId) {
     </div>`;
 }
 
+/* Everything a specific learner has been assigned, across their classes:
+   teacher assignments (lessons/exercises/quizzes) they're in, and published
+   assessments targeted at them. Reads the same store the teacher writes, so
+   newly-published work shows up as soon as the learner's dashboard renders. */
+function learnerAssignments(userId) {
+  const assignments = [];
+  const assessments = [];
+  if (!userId) return { assignments, assessments };
+  read(K_CLASSES, []).forEach((c) => {
+    const enrolled = c.learners.some((l) => l.id === userId);
+    (c.assignments || []).forEach((a) => {
+      const result = a.results.find((x) => x.id === userId);
+      if (result) assignments.push({ cls: c, a, result });
+    });
+    (c.assessments || []).forEach((a) => {
+      if (!a.published) return;
+      const targeted = (a.audience || "all") === "all" ? enrolled : (a.targetIds || []).includes(userId);
+      if (!targeted) return;
+      const submission = (a.submissions || []).find((s) => s.learnerId === userId) || null;
+      assessments.push({ cls: c, a, submission });
+    });
+  });
+  return { assignments, assessments };
+}
+
+function learnerAssignmentsFolder(userId) {
+  const { assignments, assessments } = learnerAssignments(userId);
+  const total = assignments.length + assessments.length;
+
+  const assignRows = assignments
+    .map(({ cls, a, result }) => {
+      const t = ASSIGN_TYPES[a.type] || ASSIGN_TYPES.lesson;
+      const st = statusOf(result.pct);
+      const live = (a.session || "planned") === "active";
+      const stLabel = st === "completed" ? "Completed" : st === "in_progress" ? "In progress" : "Not started";
+      const scoreBit = typeof result.score === "number" && result.pct >= 100 ? ` · scored ${result.score}%` : "";
+      return `<div class="la-row">
+        <span class="assign-badge" style="background:${t.color}">${icon(t.icon)}</span>
+        <div class="la-main">
+          <div class="la-title">${esc(a.title)}${live ? ` <span class="la-live">${icon("radio")} live</span>` : ""}</div>
+          <div class="la-meta">${t.label} · ${esc(cls.name)} · Due ${esc(a.due)}${scoreBit}</div>
+          <div class="hbar-track" style="margin-top:.45rem"><div class="hbar-fill" style="width:${result.pct}%;background:var(--primary)"></div></div>
+        </div>
+        <div class="la-side">
+          <span class="pill status-${st}">${stLabel}</span>
+          <span class="la-pct">${result.pct}%</span>
+        </div>
+      </div>`;
+    })
+    .join("");
+
+  const assessRows = assessments
+    .map(({ cls, a, submission }) => {
+      const active = (a.session || "planned") === "active";
+      let side;
+      if (submission) {
+        // taken & auto-marked — show their score
+        side = `<span class="pill ${scoreClass(submission.pct)}">${submission.pct}%</span>
+          <span class="la-pct">${submission.correct}/${submission.total}</span>`;
+      } else if (active) {
+        // open now — let them take it
+        side = `<button class="btn btn-primary btn-xs" data-take-assess="${a.id}" data-take-class="${cls.id}">${icon("clipboard")} Take now</button>`;
+      } else {
+        // published but the session is closed and they never submitted → skipped
+        side = `<span class="pill danger-pill">${icon("alert")} Skipped</span>`;
+      }
+      return `<div class="la-row">
+        <span class="assign-badge" style="background:var(--primary)">${icon("clipboard")}</span>
+        <div class="la-main">
+          <div class="la-title">${esc(a.title)}${active && !submission ? ` <span class="la-live">${icon("radio")} open now</span>` : ""}</div>
+          <div class="la-meta">Assessment · ${a.questions.length} questions · ${esc(cls.name)}${submission ? "" : active ? " · available to take" : " · session closed"}</div>
+        </div>
+        <div class="la-side">${side}</div>
+      </div>`;
+    })
+    .join("");
+
+  return `
+    <div class="panel">
+      <div class="panel-head-row">
+        <div><h2>${icon("clipboard")} My assignments</h2>
+          <p class="panel-sub" style="margin:0">Everything your teacher has assigned to you — ${total} item${total === 1 ? "" : "s"}</p></div>
+      </div>
+      ${total ? "" : `<div class="empty-state">Nothing assigned yet.<br>When your teacher publishes a lesson, quiz, or assessment, it appears here right away.</div>`}
+      ${assignments.length ? `<h3 class="la-head">${icon("book")} Lessons & quizzes</h3><div class="la-list">${assignRows}</div>` : ""}
+      ${assessments.length ? `<h3 class="la-head" style="margin-top:1.5rem">${icon("chartColumn")} Assessments</h3><div class="la-list">${assessRows}</div>` : ""}
+    </div>`;
+}
+
 /* ---------- learner: take an assessment (modal, auto-marked) ---------- */
 function openAssessModal(classId, assessId, userId, onDone) {
   const cls = read(K_CLASSES, []).find((c) => c.id === classId);
@@ -534,20 +623,27 @@ function learnerBody(ctx) {
     )
     .join("");
 
+  const assignFolder = learnerAssignmentsFolder(ctx?.user?.id);
+
   return `
     ${statTiles(d.stats)}
     ${smart}
     ${subTabs(
       [
+        { id: "assignments", label: "Assignments" },
         { id: "home", label: "Home" },
         { id: "library", label: "Library" },
         { id: "bookmarks", label: "Bookmarks" },
       ],
-      "home"
+      "assignments"
     )}
 
-    <div data-subpanel="home">
+    <div data-subpanel="assignments">
       ${liveHtml}
+      ${assignFolder}
+    </div>
+
+    <div data-subpanel="home" hidden>
       <div class="panel">
         <h2>Your classes</h2>
         <p class="panel-sub">Classes your teacher has enrolled you in</p>
