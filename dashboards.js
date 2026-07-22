@@ -884,7 +884,8 @@ function learnerChecklist(learners, checked) {
     .join("");
 }
 
-function coachAssignments(list, learners, cls, classes) {
+/* the Plan workspace form — create a lesson, assignment, or quiz */
+function planForm(cls, classes) {
   const typeOpts = Object.entries(ASSIGN_TYPES)
     .map(([v, t]) => `<option value="${v}">${t.label}</option>`)
     .join("");
@@ -895,47 +896,63 @@ function coachAssignments(list, learners, cls, classes) {
     .join("");
 
   return `
+    <form id="assignForm" class="add-user-form">
+      <div class="form-row">
+        <div class="field"><label>Type</label>
+          <select class="select" name="type">${typeOpts}</select></div>
+        <div class="field"><label>Title</label>
+          <input class="input" name="title" required placeholder="e.g. Fractions — Part 2"></div>
+      </div>
+      <div class="form-row">
+        <div class="field"><label>Assign to class</label>
+          <select class="select" name="classId" data-assign-class>${classOpts}</select></div>
+        <div class="field"><label>Audience</label>
+          <select class="select" name="audience" data-assign-audience>
+            <option value="all" selected>Whole class — all students</option>
+            <option value="individual">Individual learner(s)</option>
+          </select></div>
+      </div>
+      <div class="form-row">
+        <div class="field"><label>Detail</label>
+          <input class="input" name="detail" placeholder="e.g. 4 resources / 10 questions"></div>
+        <div class="field"><label>Due</label>
+          <input class="input" name="due" placeholder="e.g. in 1 week"></div>
+      </div>
+      <div class="field" data-assign-picker hidden>
+        <div class="picker-head">
+          <label style="margin-bottom:0">Pick the learner(s)</label>
+          <label class="lchk select-all-chk"><input type="checkbox" data-select-all> Select all</label>
+        </div>
+        <div class="assign-learners">${learnerChecklist(cls.learners, false)}</div>
+      </div>
+      <div class="add-user-actions">
+        <button class="btn btn-primary" type="submit">${icon("send")} Create & assign</button>
+      </div>
+    </form>`;
+}
+
+/* Plan tab — dedicated workspace to create lessons / assignments / quizzes */
+function coachPlan(cls, classes) {
+  return `
     <div class="panel">
       <div class="panel-head-row">
-        <div><h2>Assignments</h2><p class="panel-sub" style="margin:0">Assign a lesson, exercise, or quiz — to a whole class or an individual</p></div>
-        <button class="btn btn-primary" data-new-assign-toggle>${icon("plus")} New assignment</button>
+        <div>
+          <h2>${icon("clipboard")} Plan work</h2>
+          <p class="panel-sub" style="margin:0">Create a <strong>lesson</strong>, <strong>assignment</strong>, or <strong>quiz</strong> and assign it to a whole class or individual learners. Multiple-choice tests live in the <strong>Assessments</strong> tab.</p>
+        </div>
       </div>
+      ${planForm(cls, classes)}
+    </div>`;
+}
 
-      <form id="assignForm" class="add-user-form" ${coachState.openForm ? "" : "hidden"}>
-        <div class="form-row">
-          <div class="field"><label>Assign to class</label>
-            <select class="select" name="classId" data-assign-class>${classOpts}</select></div>
-          <div class="field"><label>Audience</label>
-            <select class="select" name="audience" data-assign-audience>
-              <option value="all" selected>Whole class — all students</option>
-              <option value="individual">Individual learner(s)</option>
-            </select></div>
-        </div>
-        <div class="form-row">
-          <div class="field"><label>Type</label>
-            <select class="select" name="type">${typeOpts}</select></div>
-          <div class="field"><label>Title</label>
-            <input class="input" name="title" required placeholder="e.g. Fractions — Part 2"></div>
-        </div>
-        <div class="form-row">
-          <div class="field"><label>Detail</label>
-            <input class="input" name="detail" placeholder="e.g. 4 resources / 10 questions"></div>
-          <div class="field"><label>Due</label>
-            <input class="input" name="due" placeholder="e.g. in 1 week"></div>
-        </div>
-        <div class="field" data-assign-picker hidden>
-          <div class="picker-head">
-            <label style="margin-bottom:0">Pick the learner(s)</label>
-            <label class="lchk select-all-chk"><input type="checkbox" data-select-all> Select all</label>
-          </div>
-          <div class="assign-learners">${learnerChecklist(cls.learners, false)}</div>
-        </div>
-        <div class="add-user-actions">
-          <button class="btn btn-primary" type="submit">${icon("send")} Assign</button>
-          <button class="btn btn-outline" type="button" data-assign-cancel>Cancel</button>
-        </div>
-      </form>
-
+/* Assignments tab — track the lessons/assignments/quizzes you've planned */
+function coachAssignments(list, learners, cls, classes) {
+  return `
+    <div class="panel">
+      <div class="panel-head-row">
+        <div><h2>Assignments</h2><p class="panel-sub" style="margin:0">Lessons, exercises & quizzes you've planned — track progress and run sessions</p></div>
+        <button class="btn btn-primary" data-goto-plan>${icon("plus")} Plan work</button>
+      </div>
       <div class="assign-list">${
         list.length
           ? list
@@ -943,7 +960,7 @@ function coachAssignments(list, learners, cls, classes) {
                 (a) => `<div class="assign-item">${assignmentRow(a)}${sessionBar(a, cls)}</div>`
               )
               .join("")
-          : `<div class="empty-state">No assignments in this class yet.</div>`
+          : `<div class="empty-state">No assignments in this class yet. Open the <strong>Plan</strong> tab to create a lesson, assignment, or quiz.</div>`
       }</div>
     </div>`;
 }
@@ -1448,6 +1465,7 @@ function teacherBody() {
 
   const tabBar = `<div class="ksubtabs">${[
     { id: "overview", label: "Overview" },
+    { id: "plan", label: "Plan" },
     { id: "assignments", label: "Assignments" },
     { id: "assessments", label: "Assessments" },
     { id: "learners", label: "Learners" },
@@ -1487,7 +1505,8 @@ function teacherBody() {
   );
 
   let content;
-  if (coachState.tab === "assignments") content = coachAssignments(list, learners, cls, classes);
+  if (coachState.tab === "plan") content = coachPlan(cls, classes);
+  else if (coachState.tab === "assignments") content = coachAssignments(list, learners, cls, classes);
   else if (coachState.tab === "assessments") content = coachAssessments(cls, classes);
   else if (coachState.tab === "results") content = coachResults(list, learners, cls);
   else if (coachState.tab === "learners")
@@ -1504,7 +1523,7 @@ function teacherBody() {
       </div>
       <div style="display:flex;gap:.5rem;flex-wrap:wrap">
         <button class="btn btn-outline" data-add-teacher-toggle>${icon("userPlus")} Add teacher</button>
-        <button class="btn btn-primary" data-new-assign>${icon("plus")} New assignment</button>
+        <button class="btn btn-primary" data-new-assign>${icon("plus")} Plan work</button>
       </div>
     </div>
     ${addTeacherForm(cls)}
@@ -1877,19 +1896,13 @@ export function wireMyDashboard(user, events) {
         renderRole("teacher");
       })
     );
-    body.querySelector("[data-new-assign]")?.addEventListener("click", () => {
-      coachState.tab = "assignments";
-      coachState.openForm = true;
-      renderRole("teacher");
-    });
-    body.querySelector("[data-new-assign-toggle]")?.addEventListener("click", () => {
-      coachState.openForm = !coachState.openForm;
-      renderRole("teacher");
-    });
-    body.querySelector("[data-assign-cancel]")?.addEventListener("click", () => {
-      coachState.openForm = false;
-      renderRole("teacher");
-    });
+    // header "Plan work" and the Assignments-tab "Plan work" both open the Plan tab
+    body.querySelectorAll("[data-new-assign], [data-goto-plan]").forEach((btn) =>
+      btn.addEventListener("click", () => {
+        coachState.tab = "plan";
+        renderRole("teacher");
+      })
+    );
     // assign form: switching the target class rebuilds the learner picker
     const assignForm = body.querySelector("#assignForm");
     const classSel = assignForm?.querySelector("[data-assign-class]");
@@ -1948,9 +1961,9 @@ export function wireMyDashboard(user, events) {
       });
       saveClasses(classes);
       coachState.classId = target.id;
-      coachState.openForm = false;
+      coachState.tab = "assignments"; // jump to the tracking list so they see it land
       toast(
-        "Assignment created",
+        `${ASSIGN_TYPES[data.type]?.label || "Work"} created`,
         `“${data.title.trim()}” assigned to ${data.audience === "individual" ? `${ids.length} learner${ids.length === 1 ? "" : "s"}` : `the whole of ${target.name}`}.`,
         "success"
       );
