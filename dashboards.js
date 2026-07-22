@@ -927,32 +927,24 @@ function planForm(cls, classes) {
       </div>
       <div class="add-user-actions">
         <button class="btn btn-primary" type="submit">${icon("send")} Create & assign</button>
+        <button class="btn btn-outline" type="button" data-assign-cancel>Cancel</button>
       </div>
     </form>`;
 }
 
-/* Plan tab — dedicated workspace to create lessons / assignments / quizzes */
-function coachPlan(cls, classes) {
-  return `
-    <div class="panel">
-      <div class="panel-head-row">
-        <div>
-          <h2>${icon("clipboard")} Plan work</h2>
-          <p class="panel-sub" style="margin:0">Create a <strong>lesson</strong>, <strong>assignment</strong>, or <strong>quiz</strong> and assign it to a whole class or individual learners. Multiple-choice tests live in the <strong>Assessments</strong> tab.</p>
-        </div>
-      </div>
-      ${planForm(cls, classes)}
-    </div>`;
-}
-
-/* Assignments tab — track the lessons/assignments/quizzes you've planned */
+/* Plan & Assign — one flow: plan a lesson/assignment/quiz at the top, then it
+   drops into the list below where you start a session to publish it live. */
 function coachAssignments(list, learners, cls, classes) {
   return `
     <div class="panel">
       <div class="panel-head-row">
-        <div><h2>Assignments</h2><p class="panel-sub" style="margin:0">Lessons, exercises & quizzes you've planned — track progress and run sessions</p></div>
-        <button class="btn btn-primary" data-goto-plan>${icon("plus")} Plan work</button>
+        <div>
+          <h2>${icon("clipboard")} Plan &amp; assign</h2>
+          <p class="panel-sub" style="margin:0">Plan a <strong>lesson</strong>, <strong>assignment</strong>, or <strong>quiz</strong>, then start its session to publish it live to learners — all in one place. MCQ auto-marked tests live in <strong>Assessments</strong>.</p>
+        </div>
+        <button class="btn btn-primary" data-new-assign-toggle>${icon("plus")} ${coachState.openForm ? "Close planner" : "Plan work"}</button>
       </div>
+      ${coachState.openForm ? planForm(cls, classes) : ""}
       <div class="assign-list">${
         list.length
           ? list
@@ -960,7 +952,7 @@ function coachAssignments(list, learners, cls, classes) {
                 (a) => `<div class="assign-item">${assignmentRow(a)}${sessionBar(a, cls)}</div>`
               )
               .join("")
-          : `<div class="empty-state">No assignments in this class yet. Open the <strong>Plan</strong> tab to create a lesson, assignment, or quiz.</div>`
+          : `<div class="empty-state">Nothing planned yet. Click <strong>Plan work</strong> to create a lesson, assignment, or quiz — it'll appear here, ready to publish.</div>`
       }</div>
     </div>`;
 }
@@ -1465,8 +1457,7 @@ function teacherBody() {
 
   const tabBar = `<div class="ksubtabs">${[
     { id: "overview", label: "Overview" },
-    { id: "plan", label: "Plan" },
-    { id: "assignments", label: "Assignments" },
+    { id: "assignments", label: "Plan & Assign" },
     { id: "assessments", label: "Assessments" },
     { id: "learners", label: "Learners" },
     { id: "results", label: "Results" },
@@ -1505,8 +1496,7 @@ function teacherBody() {
   );
 
   let content;
-  if (coachState.tab === "plan") content = coachPlan(cls, classes);
-  else if (coachState.tab === "assignments") content = coachAssignments(list, learners, cls, classes);
+  if (coachState.tab === "assignments") content = coachAssignments(list, learners, cls, classes);
   else if (coachState.tab === "assessments") content = coachAssessments(cls, classes);
   else if (coachState.tab === "results") content = coachResults(list, learners, cls);
   else if (coachState.tab === "learners")
@@ -1896,13 +1886,21 @@ export function wireMyDashboard(user, events) {
         renderRole("teacher");
       })
     );
-    // header "Plan work" and the Assignments-tab "Plan work" both open the Plan tab
-    body.querySelectorAll("[data-new-assign], [data-goto-plan]").forEach((btn) =>
-      btn.addEventListener("click", () => {
-        coachState.tab = "plan";
-        renderRole("teacher");
-      })
-    );
+    // header "Plan work" opens the Plan & Assign tab with the planner form open
+    body.querySelector("[data-new-assign]")?.addEventListener("click", () => {
+      coachState.tab = "assignments";
+      coachState.openForm = true;
+      renderRole("teacher");
+    });
+    // in-tab toggle reveals / hides the planner form
+    body.querySelector("[data-new-assign-toggle]")?.addEventListener("click", () => {
+      coachState.openForm = !coachState.openForm;
+      renderRole("teacher");
+    });
+    body.querySelector("[data-assign-cancel]")?.addEventListener("click", () => {
+      coachState.openForm = false;
+      renderRole("teacher");
+    });
     // assign form: switching the target class rebuilds the learner picker
     const assignForm = body.querySelector("#assignForm");
     const classSel = assignForm?.querySelector("[data-assign-class]");
@@ -1961,7 +1959,8 @@ export function wireMyDashboard(user, events) {
       });
       saveClasses(classes);
       coachState.classId = target.id;
-      coachState.tab = "assignments"; // jump to the tracking list so they see it land
+      coachState.tab = "assignments";
+      coachState.openForm = false; // close the planner; the new item shows in the list below
       toast(
         `${ASSIGN_TYPES[data.type]?.label || "Work"} created`,
         `“${data.title.trim()}” assigned to ${data.audience === "individual" ? `${ids.length} learner${ids.length === 1 ? "" : "s"}` : `the whole of ${target.name}`}.`,
