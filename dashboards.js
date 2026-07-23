@@ -6,6 +6,7 @@
 import { icon } from "./icons.js";
 import { DASH, ROLES, ORG_TYPES, COUNTIES, KOLIBRI, CONTENT_KINDS, SCHOOLS } from "./data.js";
 import { esc, timeAgo, runCounters, read, write, toast, uid } from "./util.js";
+import { adminClient, authMessage } from "./supabase.js";
 
 const K_USERS = "hpf_users";
 const K_SESSION = "hpf_session";
@@ -2287,9 +2288,10 @@ export function wireMyDashboard(user, events) {
         ? `Learners sign in with a username and are enrolled in <strong>${esc(currentClass().cls.name)}</strong>. School is optional.`
         : `Teachers sign in with email. A school is required.`;
     });
-    addUserFormEl?.addEventListener("submit", (e) => {
+    addUserFormEl?.addEventListener("submit", async (e) => {
       e.preventDefault();
-      const data = Object.fromEntries(new FormData(e.currentTarget).entries());
+      const form = e.currentTarget;
+      const data = Object.fromEntries(new FormData(form).entries());
       const fullName = (data.fullName || "").trim();
       const role = data.role === "learner" ? "learner" : "teacher";
       if (!fullName) return toast("Name required", "Enter the person's full name.", "error");
@@ -2301,10 +2303,28 @@ export function wireMyDashboard(user, events) {
         const email = (data.email || "").trim().toLowerCase();
         if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return toast("Valid email required", "Teachers sign in with an email.", "error");
         if (!data.school || !SCHOOLS.includes(data.school)) return toast("School required", "Choose the teacher's school.", "error");
-        if (users.some((u) => (u.email || "").toLowerCase() === email))
-          return toast("Duplicate account", "A user with that email already exists.", "error");
-        users.push({ id: uid(), fullName, role: "teacher", email, password: data.password, school: data.school, orgType: "", county: "", createdAt: Date.now() });
-        write(K_USERS, users);
+
+        // Created on an isolated client: signUp() authenticates the new user on
+        // whichever client issues it, which would otherwise sign the admin out
+        // mid-task.
+        const submit = form.querySelector("[type=submit]");
+        if (submit) submit.disabled = true;
+        const { data: res, error } = await adminClient().auth.signUp({
+          email,
+          password: data.password,
+          options: {
+            data: {
+              full_name: fullName,
+              role: "teacher",
+              school: data.school,
+              username: null, county: null, org_type: null,
+            },
+          },
+        });
+        if (submit) submit.disabled = false;
+        if (error) return toast("Could not add teacher", authMessage(error), "error");
+        if (!res.user) return toast("Could not add teacher", "No account was returned.", "error");
+
         coachState.openUserForm = false;
         toast("Teacher added", `${fullName} added as a teacher at ${data.school}.`, "success");
         return renderRole("teacher");

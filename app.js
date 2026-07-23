@@ -6,13 +6,14 @@
 import { icon } from "./icons.js";
 import {
   PORTAL_CARDS, CURRICULUM, RESOURCES, ASSESSMENT, IMPACT,
-  ROLES, ORG_TYPES, COUNTIES, VISIT_TYPES,
+  ROLES, ORG_TYPES, COUNTIES, VISIT_TYPES, HERO_SLIDES,
 } from "./data.js";
 import {
   $, $$, read, write, esc, initials, uid,
   startGlobalCounters, runCounters, toast,
 } from "./util.js";
 import { myDashboardMain, wireMyDashboard } from "./dashboards.js";
+import { supabase, adminClient, authMessage } from "./supabase.js";
 
 /* Base path of the deployment ("" on localhost / custom domains,
    "/<repo>" on GitHub Pages project sites). Derived from this module's URL
@@ -26,11 +27,46 @@ const K_SUBS = "hpf_submissions";
 const K_EVENTS = "hpf_login_events"; // dummy repository of all login requests
 const ADMIN_EMAIL = "patrick@humanpractice.org";
 
+/* ------------------------------------------------------------ user shape
+   Views read camelCase (user.fullName, user.orgType); the profiles table is
+   snake_case. Translate once, here. */
+const toUiUser = (row, fallbackEmail = "") => ({
+  id: row.id,
+  fullName: row.full_name || "",
+  role: row.role || "learner",
+  email: row.email || fallbackEmail,
+  username: row.username || "",
+  school: row.school || "",
+  orgType: row.org_type || "",
+  county: row.county || "",
+  createdAt: row.created_at ? Date.parse(row.created_at) : Date.now(),
+});
+
+/* Profile of the signed-in Supabase user, refreshed by onAuthStateChange.
+   Cached so Auth.current() can stay synchronous for the many views that call
+   it inline while building HTML. */
+let supaUser = null;
+
+async function refreshProfile(session) {
+  if (!session?.user) { supaUser = null; return null; }
+  const { data, error } = await supabase
+    .from("profiles").select("*").eq("id", session.user.id).maybeSingle();
+  if (error || !data) { supaUser = null; return null; }
+  supaUser = toUiUser(data, session.user.email);
+  return supaUser;
+}
+
+/* Learners are not Supabase accounts (see supabase/SETUP.md): they have no JWT,
+   so every RLS policy — all granted `to authenticated` — denies them. Their
+   accounts and session stay in localStorage exactly as before. */
+const isLearnerRole = (role) => role === "learner";
+
 /* ------------------------------------------------------------ login repository
-   Every login / signup is stored here and "pushed" to the admin inbox. */
+   Every login / signup is recorded for the admin inbox: in login_events for
+   real accounts, in localStorage for learners. */
 const Repo = {
   events: () => read(K_EVENTS, []),
-  record(user, type) {
+  recordLocal(user, type) {
     const events = Repo.events();
     events.unshift({
       id: uid(),
@@ -44,66 +80,115 @@ const Repo = {
     });
     write(K_EVENTS, events.slice(0, 200));
   },
+  async record(user, type) {
+    if (isLearnerRole(user.role)) return Repo.recordLocal(user, type);
+    // Best-effort: a failed audit insert must never block a valid sign-in.
+    const { error } = await supabase.from("login_events").insert({
+      type,
+      name: user.fullName || user.email || "Unknown",
+      identifier: user.email || user.username || "",
+      role: user.role,
+      delivered_to: ADMIN_EMAIL,
+    });
+    if (error) console.warn("login_events insert failed:", error.message);
+  },
 };
 
-/* ------------------------------------------------------------ auth store */
+/* ------------------------------------------------------------ auth store
+   Staff (teacher / school_leader / field_officer / admin) authenticate against
+   Supabase. Learners authenticate against localStorage. Auth.current() returns
+   whichever applies — K_SESSION also carries admin impersonation, so it wins. */
 const Auth = {
   users: () => read(K_USERS, []),
-  current: () => read(K_SESSION, null),
-  isAuthed: () => !!read(K_SESSION, null),
-  register(data) {
+  current: () => read(K_SESSION, null) || supaUser,
+  isAuthed: () => !!Auth.current(),
+
+  async register(data) {
+    if (isLearnerRole(data.role)) return Auth.registerLearner(data);
+
+    const { data: res, error } = await supabase.auth.signUp({
+      email: data.email,
+      password: data.password,
+      // Keys read by handle_new_user() in supabase/schema.sql. `role` is
+      // clamped server-side by patch-01-security.sql — admin is never granted
+      // from here, whatever the client sends.
+      options: {
+        data: {
+          full_name: data.fullName || "",
+          username: data.username || null,
+          role: data.role,
+          school: data.school || null,
+          county: data.county || null,
+          org_type: data.orgType || null,
+        },
+      },
+    });
+    if (error) throw new Error(authMessage(error));
+    if (!res.session) {
+      throw new Error(
+        "Account created, but it needs email confirmation before you can sign in. " +
+        "An HPF admin should switch off “Confirm email” in the Supabase dashboard."
+      );
+    }
+    const user = await refreshProfile(res.session);
+    if (!user) throw new Error("Account created, but the profile could not be loaded. Please sign in.");
+    await Repo.record(user, "signup");
+    return user;
+  },
+
+  /* unchanged localStorage path, learners only */
+  registerLearner(data) {
     const users = Auth.users();
-    const key = (data.email || data.username || "").toLowerCase();
-    if (users.some((u) => (u.email || u.username || "").toLowerCase() === key)) {
+    const key = (data.username || "").toLowerCase();
+    if (users.some((u) => (u.username || "").toLowerCase() === key)) {
       throw new Error("An account with those details already exists.");
     }
-    const user = { ...data, id: uid(), createdAt: Date.now() };
+    const user = { ...data, id: uid(), role: "learner", createdAt: Date.now() };
     users.push(user);
     write(K_USERS, users);
     const { password, ...safe } = user;
     write(K_SESSION, safe);
-    Repo.record(safe, "signup");
+    Repo.recordLocal(safe, "signup");
     return safe;
   },
-  login(identifier, password) {
+
+  async login(identifier, password) {
     const id = identifier.trim().toLowerCase();
-    const user = Auth.users().find(
-      (u) =>
-        (u.email || "").toLowerCase() === id ||
-        (u.username || "").toLowerCase() === id
+
+    // A local learner account takes precedence — that is the only way a
+    // username (rather than an email) can resolve without a session.
+    const local = Auth.users().find(
+      (u) => isLearnerRole(u.role) &&
+        ((u.username || "").toLowerCase() === id || (u.email || "").toLowerCase() === id)
     );
-    if (!user || user.password !== password) {
-      throw new Error("Invalid credentials. Check your details and try again.");
+    if (local) {
+      if (local.password !== password) {
+        throw new Error("Invalid credentials. Check your details and try again.");
+      }
+      const { password: _p, ...safe } = local;
+      write(K_SESSION, safe);
+      Repo.recordLocal(safe, "login");
+      return safe;
     }
-    const { password: _p, ...safe } = user;
-    write(K_SESSION, safe);
-    Repo.record(safe, "login");
-    return safe;
+
+    if (!id.includes("@")) {
+      throw new Error("Staff sign in with their email address. Learners use their username.");
+    }
+    const { data: res, error } = await supabase.auth.signInWithPassword({ email: id, password });
+    if (error) throw new Error(authMessage(error));
+    const user = await refreshProfile(res.session);
+    if (!user) throw new Error("Signed in, but no profile row exists for this account.");
+    await Repo.record(user, "login");
+    return user;
   },
-  logout() {
+
+  async logout() {
     localStorage.removeItem(K_SESSION);
     localStorage.removeItem("hpf_impersonate"); // never leave an orphan impersonation
+    supaUser = null;
+    await supabase.auth.signOut();
   },
 };
-
-/* Seed a demo admin so the admin dashboard + inbox are reachable out of the box. */
-function seedAdmin() {
-  const users = Auth.users();
-  if (!users.some((u) => (u.email || "").toLowerCase() === ADMIN_EMAIL)) {
-    users.push({
-      id: uid(),
-      fullName: "Patrick — HPF Admin",
-      role: "admin",
-      email: ADMIN_EMAIL,
-      username: "patrick",
-      password: "admin1234",
-      orgType: "NGO / Non-profit",
-      county: "Nairobi",
-      createdAt: Date.now(),
-    });
-    write(K_USERS, users);
-  }
-}
 
 /* ------------------------------------------------------------ shared chrome */
 const NAV = [
@@ -172,6 +257,16 @@ function shell(path, main) {
   return `${header(path)}<main class="fade-in">${main}</main>${footer()}`;
 }
 
+/* the floating badge that sits on the hero image — changes with each slide */
+function heroBadge(slide) {
+  return `
+    <span class="hf-icon">${icon(slide.icon)}</span>
+    <div>
+      <div class="hf-label">${esc(slide.label)}</div>
+      <div class="hf-value">${esc(slide.value)}</div>
+    </div>`;
+}
+
 /* small helper for count-up numbers in static pages */
 function countNum(count, suffix = "", compact = false) {
   return `<span class="count" data-count="${count}"${
@@ -231,17 +326,20 @@ function pageHome() {
           </div>
         </div>
         <div class="hero-media">
-          <div class="hero-frame">
-            <img src="${BASE}/assets/hero-classroom.jpg" width="1024" height="1024"
-              alt="Human Practice Foundation teacher with young learners in a Kenyan classroom" />
-          </div>
-          <div class="hero-float">
-            <span class="hf-icon">${icon("graduation")}</span>
-            <div>
-              <div class="hf-label">Certified</div>
-              <div class="hf-value">Teacher Programme</div>
+          <div class="hero-frame" data-hero>
+            ${HERO_SLIDES.map(
+              (s, i) => `<img class="hero-slide${i === 0 ? " is-active" : ""}"
+                src="${BASE}/${s.src}" width="1024" height="1024" alt="${esc(s.alt)}"
+                fetchpriority="${i === 0 ? "high" : "low"}" decoding="async" />`
+            ).join("")}
+            <div class="hero-dots">
+              ${HERO_SLIDES.map(
+                (s, i) => `<button class="hero-dot${i === 0 ? " is-active" : ""}"
+                  data-hero-dot="${i}" aria-label="Show ${esc(s.value)}"></button>`
+              ).join("")}
             </div>
           </div>
+          <div class="hero-float" data-hero-float>${heroBadge(HERO_SLIDES[0])}</div>
         </div>
       </div>
     </section>
@@ -645,7 +743,7 @@ function titleFor(path) {
   return map[path] || "Page not found — Human Practice Foundation";
 }
 
-function render() {
+async function render() {
   let path = location.pathname;
   if (BASE && path.startsWith(BASE)) path = path.slice(BASE.length);
   path = path.replace(/\/+$/, "") || "/";
@@ -657,23 +755,73 @@ function render() {
   const view = ROUTES[path] || pageNotFound;
   document.title = titleFor(path);
   const root = $("#app");
-  root.innerHTML = view();
+  stopHeroCarousel(); // never leave a timer running for a view we're replacing
+  // Views become async one at a time as they move onto Supabase; awaiting a
+  // still-synchronous view is a no-op, so both kinds work during the migration.
+  root.innerHTML = await view();
   window.scrollTo(0, 0);
-  wireView(path);
+  await wireView(path);
   runCounters(); // animate numbers immediately on every view
 }
 
-function navigate(to) {
+async function navigate(to) {
   if (BASE + to !== location.pathname) history.pushState({}, "", BASE + to);
-  render();
+  await render();
+}
+
+/* ------------------------------------------------------------ hero carousel
+   Cross-fades the hero images every 3s, with clickable dots, pause-on-hover,
+   and a floating badge that follows the active slide. */
+let heroTimer = null;
+const HERO_MS = 3000;
+
+function stopHeroCarousel() {
+  if (heroTimer) {
+    clearInterval(heroTimer);
+    heroTimer = null;
+  }
+}
+
+function wireHeroCarousel() {
+  const frame = $("[data-hero]");
+  if (!frame) return;
+  const slides = $$(".hero-slide", frame);
+  const dots = $$("[data-hero-dot]", frame);
+  const badge = $("[data-hero-float]");
+  if (slides.length < 2) return;
+
+  const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  let i = 0;
+
+  function show(n) {
+    i = (n + slides.length) % slides.length;
+    slides.forEach((s, k) => s.classList.toggle("is-active", k === i));
+    dots.forEach((d, k) => d.classList.toggle("is-active", k === i));
+    if (badge) badge.innerHTML = heroBadge(HERO_SLIDES[i]);
+  }
+  function start() {
+    stopHeroCarousel();
+    if (!still) heroTimer = setInterval(() => show(i + 1), HERO_MS);
+  }
+
+  dots.forEach((d) =>
+    d.addEventListener("click", () => {
+      show(+d.dataset.heroDot);
+      start(); // restart the clock after a manual pick
+    })
+  );
+  frame.addEventListener("mouseenter", stopHeroCarousel);
+  frame.addEventListener("mouseleave", start);
+  start();
 }
 
 /* ------------------------------------------------------------ per-view wiring */
-function wireView(path) {
+async function wireView(path) {
   const authed = Auth.current();
+  if (path === "/") wireHeroCarousel();
   if (path === "/auth") wireAuth();
   if (path === "/field-officer") authed ? wireFieldOfficer() : wireAuth();
-  if (path === "/dashboard") authed ? wireMyDashboard(authed, Repo.events()) : wireAuth();
+  if (path === "/dashboard") authed ? await wireMyDashboard(authed, Repo.events()) : wireAuth();
 }
 
 /* ------------------------------------------------------------ auth wiring */
@@ -707,19 +855,22 @@ function wireAuth() {
     toast("Password reset", "Contact your HPF administrator to reset your password.")
   );
 
-  loginForm?.addEventListener("submit", (e) => {
+  loginForm?.addEventListener("submit", async (e) => {
     e.preventDefault();
     const fd = new FormData(loginForm);
+    const submit = loginForm.querySelector("[type=submit]");
+    if (submit) { submit.disabled = true; submit.textContent = "Signing in…"; }
     try {
-      const user = Auth.login(fd.get("identifier"), fd.get("password"));
+      const user = await Auth.login(fd.get("identifier"), fd.get("password"));
       toast("Welcome back", `Signed in as ${user.fullName || user.username}.`, "success");
-      navigate(gotoAfterLogin(user));
+      await navigate(gotoAfterLogin(user));
     } catch (err) {
       toast("Sign in failed", err.message, "error");
+      if (submit) { submit.disabled = false; submit.textContent = "Login"; }
     }
   });
 
-  signupForm?.addEventListener("submit", (e) => {
+  signupForm?.addEventListener("submit", async (e) => {
     e.preventDefault();
     const fd = new FormData(signupForm);
     const data = Object.fromEntries(fd.entries());
@@ -730,19 +881,28 @@ function wireAuth() {
       delete data.email;
     } else {
       if (!data.email) return toast("Email required", "Please enter your email address.", "error");
-      if (data.role === "admin" && !/@humanpractice\.org$/i.test(data.email)) {
-        return toast("Invalid staff email", "HPF Staff (Admin) requires an @humanpractice.org email.", "error");
+      // Admin is never self-serve: patch-01-security.sql clamps the role
+      // server-side, so allowing it here would only produce a silent downgrade.
+      if (data.role === "admin") {
+        return toast(
+          "Admin accounts are issued by HPF",
+          "Sign up as a Teacher, School Leader, or Field Officer. An HPF administrator can upgrade your account afterwards.",
+          "error"
+        );
       }
     }
     if ((data.password || "").length < 6)
       return toast("Weak password", "Password must be at least 6 characters.", "error");
 
+    const submit = signupForm.querySelector("[type=submit]");
+    if (submit) { submit.disabled = true; submit.textContent = "Creating account…"; }
     try {
-      const user = Auth.register(data);
-      toast("Account created", `Welcome to the HPF portal, ${user.fullName.split(" ")[0]}!`, "success");
-      navigate(gotoAfterLogin(user));
+      const user = await Auth.register(data);
+      toast("Account created", `Welcome to the HPF portal, ${(user.fullName || "").split(" ")[0]}!`, "success");
+      await navigate(gotoAfterLogin(user));
     } catch (err) {
       toast("Sign up failed", err.message, "error");
+      if (submit) { submit.disabled = false; submit.textContent = "Create account"; }
     }
   });
 }
@@ -781,25 +941,34 @@ function wireFieldOfficer() {
 }
 
 /* ------------------------------------------------------------ global events */
-document.addEventListener("click", (e) => {
+document.addEventListener("click", async (e) => {
   const link = e.target.closest("a[data-link]");
   if (link) {
     e.preventDefault();
-    navigate(link.getAttribute("href"));
+    await navigate(link.getAttribute("href"));
     return;
   }
   const logout = e.target.closest("[data-logout]");
   if (logout) {
     e.preventDefault();
-    Auth.logout();
+    await Auth.logout();
     toast("Signed out", "You have been logged out.");
-    navigate("/");
+    await navigate("/");
   }
 });
 
-window.addEventListener("popstate", render);
+window.addEventListener("popstate", () => { render(); });
 
 /* ------------------------------------------------------------ boot */
-seedAdmin();
-startGlobalCounters();
-render();
+(async () => {
+  startGlobalCounters();
+  // Restore any stored Supabase session before the first paint, so a refresh
+  // lands on the dashboard instead of flashing the login page.
+  try {
+    const { data } = await supabase.auth.getSession();
+    await refreshProfile(data.session);
+  } catch (err) {
+    console.warn("Session restore failed:", err.message);
+  }
+  await render();
+})();

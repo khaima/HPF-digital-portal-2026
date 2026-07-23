@@ -157,6 +157,32 @@ export const COUNTIES = [
   "Trans Nzoia", "Turkana", "Uasin Gishu", "Vihiga", "Wajir", "West Pokot",
 ];
 
+/* Hero carousel — the home page rotates these every 3 seconds.
+   The floating badge changes with each slide. */
+export const HERO_SLIDES = [
+  {
+    src: "assets/hero-classroom.jpg",
+    alt: "A Human Practice Foundation teacher with young learners reading together in a Kenyan classroom",
+    icon: "graduation",
+    label: "Certified",
+    value: "Teacher Programme",
+  },
+  {
+    src: "assets/hero-school.jpg",
+    alt: "A rural Kenyan primary school block with a veranda, set against open savannah",
+    icon: "school",
+    label: "Infrastructure",
+    value: "School Building",
+  },
+  {
+    src: "assets/hero-ict.jpg",
+    alt: "Two young women working together on a laptop at the Human Practice Foundation IT Academy",
+    icon: "laptop",
+    label: "Digital Skills",
+    value: "IT Academy",
+  },
+];
+
 /* HPF-supported schools (teachers pick one when creating a class) */
 export const SCHOOLS = [
   "Aitong School",
