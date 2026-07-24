@@ -157,6 +157,15 @@ export const COUNTIES = [
   "Trans Nzoia", "Turkana", "Uasin Gishu", "Vihiga", "Wajir", "West Pokot",
 ];
 
+/* Hero tagline — the italic lead rotates through these every 3 seconds,
+   each followed by the constant "That's human practice." */
+export const HERO_QUOTES = [
+  "When actions flow from the heart.",
+  "When word inspires but only action counts.",
+  "When compassion is lived, not just felt.",
+  "Change the future. Build the school.",
+];
+
 /* Hero carousel — the home page rotates these every 3 seconds.
    The floating badge changes with each slide. */
 export const HERO_SLIDES = [

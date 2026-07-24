@@ -6,7 +6,7 @@
 import { icon } from "./icons.js";
 import {
   PORTAL_CARDS, CURRICULUM, RESOURCES, ASSESSMENT, IMPACT,
-  ROLES, ORG_TYPES, COUNTIES, VISIT_TYPES, HERO_SLIDES,
+  ROLES, ORG_TYPES, COUNTIES, VISIT_TYPES, HERO_SLIDES, HERO_QUOTES,
 } from "./data.js";
 import {
   $, $$, read, write, esc, initials, uid,
@@ -312,7 +312,7 @@ function pageHome() {
       <div class="container hero-grid">
         <div class="hero-copy">
           <span class="eyebrow-dark"><span class="dot"></span>Education Portal</span>
-          <p class="hero-quote-sm">When actions flow from the heart. <strong>That's human practice.</strong></p>
+          <p class="hero-quote-sm"><span class="hq-lead" data-hero-quote>${esc(HERO_QUOTES[0])}</span> <strong>That's human practice.</strong></p>
           <h1 class="hero-title">Human Practice Foundation <span class="accent">Digital Portal</span></h1>
           <p class="lede">Empowering teachers, learners, and schools through digital learning, assessments, and practical education resources.</p>
           <div class="hero-actions">
@@ -788,10 +788,12 @@ function wireHeroCarousel() {
   const slides = $$(".hero-slide", frame);
   const dots = $$("[data-hero-dot]", frame);
   const badge = $("[data-hero-float]");
+  const quoteEl = $("[data-hero-quote]");
   if (slides.length < 2) return;
 
   const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   let i = 0;
+  let qi = 0;
 
   function show(n) {
     i = (n + slides.length) % slides.length;
@@ -799,14 +801,28 @@ function wireHeroCarousel() {
     dots.forEach((d, k) => d.classList.toggle("is-active", k === i));
     if (badge) badge.innerHTML = heroBadge(HERO_SLIDES[i]);
   }
+  // fade the tagline lead out, swap the text, fade it back in
+  function nextQuote() {
+    if (!quoteEl) return;
+    qi = (qi + 1) % HERO_QUOTES.length;
+    quoteEl.classList.add("is-swapping");
+    setTimeout(() => {
+      quoteEl.textContent = HERO_QUOTES[qi];
+      quoteEl.classList.remove("is-swapping");
+    }, 350);
+  }
   function start() {
     stopHeroCarousel();
-    if (!still) heroTimer = setInterval(() => show(i + 1), HERO_MS);
+    if (!still)
+      heroTimer = setInterval(() => {
+        show(i + 1);
+        nextQuote();
+      }, HERO_MS);
   }
 
   dots.forEach((d) =>
     d.addEventListener("click", () => {
-      show(+d.dataset.heroDot);
+      show(+d.dataset.heroDot); // dots pick an image; the quote keeps its own cycle
       start(); // restart the clock after a manual pick
     })
   );
