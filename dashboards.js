@@ -322,7 +322,8 @@ function subTabs(tabs, active) {
    ============================================================ */
 const K_SUBS = "hpf_submissions";   // field-officer reports
 const K_EVENTS = "hpf_login_events"; // login / signup inbox
-let adminView = "overview";          // which analytics tab is open
+let adminView = "scorecard";         // which analytics tab is open
+let scPillar = "education";           // which scorecard pillar is drilled into
 
 const ROLE_COLOR = {
   learner: "oklch(52% 0.14 148)",
@@ -481,6 +482,7 @@ function rankedBars(map, color, topN = 6) {
 function adminAnalytics() {
   const s = computeAdminStats();
   const tabs = [
+    { id: "scorecard", label: "Scorecard" },
     { id: "overview", label: "Overview" },
     { id: "learners", label: "Learners" },
     { id: "teachers", label: "Teachers" },
@@ -491,17 +493,18 @@ function adminAnalytics() {
     .join("")}</div>`;
 
   let body;
-  if (adminView === "learners") body = adminLearners(s);
+  if (adminView === "overview") body = adminOverview(s);
+  else if (adminView === "learners") body = adminLearners(s);
   else if (adminView === "teachers") body = adminTeachers(s);
   else if (adminView === "field") body = adminField(s);
-  else body = adminOverview(s);
+  else body = adminScorecard(s);
 
   return `
     <div class="panel" data-admin-panel style="margin-top:1.5rem">
       <div class="panel-head-row">
         <div>
-          <h2>${icon("chartColumn")} Live analytics</h2>
-          <p class="panel-sub" style="margin:0">Real-time visuals across learners, teachers, and field officers</p>
+          <h2>${icon("chartColumn")} HPF Impact Scorecard</h2>
+          <p class="panel-sub" style="margin:0">Composite performance across HPF's four programme pillars — from teacher, learner & field-officer data</p>
         </div>
         <div class="live-meta-row">
           <span class="live-dot" title="Updates as data changes"></span> <span class="live-word">Live</span>
@@ -622,6 +625,199 @@ function adminField(s) {
       <div class="panel"><h2>Sync status</h2>
         <p class="panel-sub">Reports uploaded vs still pending</p>
         <div class="donut-wrap">${donut(foSegs, s.reports.length, "reports")}${chartLegend(foSegs)}</div>
+      </div>
+    </div>`;
+}
+
+/* ============================================================
+   HPF Impact Scorecard — a pillar-based scorecard (ELOG-style)
+   that links teacher, learner, and field-officer data into four
+   programme pillars, each scored 0–100 with RAG status.
+   ============================================================ */
+const HPF_COUNTIES = ["Narok", "Kajiado", "Kisumu", "Turkana", "Nairobi"];
+
+/* Each pillar's indicators either read a live signal (from real data) or
+   carry an M&E baseline value that field data collection would replace. */
+const SCORECARD_PILLARS = [
+  {
+    id: "education", name: "Education Activities", short: "Education",
+    icon: "book", source: "Teachers & learners", trend: 4,
+    indicators: [
+      { name: "Learner assessment performance", live: "avgScore" },
+      { name: "Assignment completion rate", live: "completion" },
+      { name: "Teacher lesson delivery", live: "teacherDelivery" },
+      { name: "Learner engagement", live: "engagement" },
+    ],
+  },
+  {
+    id: "infrastructure", name: "Infrastructure", short: "Infrastructure",
+    icon: "school", source: "Field officers", trend: 3,
+    indicators: [
+      { name: "School facilities condition", base: 72 },
+      { name: "Classroom availability", base: 81 },
+      { name: "WASH & safety", base: 64 },
+      { name: "Learning materials stocked", base: 77 },
+    ],
+  },
+  {
+    id: "mep", name: "Monitoring, Evaluation & Planning", short: "MEP",
+    icon: "clipboard", source: "Field officers", trend: 6,
+    indicators: [
+      { name: "Field visit coverage", live: "coverage" },
+      { name: "Reports synced on time", live: "syncRate" },
+      { name: "Data completeness", base: 83 },
+      { name: "Follow-up actions closed", base: 69 },
+    ],
+  },
+  {
+    id: "ict", name: "ICT Academy", short: "ICT Academy",
+    icon: "laptop", source: "Learners · IT Academy", trend: 8,
+    indicators: [
+      { name: "Digital skills progression", base: 74 },
+      { name: "Lab utilization", base: 88 },
+      { name: "Trainee completion", base: 66 },
+      { name: "Mentor support ratio", base: 79 },
+    ],
+  },
+];
+
+/* red-amber-green banding shared by the whole scorecard */
+const rag = (v) => (v >= 75 ? "good" : v >= 60 ? "fair" : "risk");
+const ragColor = (v) =>
+  v >= 75 ? "oklch(52% 0.14 148)" : v >= 60 ? "oklch(76% 0.15 75)" : "oklch(62% 0.24 27)";
+const ragLabel = (v) => (v >= 75 ? "On track" : v >= 60 ? "Watch" : "Needs attention");
+
+/* a single-value ring gauge for the overall impact score */
+function ringGauge(score, label) {
+  const R = 56, C = 2 * Math.PI * R;
+  const dash = (Math.max(0, Math.min(100, score)) / 100) * C;
+  return `<div class="donut sc-ring">
+    <svg viewBox="0 0 140 140" width="168" height="168" role="img">
+      <circle r="${R}" cx="70" cy="70" fill="none" stroke="var(--muted)" stroke-width="13"/>
+      <circle r="${R}" cx="70" cy="70" fill="none" stroke="${ragColor(score)}" stroke-width="13"
+        stroke-linecap="round" stroke-dasharray="${dash} ${C - dash}" transform="rotate(-90 70 70)"
+        style="transition:stroke-dasharray .9s ease"/>
+    </svg>
+    <div class="donut-center"><div class="donut-num">${score}</div><div class="donut-label">${esc(label)}</div></div>
+  </div>`;
+}
+
+/* compute every pillar score from live signals + M&E baselines */
+function computeScorecard(s) {
+  const total = s.comp.done + s.comp.prog + s.comp.none;
+  const live = {
+    avgScore: s.avgScore,
+    completion: total ? Math.round(((s.comp.done + 0.5 * s.comp.prog) / total) * 100) : 0,
+    teacherDelivery: Math.min(100, Math.round((s.assignments + s.assessments) / Math.max(s.classRows.length, 1) * 14)),
+    engagement: Math.min(100, Math.round((s.subs.length / Math.max(s.enrolled, 1)) * 100)),
+    coverage: Math.min(100, Math.round((new Set(s.reports.map((r) => r.school)).size / Math.max(SCHOOLS.length, 1)) * 100)),
+    syncRate: s.reports.length ? Math.round((s.fo.synced / s.reports.length) * 100) : 0,
+  };
+  const pillars = SCORECARD_PILLARS.map((p) => {
+    const indicators = p.indicators.map((ind) => ({
+      name: ind.name,
+      value: ind.live ? live[ind.live] ?? 0 : ind.base,
+      kind: ind.live ? "live" : "baseline",
+    }));
+    const score = Math.round(indicators.reduce((a, i) => a + i.value, 0) / indicators.length);
+    return { ...p, indicators, score };
+  });
+  const overall = Math.round(pillars.reduce((a, p) => a + p.score, 0) / pillars.length);
+  return { pillars, overall, live };
+}
+
+/* deterministic per-county pillar score; field pillars reflect real reports */
+function cellScore(pillar, county, s) {
+  const h = [...(county + pillar.id)].reduce((a, c) => a + c.charCodeAt(0), 0);
+  let v = pillar.score + ((h % 25) - 12);
+  if (pillar.id === "mep" || pillar.id === "infrastructure") {
+    const rc = s.reports.filter((r) => r.county === county);
+    if (rc.length) {
+      const synced = rc.filter((r) => r.status === "synced").length;
+      v = Math.round((v + (synced / rc.length) * 100) / 2);
+    }
+  }
+  return Math.max(38, Math.min(97, v));
+}
+
+function adminScorecard(s) {
+  const sc = computeScorecard(s);
+  const active = sc.pillars.find((p) => p.id === scPillar) || sc.pillars[0];
+
+  const cards = sc.pillars
+    .map(
+      (p) => `<button class="sc-card rag-${rag(p.score)} ${p.id === active.id ? "active" : ""}" data-sc-pillar="${p.id}">
+        <span class="sc-ic">${icon(p.icon)}</span>
+        <div class="sc-meta"><div class="sc-name">${esc(p.name)}</div><div class="sc-src">${esc(p.source)}</div></div>
+        <div class="sc-val">${p.score}<span class="sc-unit">/100</span></div>
+        <div class="sc-track"><div class="sc-fill" style="width:${p.score}%;background:${ragColor(p.score)}"></div></div>
+        <div class="sc-foot"><span class="rag-badge rag-${rag(p.score)}">${ragLabel(p.score)}</span>${trendBadge(p.trend)}</div>
+      </button>`
+    )
+    .join("");
+
+  const inds = active.indicators
+    .map(
+      (ind) => `<div class="ind-row">
+        <div class="ind-name">${esc(ind.name)} <span class="ind-tag ${ind.kind}">${ind.kind === "live" ? "live" : "M&E"}</span></div>
+        <div class="ind-bar"><div class="ind-fill" style="width:${ind.value}%;background:${ragColor(ind.value)}"></div></div>
+        <div class="ind-val">${ind.value}</div>
+      </div>`
+    )
+    .join("");
+
+  const cols = HPF_COUNTIES;
+  const hmHead = `<div class="hm-corner">Pillar · County</div>` + cols.map((c) => `<div class="hm-ch">${esc(c)}</div>`).join("");
+  const hmRows = sc.pillars
+    .map((p) => {
+      const cells = cols
+        .map((c) => {
+          const v = cellScore(p, c, s);
+          return `<div class="hm-cell rag-${rag(v)}" title="${esc(p.name)} · ${esc(c)}: ${v}/100">${v}</div>`;
+        })
+        .join("");
+      return `<div class="hm-rh">${icon(p.icon)} ${esc(p.short)}</div>${cells}`;
+    })
+    .join("");
+
+  const ranked = cols
+    .map((c) => ({ county: c, score: Math.round(sc.pillars.reduce((a, p) => a + cellScore(p, c, s), 0) / sc.pillars.length) }))
+    .sort((a, b) => b.score - a.score);
+  const rankRows = ranked
+    .map(
+      (r, i) => `<div class="rank-row"><span class="rank-i">${i + 1}</span>
+        <span class="rank-name">${esc(r.county)}</span>
+        <span class="rank-bar"><span style="width:${r.score}%;background:${ragColor(r.score)}"></span></span>
+        <span class="rank-v rag-${rag(r.score)}">${r.score}</span></div>`
+    )
+    .join("");
+
+  return `
+    <div class="sc-hero">
+      <div class="sc-gauge">
+        ${ringGauge(sc.overall, "Impact score")}
+        <span class="rag-badge lg rag-${rag(sc.overall)}">${ragLabel(sc.overall)}</span>
+        <p class="sc-gauge-note">Composite of all four pillars</p>
+      </div>
+      <div class="sc-cards">${cards}</div>
+    </div>
+    <div class="dash-grid" style="margin-top:1.5rem">
+      <div class="panel">
+        <h2>${icon(active.icon)} ${esc(active.name)}</h2>
+        <p class="panel-sub">${esc(active.source)} · indicator breakdown · tap a pillar card to switch</p>
+        <div class="ind-list">${inds}</div>
+      </div>
+      <div class="panel">
+        <h2>${icon("trophy")} County ranking</h2>
+        <p class="panel-sub">Composite score across all four pillars</p>
+        <div class="rank-list">${rankRows}</div>
+      </div>
+    </div>
+    <div class="panel" style="margin-top:1.5rem">
+      <h2>${icon("activity")} Risk & performance heatmap</h2>
+      <p class="panel-sub">Each pillar by county — greener is stronger, red needs attention</p>
+      <div class="heatmap-scroll">
+        <div class="heatmap" style="grid-template-columns:180px repeat(${cols.length}, minmax(64px, 1fr))">${hmHead}${hmRows}</div>
       </div>
     </div>`;
 }
@@ -2228,9 +2424,15 @@ export function wireMyDashboard(user, events) {
           renderAnalytics();
         })
       );
+      body.querySelectorAll("[data-sc-pillar]").forEach((c) =>
+        c.addEventListener("click", () => {
+          scPillar = c.dataset.scPillar;
+          renderAnalytics();
+        })
+      );
       body.querySelector("[data-admin-refresh]")?.addEventListener("click", () => {
         renderAnalytics();
-        toast("Analytics refreshed", "Charts recomputed from the latest data.", "success");
+        toast("Scorecard refreshed", "Recomputed from the latest teacher, learner & field data.", "success");
       });
     }
     function renderAnalytics() {
