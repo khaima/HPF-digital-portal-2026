@@ -686,7 +686,7 @@ function navigate(to) {
    Cross-fades the hero images every 3s, with clickable dots, pause-on-hover,
    and a floating badge that follows the active slide. */
 let heroTimer = null;
-const HERO_MS = 3000;
+const HERO_MS = 5000;
 
 function stopHeroCarousel() {
   if (heroTimer) {
