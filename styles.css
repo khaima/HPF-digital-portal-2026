@@ -2627,6 +2627,106 @@ textarea.input:focus {
   color: var(--muted-foreground);
 }
 
+/* ---------------------------------------------------------- admin analytics */
+.live-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.live-word {
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: oklch(50% 0.14 155);
+}
+
+.live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: oklch(68% 0.17 155);
+  box-shadow: 0 0 0 0 oklch(68% 0.17 155 / 0.5);
+  animation: live-pulse 2s infinite;
+}
+
+@keyframes live-pulse {
+  0% { box-shadow: 0 0 0 0 oklch(68% 0.17 155 / 0.5); }
+  70% { box-shadow: 0 0 0 7px oklch(68% 0.17 155 / 0); }
+  100% { box-shadow: 0 0 0 0 oklch(68% 0.17 155 / 0); }
+}
+
+/* donut chart + legend */
+.donut-wrap {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  flex-wrap: wrap;
+  margin-top: 0.5rem;
+}
+
+.donut {
+  position: relative;
+  flex: none;
+  width: 150px;
+  height: 150px;
+}
+
+.donut-center {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  text-align: center;
+}
+
+.donut-num {
+  font-size: 1.6rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+
+.donut-label {
+  font-size: 0.72rem;
+  color: var(--muted-foreground);
+  margin-top: 0.15rem;
+}
+
+.chart-legend {
+  display: grid;
+  gap: 0.5rem;
+  flex: 1;
+  min-width: 10rem;
+}
+
+.cl-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.88rem;
+}
+
+.cl-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  flex: none;
+}
+
+.cl-row strong {
+  margin-left: auto;
+  font-weight: 700;
+}
+
+.cl-pct {
+  color: var(--muted-foreground);
+  font-size: 0.8rem;
+  min-width: 2.6rem;
+  text-align: right;
+}
+
 /* status distribution bar */
 .dist-bar {
   display: flex;
