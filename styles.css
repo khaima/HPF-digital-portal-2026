@@ -350,6 +350,7 @@ form .btn,
   margin-top: 1.5rem;
   color: var(--primary);
   font-style: italic;
+  min-height: 1.6em; /* reserve space so the line doesn't jump between quotes */
 }
 
 .hero-quote-sm em {
@@ -360,6 +361,26 @@ form .btn,
   font-weight: 600;
   font-style: normal;
   color: var(--foreground);
+}
+
+/* the rotating italic lead — fades and lifts slightly as it swaps */
+.hq-lead {
+  display: inline-block;
+  transition: opacity 0.35s ease, transform 0.35s ease;
+}
+
+.hq-lead.is-swapping {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hq-lead {
+    transition: opacity 0.2s ease;
+  }
+  .hq-lead.is-swapping {
+    transform: none;
+  }
 }
 
 .hero-title {
