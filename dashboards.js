@@ -315,6 +315,316 @@ function subTabs(tabs, active) {
 }
 
 /* ---------------------------------------------------------- role bodies */
+/* ============================================================
+   Admin analytics — live visuals aggregated from the real data
+   (users, classes, assessments, assignments, field reports, logins)
+   ============================================================ */
+const K_SUBS = "hpf_submissions";   // field-officer reports
+const K_EVENTS = "hpf_login_events"; // login / signup inbox
+let adminView = "overview";          // which analytics tab is open
+
+const ROLE_COLOR = {
+  learner: "oklch(52% 0.14 148)",
+  teacher: "oklch(68% 0.17 155)",
+  school_leader: "oklch(78% 0.15 75)",
+  field_officer: "oklch(55% 0.15 300)",
+  admin: "oklch(62% 0.24 27)",
+};
+const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+/* seed a few field reports so the field-officer visuals aren't empty on a
+   fresh browser (same demo-seed approach as the demo class). */
+function seedFieldReports() {
+  if (read(K_SUBS, []).length) return;
+  const now = Date.now(), day = 864e5;
+  const seed = [
+    ["Aitong School", "Monitoring & Evaluation Visit", "Narok", 6, 180, "synced", 2],
+    ["Naboisho School", "School Support Visit", "Narok", 4, 120, "synced", 4],
+    ["Ololomei School", "Teacher Coaching Session", "Narok", 5, 95, "pending", 1],
+    ["Olkimitare School", "Baseline Data Collection", "Kajiado", 3, 140, "synced", 6],
+    ["Aitong School", "Classroom Observation", "Narok", 7, 200, "synced", 8],
+    ["Naboisho School", "Infrastructure Assessment", "Kajiado", 2, 60, "pending", 9],
+    ["Ololomei School", "Monitoring & Evaluation Visit", "Kisumu", 5, 160, "synced", 11],
+    ["Olkimitare School", "School Support Visit", "Turkana", 4, 110, "pending", 13],
+  ].map(([school, visitType, county, teachers, learners, status, ago]) => ({
+    id: uid(), userId: "seed", school, visitType, county, teachers, learners,
+    notes: "", status, createdAt: now - ago * day,
+  }));
+  write(K_SUBS, seed);
+}
+
+/* read every store and compute the numbers the analytics tabs visualize */
+function computeAdminStats() {
+  seedFieldReports();
+  const users = read(K_USERS, []);
+  const classes = read(K_CLASSES, []);
+  const reports = read(K_SUBS, []);
+  const events = read(K_EVENTS, []);
+  const now = Date.now(), day = 864e5;
+
+  // roles + counties from the user table
+  const roleCounts = {};
+  DASH_ROLES.forEach((r) => (roleCounts[r] = 0));
+  const county = {};
+  users.forEach((u) => {
+    roleCounts[u.role] = (roleCounts[u.role] || 0) + 1;
+    if (u.county) county[u.county] = (county[u.county] || 0) + 1;
+  });
+
+  // learners + teachers, walked from the classes store
+  let enrolled = 0, assignments = 0, assessments = 0, activeSessions = 0;
+  const subs = [], assignPcts = [], classRows = [];
+  classes.forEach((c) => {
+    enrolled += c.learners.length;
+    assignments += (c.assignments || []).length;
+    (c.assignments || []).forEach((a) => {
+      if ((a.session || "planned") === "active") activeSessions++;
+      a.results.forEach((r) => assignPcts.push(r.pct));
+    });
+    const cSubs = [];
+    (c.assessments || []).forEach((a) => {
+      assessments++;
+      if ((a.session || "planned") === "active") activeSessions++;
+      (a.submissions || []).forEach((s) => { subs.push(s); cSubs.push(s); });
+    });
+    classRows.push({
+      name: c.name, learners: c.learners.length,
+      assignments: (c.assignments || []).length,
+      assessments: (c.assessments || []).length,
+      avg: cSubs.length ? Math.round(cSubs.reduce((x, s) => x + s.pct, 0) / cSubs.length) : 0,
+    });
+  });
+
+  // assessment score distribution + pass rate
+  const bands = [0, 0, 0, 0]; // 0–49 / 50–69 / 70–84 / 85–100
+  subs.forEach((s) => { const p = s.pct; bands[p < 50 ? 0 : p < 70 ? 1 : p < 85 ? 2 : 3]++; });
+  const passed = subs.filter((s) => s.pct >= 50).length;
+  const avgScore = subs.length ? Math.round(subs.reduce((a, s) => a + s.pct, 0) / subs.length) : 0;
+
+  // assignment completion distribution
+  const comp = { done: 0, prog: 0, none: 0 };
+  assignPcts.forEach((p) => (p >= 100 ? comp.done++ : p > 0 ? comp.prog++ : comp.none++));
+
+  // field-officer aggregates
+  const foCounty = {}, fo = { synced: 0, pending: 0 };
+  let learnersReached = 0, teachersReached = 0;
+  reports.forEach((r) => {
+    foCounty[r.county] = (foCounty[r.county] || 0) + 1;
+    r.status === "synced" ? fo.synced++ : fo.pending++;
+    learnersReached += +r.learners || 0;
+    teachersReached += +r.teachers || 0;
+  });
+
+  // login/signup activity over the last 7 days
+  const trend = new Array(7).fill(0);
+  events.forEach((e) => {
+    const ago = Math.floor((now - e.at) / day);
+    if (ago >= 0 && ago < 7) trend[6 - ago]++;
+  });
+  const trendLabels = trend.map((_, k) => DOW[new Date(now - (6 - k) * day).getDay()]);
+
+  return {
+    users, roleCounts, county, enrolled, assignments, assessments, activeSessions,
+    classRows, subs, bands, passed, avgScore, comp,
+    reports, foCounty, fo, learnersReached, teachersReached,
+    trend, trendLabels, totalUsers: users.length,
+  };
+}
+
+/* ---------------------------------------------------------- chart bits */
+function donut(segments, centerNum, centerLabel) {
+  const total = segments.reduce((a, s) => a + s.value, 0) || 1;
+  const R = 54, C = 2 * Math.PI * R;
+  let offset = 0;
+  const rings = segments
+    .filter((s) => s.value > 0)
+    .map((s) => {
+      const dash = (s.value / total) * C;
+      const seg = `<circle r="${R}" cx="70" cy="70" fill="none" stroke="${s.color}" stroke-width="16"
+        stroke-dasharray="${dash} ${C - dash}" stroke-dashoffset="${-offset}"
+        transform="rotate(-90 70 70)" style="transition:stroke-dasharray .6s ease"><title>${esc(s.label)}: ${s.value}</title></circle>`;
+      offset += dash;
+      return seg;
+    })
+    .join("");
+  return `<div class="donut">
+    <svg viewBox="0 0 140 140" width="150" height="150" role="img">
+      <circle r="${R}" cx="70" cy="70" fill="none" stroke="var(--muted)" stroke-width="16"/>
+      ${rings}
+    </svg>
+    <div class="donut-center"><div class="donut-num">${centerNum}</div><div class="donut-label">${esc(centerLabel || "")}</div></div>
+  </div>`;
+}
+
+function chartLegend(segments) {
+  const total = segments.reduce((a, s) => a + s.value, 0) || 1;
+  return `<div class="chart-legend">${segments
+    .map(
+      (s) => `<span class="cl-row"><span class="cl-dot" style="background:${s.color}"></span>
+        ${esc(s.label)} <strong>${s.value}</strong> <span class="cl-pct">${Math.round((s.value / total) * 100)}%</span></span>`
+    )
+    .join("")}</div>`;
+}
+
+/* horizontal ranked bars from a { key: count } map, top N */
+function rankedBars(map, color, topN = 6) {
+  const rows = Object.entries(map).sort((a, b) => b[1] - a[1]).slice(0, topN);
+  if (!rows.length) return `<div class="empty-state">No data yet.</div>`;
+  const max = rows[0][1] || 1;
+  return `<div class="legend">${rows
+    .map(([k, v]) => hbar(k, v, max, color))
+    .join("")}</div>`;
+}
+
+/* ---------------------------------------------------------- analytics tabs */
+function adminAnalytics() {
+  const s = computeAdminStats();
+  const tabs = [
+    { id: "overview", label: "Overview" },
+    { id: "learners", label: "Learners" },
+    { id: "teachers", label: "Teachers" },
+    { id: "field", label: "Field Officers" },
+  ];
+  const tabBar = `<div class="ksubtabs">${tabs
+    .map((t) => `<button class="ksubtab ${t.id === adminView ? "active" : ""}" data-admin-tab="${t.id}">${t.label}</button>`)
+    .join("")}</div>`;
+
+  let body;
+  if (adminView === "learners") body = adminLearners(s);
+  else if (adminView === "teachers") body = adminTeachers(s);
+  else if (adminView === "field") body = adminField(s);
+  else body = adminOverview(s);
+
+  return `
+    <div class="panel" data-admin-panel style="margin-top:1.5rem">
+      <div class="panel-head-row">
+        <div>
+          <h2>${icon("chartColumn")} Live analytics</h2>
+          <p class="panel-sub" style="margin:0">Real-time visuals across learners, teachers, and field officers</p>
+        </div>
+        <div class="live-meta-row">
+          <span class="live-dot" title="Updates as data changes"></span> <span class="live-word">Live</span>
+          <button class="btn btn-outline btn-xs" data-admin-refresh>${icon("refresh")} Refresh</button>
+        </div>
+      </div>
+      ${tabBar}
+      <div data-admin-analytics>${body}</div>
+    </div>`;
+}
+
+function adminKpis(s) {
+  return `<div class="stat-row" style="margin-bottom:1.25rem">
+    <div class="stat-tile"><div class="st-label">${icon("users")} Total users</div><div class="st-num">${countNum(s.totalUsers)}</div></div>
+    <div class="stat-tile"><div class="st-label">${icon("graduation")} Learners enrolled</div><div class="st-num">${countNum(s.enrolled)}</div></div>
+    <div class="stat-tile"><div class="st-label">${icon("clipboard")} Assessments taken</div><div class="st-num">${countNum(s.subs.length)}</div></div>
+    <div class="stat-tile"><div class="st-label">${icon("radio")} Live sessions</div><div class="st-num">${countNum(s.activeSessions)}</div></div>
+  </div>`;
+}
+
+function adminOverview(s) {
+  const roleSegs = DASH_ROLES.filter((r) => s.roleCounts[r] > 0).map((r) => ({
+    label: ROLE_LABEL[r] || r, value: s.roleCounts[r], color: ROLE_COLOR[r],
+  }));
+  return `
+    ${adminKpis(s)}
+    <div class="dash-grid">
+      <div class="panel"><h2>Users by role</h2>
+        <p class="panel-sub">${s.totalUsers} registered accounts</p>
+        <div class="donut-wrap">${donut(roleSegs, s.totalUsers, "users")}${chartLegend(roleSegs)}</div>
+      </div>
+      <div class="panel"><h2>Sign-in activity</h2>
+        <p class="panel-sub">Logins & signups · last 7 days</p>
+        ${barChart(s.trend, s.trendLabels)}
+      </div>
+    </div>
+    <div class="panel" style="margin-top:1.5rem"><h2>Reach by county</h2>
+      <p class="panel-sub">Registered users per county</p>
+      ${rankedBars(s.county, "var(--primary)")}
+    </div>`;
+}
+
+function adminLearners(s) {
+  const bandSegs = [
+    { label: "0–49%", value: s.bands[0], color: "oklch(62% 0.24 27)" },
+    { label: "50–69%", value: s.bands[1], color: "oklch(78% 0.15 75)" },
+    { label: "70–84%", value: s.bands[2], color: "oklch(68% 0.17 155)" },
+    { label: "85–100%", value: s.bands[3], color: "oklch(52% 0.14 148)" },
+  ];
+  const passRate = s.subs.length ? Math.round((s.passed / s.subs.length) * 100) : 0;
+  const passSegs = [
+    { label: "Passed", value: s.passed, color: "oklch(52% 0.14 148)" },
+    { label: "Below 50%", value: s.subs.length - s.passed, color: "oklch(62% 0.24 27)" },
+  ];
+  const compTotal = s.comp.done + s.comp.prog + s.comp.none || 1;
+  const seg = (n, cls) => `<div class="dist-seg ${cls}" style="width:${(n / compTotal) * 100}%"></div>`;
+  return `
+    <div class="dash-grid">
+      <div class="panel"><h2>Assessment scores</h2>
+        <p class="panel-sub">Distribution across ${s.subs.length} submission${s.subs.length === 1 ? "" : "s"} · avg ${s.avgScore}%</p>
+        ${barChart(s.bands, ["0–49", "50–69", "70–84", "85–100"], "")}
+      </div>
+      <div class="panel"><h2>Pass rate</h2>
+        <p class="panel-sub">Submissions at 50% or above</p>
+        <div class="donut-wrap">${donut(passSegs, passRate + "%", "pass")}${chartLegend(passSegs)}</div>
+      </div>
+    </div>
+    <div class="panel" style="margin-top:1.5rem"><h2>Assignment completion</h2>
+      <p class="panel-sub">Across every assigned lesson, exercise & quiz</p>
+      <div class="dist-bar">${seg(s.comp.done, "done")}${seg(s.comp.prog, "prog")}${seg(s.comp.none, "none")}</div>
+      <div class="dist-legend">
+        <span><span class="dot done"></span> Completed · <strong>${s.comp.done}</strong></span>
+        <span><span class="dot prog"></span> In progress · <strong>${s.comp.prog}</strong></span>
+        <span><span class="dot none"></span> Not started · <strong>${s.comp.none}</strong></span>
+      </div>
+    </div>`;
+}
+
+function adminTeachers(s) {
+  const top = [...s.classRows].sort((a, b) => b.assignments + b.assessments - (a.assignments + a.assessments)).slice(0, 6);
+  const rows = top.length
+    ? top.map((c) => `<div class="mt-row">
+        <span class="mt-name">${esc(c.name)}<br><span class="mt-sub">${c.learners} learners · avg ${c.avg}%</span></span>
+        <span class="mt-health">${hbar("", c.assignments + c.assessments, Math.max(...top.map((x) => x.assignments + x.assessments), 1), "var(--primary)")}</span>
+        <span class="pill synced">${c.assignments + c.assessments} items</span>
+      </div>`).join("")
+    : `<div class="empty-state">No classes yet.</div>`;
+  return `
+    <div class="stat-row" style="margin-bottom:1.25rem">
+      <div class="stat-tile"><div class="st-label">${icon("users")} Teachers</div><div class="st-num">${countNum(s.roleCounts.teacher || 0)}</div></div>
+      <div class="stat-tile"><div class="st-label">${icon("graduation")} Classes</div><div class="st-num">${countNum(s.classRows.length)}</div></div>
+      <div class="stat-tile"><div class="st-label">${icon("book")} Assignments</div><div class="st-num">${countNum(s.assignments)}</div></div>
+      <div class="stat-tile"><div class="st-label">${icon("clipboard")} Assessments</div><div class="st-num">${countNum(s.assessments)}</div></div>
+    </div>
+    <div class="panel"><h2>Most active classes</h2>
+      <p class="panel-sub">Assignments + assessments created per class</p>
+      <div class="mini-table">${rows}</div>
+    </div>`;
+}
+
+function adminField(s) {
+  const foSegs = [
+    { label: "Synced", value: s.fo.synced, color: "oklch(68% 0.17 155)" },
+    { label: "Pending", value: s.fo.pending, color: "oklch(78% 0.15 75)" },
+  ];
+  return `
+    <div class="stat-row" style="margin-bottom:1.25rem">
+      <div class="stat-tile"><div class="st-label">${icon("clipboard")} Field reports</div><div class="st-num">${countNum(s.reports.length)}</div></div>
+      <div class="stat-tile"><div class="st-label">${icon("graduation")} Learners reached</div><div class="st-num">${countNum(s.learnersReached, "", true)}</div></div>
+      <div class="stat-tile"><div class="st-label">${icon("users")} Teachers reached</div><div class="st-num">${countNum(s.teachersReached)}</div></div>
+      <div class="stat-tile"><div class="st-label">${icon("cloud")} Synced</div><div class="st-num">${countNum(s.fo.synced)}</div></div>
+    </div>
+    <div class="dash-grid">
+      <div class="panel"><h2>Reports by county</h2>
+        <p class="panel-sub">Where field visits are happening</p>
+        ${rankedBars(s.foCounty, "oklch(55% 0.15 300)")}
+      </div>
+      <div class="panel"><h2>Sync status</h2>
+        <p class="panel-sub">Reports uploaded vs still pending</p>
+        <div class="donut-wrap">${donut(foSegs, s.reports.length, "reports")}${chartLegend(foSegs)}</div>
+      </div>
+    </div>`;
+}
+
 function adminBody(ctx) {
   const d = DASH.admin;
   const events = ctx.events || [];
@@ -364,6 +674,7 @@ function adminBody(ctx) {
   return `
     ${statTiles(d.stats)}
     ${smart}
+    ${adminAnalytics()}
     <div class="notice">${icon("info")}
       <span>Every login and signup across the portal is pushed to
       <strong>patrick@humanpractice.org</strong> and logged in the repository below.</span>
@@ -1908,6 +2219,36 @@ export function wireMyDashboard(user, events) {
   }
 
   function wireAdmin() {
+    // --- live analytics: sub-tabs, refresh, and cross-tab updates ---
+    function wireAnalytics() {
+      body.querySelectorAll("[data-admin-tab]").forEach((t) =>
+        t.addEventListener("click", () => {
+          adminView = t.dataset.adminTab;
+          renderAnalytics();
+        })
+      );
+      body.querySelector("[data-admin-refresh]")?.addEventListener("click", () => {
+        renderAnalytics();
+        toast("Analytics refreshed", "Charts recomputed from the latest data.", "success");
+      });
+    }
+    function renderAnalytics() {
+      const holder = body.querySelector("[data-admin-panel]");
+      if (!holder) return;
+      holder.outerHTML = adminAnalytics();
+      wireAnalytics();
+      runCounters();
+    }
+    wireAnalytics();
+    // update automatically when data changes in another tab (keep just one listener)
+    if (window.__hpfAdminStorage) window.removeEventListener("storage", window.__hpfAdminStorage);
+    window.__hpfAdminStorage = (e) => {
+      if (["hpf_classes", "hpf_users", "hpf_submissions", "hpf_login_events"].includes(e.key)) {
+        if (body.querySelector("[data-admin-panel]")) renderAnalytics();
+      }
+    };
+    window.addEventListener("storage", window.__hpfAdminStorage);
+
     // Change a user's role inline
     body.querySelectorAll("[data-role-edit]").forEach((sel) =>
       sel.addEventListener("change", () => {
