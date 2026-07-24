@@ -6,7 +6,7 @@
 import { icon } from "./icons.js";
 import {
   PORTAL_CARDS, CURRICULUM, RESOURCES, ASSESSMENT, IMPACT,
-  ROLES, ORG_TYPES, COUNTIES, VISIT_TYPES,
+  ROLES, ORG_TYPES, COUNTIES, VISIT_TYPES, HERO_SLIDES,
 } from "./data.js";
 import {
   $, $$, read, write, esc, initials, uid,
@@ -172,6 +172,16 @@ function shell(path, main) {
   return `${header(path)}<main class="fade-in">${main}</main>${footer()}`;
 }
 
+/* the floating badge that sits on the hero image — changes with each slide */
+function heroBadge(slide) {
+  return `
+    <span class="hf-icon">${icon(slide.icon)}</span>
+    <div>
+      <div class="hf-label">${esc(slide.label)}</div>
+      <div class="hf-value">${esc(slide.value)}</div>
+    </div>`;
+}
+
 /* small helper for count-up numbers in static pages */
 function countNum(count, suffix = "", compact = false) {
   return `<span class="count" data-count="${count}"${
@@ -231,17 +241,20 @@ function pageHome() {
           </div>
         </div>
         <div class="hero-media">
-          <div class="hero-frame">
-            <img src="${BASE}/assets/hero-classroom.jpg" width="1024" height="1024"
-              alt="Human Practice Foundation teacher with young learners in a Kenyan classroom" />
-          </div>
-          <div class="hero-float">
-            <span class="hf-icon">${icon("graduation")}</span>
-            <div>
-              <div class="hf-label">Certified</div>
-              <div class="hf-value">Teacher Programme</div>
+          <div class="hero-frame" data-hero>
+            ${HERO_SLIDES.map(
+              (s, i) => `<img class="hero-slide${i === 0 ? " is-active" : ""}"
+                src="${BASE}/${s.src}" width="1024" height="1024" alt="${esc(s.alt)}"
+                fetchpriority="${i === 0 ? "high" : "low"}" decoding="async" />`
+            ).join("")}
+            <div class="hero-dots">
+              ${HERO_SLIDES.map(
+                (s, i) => `<button class="hero-dot${i === 0 ? " is-active" : ""}"
+                  data-hero-dot="${i}" aria-label="Show ${esc(s.value)}"></button>`
+              ).join("")}
             </div>
           </div>
+          <div class="hero-float" data-hero-float>${heroBadge(HERO_SLIDES[0])}</div>
         </div>
       </div>
     </section>
@@ -657,6 +670,7 @@ function render() {
   const view = ROUTES[path] || pageNotFound;
   document.title = titleFor(path);
   const root = $("#app");
+  stopHeroCarousel(); // never leave a timer running for a view we're replacing
   root.innerHTML = view();
   window.scrollTo(0, 0);
   wireView(path);
@@ -668,9 +682,56 @@ function navigate(to) {
   render();
 }
 
+/* ------------------------------------------------------------ hero carousel
+   Cross-fades the hero images every 3s, with clickable dots, pause-on-hover,
+   and a floating badge that follows the active slide. */
+let heroTimer = null;
+const HERO_MS = 3000;
+
+function stopHeroCarousel() {
+  if (heroTimer) {
+    clearInterval(heroTimer);
+    heroTimer = null;
+  }
+}
+
+function wireHeroCarousel() {
+  const frame = $("[data-hero]");
+  if (!frame) return;
+  const slides = $$(".hero-slide", frame);
+  const dots = $$("[data-hero-dot]", frame);
+  const badge = $("[data-hero-float]");
+  if (slides.length < 2) return;
+
+  const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  let i = 0;
+
+  function show(n) {
+    i = (n + slides.length) % slides.length;
+    slides.forEach((s, k) => s.classList.toggle("is-active", k === i));
+    dots.forEach((d, k) => d.classList.toggle("is-active", k === i));
+    if (badge) badge.innerHTML = heroBadge(HERO_SLIDES[i]);
+  }
+  function start() {
+    stopHeroCarousel();
+    if (!still) heroTimer = setInterval(() => show(i + 1), HERO_MS);
+  }
+
+  dots.forEach((d) =>
+    d.addEventListener("click", () => {
+      show(+d.dataset.heroDot);
+      start(); // restart the clock after a manual pick
+    })
+  );
+  frame.addEventListener("mouseenter", stopHeroCarousel);
+  frame.addEventListener("mouseleave", start);
+  start();
+}
+
 /* ------------------------------------------------------------ per-view wiring */
 function wireView(path) {
   const authed = Auth.current();
+  if (path === "/") wireHeroCarousel();
   if (path === "/auth") wireAuth();
   if (path === "/field-officer") authed ? wireFieldOfficer() : wireAuth();
   if (path === "/dashboard") authed ? wireMyDashboard(authed, Repo.events()) : wireAuth();
