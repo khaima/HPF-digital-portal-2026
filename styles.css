@@ -593,6 +593,15 @@ form .btn,
   transition: all 0.18s ease;
 }
 
+/* resource cards render as <button> — keep the card look, not button chrome */
+button.portal-card {
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  border: none;
+  cursor: pointer;
+}
+
 .portal-card:hover {
   transform: translateY(-4px);
   box-shadow: 0 0 0 1px oklch(52% 0.14 148 / 0.4);

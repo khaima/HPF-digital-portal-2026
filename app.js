@@ -295,12 +295,12 @@ function resourceGrid(items, cols = "cols-3") {
   return `<div class="card-grid ${cols}">${items
     .map(
       (c) => `
-      <div class="portal-card">
+      <button class="portal-card" type="button" data-resource="${esc(c.title)}">
         <div class="card-icon">${icon(c.icon)}</div>
         <h3>${esc(c.title)}</h3>
         <p>${esc(c.desc)}</p>
         <span class="card-link plain">Open ${icon("arrowUpRight")}</span>
-      </div>`
+      </button>`
     )
     .join("")}</div>`;
 }
@@ -970,6 +970,12 @@ document.addEventListener("click", async (e) => {
     await Auth.logout();
     toast("Signed out", "You have been logged out.");
     await navigate("/");
+    return;
+  }
+  const resource = e.target.closest("[data-resource]");
+  if (resource) {
+    e.preventDefault();
+    toast("Opening resource", `“${resource.dataset.resource}” opens in the resource library.`);
   }
 });
 
