@@ -1298,10 +1298,8 @@ function learnerBody(ctx) {
     ${smart}
     ${subTabs(
       [
-        { id: "assignments", label: "Assignments" },
-        { id: "home", label: "Home" },
-        { id: "library", label: "Library" },
-        { id: "bookmarks", label: "Bookmarks" },
+        { id: "assignments", label: "My Assignments" },
+        { id: "resources", label: "Learning Resources" },
       ],
       "assignments"
     )}
@@ -1311,43 +1309,67 @@ function learnerBody(ctx) {
       ${assignFolder}
     </div>
 
-    <div data-subpanel="home" hidden>
-      <div class="panel">
-        <h2>Your classes</h2>
-        <p class="panel-sub">Classes your teacher has enrolled you in</p>
-        <div class="kclass-list">${classCards}</div>
-      </div>
-      <div class="panel" style="margin-top:1.5rem">
-        <div class="panel-head-row">
-          <div><h2>Continue learning</h2><p class="panel-sub" style="margin:0">Pick up where you left off</p></div>
-        </div>
-        ${cardRow(k.continue)}
-      </div>
-      <div class="panel" style="margin-top:1.5rem">
-        <h2>Recommended for you</h2>
-        <p class="panel-sub">Popular resources from your library</p>
-        ${cardRow(k.library.slice(0, 6))}
-      </div>
-    </div>
-
-    <div data-subpanel="library" hidden>
-      <div class="panel">
-        <div class="ksearch">
-          <span class="ksearch-icon">${icon("search")}</span>
-          <input class="input" data-library-search placeholder="Search the library…" aria-label="Search the library">
-        </div>
-        <div class="kchips">${channelChips}</div>
-        <div data-library-grid>${cardRow(k.library)}</div>
-      </div>
-    </div>
-
-    <div data-subpanel="bookmarks" hidden>
-      <div class="panel">
-        <h2>Bookmarks</h2>
-        <p class="panel-sub">Resources you've saved for later</p>
-        ${k.bookmarks.length ? cardRow(k.bookmarks) : `<div class="empty-state">No bookmarks yet.</div>`}
-      </div>
+    <div data-subpanel="resources" hidden>
+      ${learnerResources(ctx?.user?.id)}
     </div>`;
+}
+
+/* Learning Resources for a learner: Digital Library (shared + published),
+   Numeracy, and Literacy — the only resource categories they see. */
+function learnerResources(userId) {
+  const { resources } = learnerAssignments(userId); // shared to this learner
+  const lib = publishedLibrary();
+  const inCat = (cat) => lib.filter((r) => (r.category || "").toLowerCase().includes(cat));
+
+  const card = (r, shared) => {
+    const t = RESOURCE_TYPES[r.type] || RESOURCE_TYPES.document;
+    return `<div class="lib-row">
+      <span class="lib-ic">${icon(t.icon)}</span>
+      <div class="lib-main">
+        <div class="lib-title">${esc(r.title)}${shared ? ' <span class="la-live">shared with you</span>' : ""}</div>
+        <div class="lib-sub">${t.label}${r.category ? " · " + esc(r.category) : ""}${r.description ? " · " + esc(r.description) : ""}</div>
+      </div>
+      <button class="btn btn-primary btn-xs" data-lr-open="${r.id}">${icon("externalLink")} Open</button>
+    </div>`;
+  };
+  const list = (rows, empty) => (rows ? `<div class="lib-list">${rows}</div>` : `<div class="empty-state">${empty}</div>`);
+
+  const libraryRows =
+    (resources.map(({ r }) => card(r, true)).join("") + lib.map((r) => card(r, false)).join("")) || null;
+  const numeracyRows = inCat("numeracy").map((r) => card(r, false)).join("") || null;
+  const literacyRows = inCat("literacy").map((r) => card(r, false)).join("") || null;
+
+  const cats = [
+    { id: "library", label: "Digital Library" },
+    { id: "numeracy", label: "Numeracy" },
+    { id: "literacy", label: "Literacy" },
+  ];
+  const nav = `<div class="ksubtabs">${cats
+    .map((c, i) => `<button class="ksubtab ${i === 0 ? "active" : ""}" data-lr-cat="${c.id}">${c.label}</button>`)
+    .join("")}</div>`;
+
+  return `
+    <div class="panel">
+      <div class="panel-head-row"><div>
+        <h2>${icon("library")} Learning resources</h2>
+        <p class="panel-sub" style="margin:0">Resources shared with you and from HPF's digital library</p>
+      </div></div>
+      ${nav}
+      <div data-lr-panel="library">${list(libraryRows, "No resources shared yet — your teacher and HPF will add them here.")}</div>
+      <div data-lr-panel="numeracy" hidden>${list(numeracyRows, "No numeracy resources yet.")}</div>
+      <div data-lr-panel="literacy" hidden>${list(literacyRows, "No literacy resources yet.")}</div>
+    </div>`;
+}
+
+/* find a resource by id in the library or any class's shared resources */
+function findResource(id) {
+  const inLib = getLibrary().find((r) => r.id === id);
+  if (inLib) return inLib;
+  for (const c of read(K_CLASSES, [])) {
+    const r = (c.resources || []).find((x) => x.id === id);
+    if (r) return r;
+  }
+  return null;
 }
 
 function scoreClass(v) {
@@ -2864,6 +2886,24 @@ export function wireMyDashboard(user, events) {
           p.hidden = p.dataset.subpanel !== id;
         });
         runCounters();
+      })
+    );
+
+    // learner Learning-Resources category nav (Digital Library / Numeracy / Literacy)
+    const lrTabs = [...body.querySelectorAll("[data-lr-cat]")];
+    lrTabs.forEach((tab) =>
+      tab.addEventListener("click", () => {
+        const id = tab.dataset.lrCat;
+        lrTabs.forEach((t) => t.classList.toggle("active", t === tab));
+        body.querySelectorAll("[data-lr-panel]").forEach((p) => {
+          p.hidden = p.dataset.lrPanel !== id;
+        });
+      })
+    );
+    body.querySelectorAll("[data-lr-open]").forEach((b) =>
+      b.addEventListener("click", () => {
+        const r = findResource(b.dataset.lrOpen);
+        if (r) openResource(r);
       })
     );
 

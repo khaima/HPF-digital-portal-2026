@@ -7,6 +7,7 @@ import { icon } from "./icons.js";
 import {
   PORTAL_CARDS, CURRICULUM, RESOURCES, ASSESSMENT, IMPACT,
   ROLES, ORG_TYPES, COUNTIES, VISIT_TYPES, HERO_SLIDES, HERO_QUOTES,
+  REGIONS, PROJECTS,
 } from "./data.js";
 import {
   $, $$, read, write, esc, initials, uid,
@@ -215,12 +216,16 @@ function brand() {
 
 /* the Field Officer App is only relevant to field officers and admins */
 const HIDE_FIELD_OFFICER = new Set(["teacher", "learner", "school_leader"]);
+/* field officers only see their own field — hide the education pages */
+const EDU_NAV = new Set(["/curriculum", "/resources", "/assessment"]);
 
 function header(path) {
   const user = Auth.current();
-  const nav = (user ? NAV_AUTHED : NAV).filter(
-    (n) => !(n.href === "/field-officer" && user && HIDE_FIELD_OFFICER.has(user.role))
-  );
+  const nav = (user ? NAV_AUTHED : NAV).filter((n) => {
+    if (n.href === "/field-officer" && user && HIDE_FIELD_OFFICER.has(user.role)) return false;
+    if (user && user.role === "field_officer" && EDU_NAV.has(n.href)) return false;
+    return true;
+  });
   const links = nav
     .map(
       (n) =>
@@ -511,12 +516,12 @@ function pageAuth(mode = "login") {
   const roleOptions =
     `<option value="" disabled selected>Select your role</option>` +
     ROLES.map((r) => `<option value="${r.value}">${r.label}</option>`).join("");
-  const orgOptions =
-    `<option value="" disabled selected>Select organization type</option>` +
-    ORG_TYPES.map((o) => `<option>${o}</option>`).join("");
-  const countyOptions =
-    `<option value="" disabled selected>Select your county</option>` +
-    COUNTIES.map((c) => `<option>${c}</option>`).join("");
+  const regionOptions =
+    `<option value="" disabled selected>Select your region</option>` +
+    Object.keys(REGIONS).map((r) => `<option>${r}</option>`).join("");
+  const projectOptions =
+    `<option value="" disabled selected>Select your project</option>` +
+    PROJECTS.map((p) => `<option>${p}</option>`).join("");
 
   const main = `
       <main class="auth-main">
@@ -568,12 +573,18 @@ function pageAuth(mode = "login") {
             <input class="input" id="su_pw" name="password" type="password" minlength="6" required>
           </div>
           <div class="field">
-            <label for="su_org">School / organization</label>
-            <select class="select" id="su_org" name="orgType">${orgOptions}</select>
+            <label for="su_region">County / region</label>
+            <select class="select" id="su_region" name="region" data-region>${regionOptions}</select>
           </div>
           <div class="field">
-            <label for="su_county">County / region</label>
-            <select class="select" id="su_county" name="county">${countyOptions}</select>
+            <label for="su_school">School</label>
+            <select class="select" id="su_school" name="school" data-school disabled>
+              <option value="" disabled selected>Select a region first</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="su_project">Project</label>
+            <select class="select" id="su_project" name="project">${projectOptions}</select>
           </div>
           <button class="btn btn-primary btn-block" type="submit">Create account</button>
         </form>
@@ -875,6 +886,18 @@ function wireAuth() {
   roleSel?.addEventListener("change", syncRole);
   syncRole();
 
+  // region → filters the school dropdown to that region's schools
+  const regionSel = $("[data-region]");
+  const schoolSel = $("[data-school]");
+  regionSel?.addEventListener("change", () => {
+    const schools = REGIONS[regionSel.value] || [];
+    schoolSel.disabled = !schools.length;
+    schoolSel.innerHTML = schools.length
+      ? `<option value="" disabled selected>Select your school</option>` +
+        schools.map((s) => `<option>${esc(s)}</option>`).join("")
+      : `<option value="" disabled selected>Select a region first</option>`;
+  });
+
   $("[data-forgot]")?.addEventListener("click", () =>
     toast("Password reset", "Contact your HPF administrator to reset your password.")
   );
@@ -917,6 +940,9 @@ function wireAuth() {
     }
     if ((data.password || "").length < 6)
       return toast("Weak password", "Password must be at least 6 characters.", "error");
+    if (!data.region) return toast("Region required", "Select your region.", "error");
+    if (!data.school) return toast("School required", "Select your school from the region.", "error");
+    if (!data.project) return toast("Project required", "Select the project you belong to.", "error");
 
     const submit = signupForm.querySelector("[type=submit]");
     if (submit) { submit.disabled = true; submit.textContent = "Creating account…"; }

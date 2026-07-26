@@ -222,12 +222,20 @@ export const LIBRARY_SEED = [
 ];
 
 /* HPF-supported schools (teachers pick one when creating a class) */
-export const SCHOOLS = [
-  "Aitong School",
-  "Naboisho School",
-  "Ololomei School",
-  "Olkimitare School",
-];
+/* HPF regions → the schools in each. Signup picks a region, then the
+   school dropdown is filtered to that region. */
+export const REGIONS = {
+  Meru: ["Meru Primary School", "Kithoka Primary School", "Nkubu Primary School"],
+  Isiolo: ["Isiolo Central Primary", "Garbatulla Primary School", "Kinna Primary School"],
+  Laikipia: ["Nanyuki Primary School", "Rumuruti Primary School", "Doldol Primary School"],
+  Narok: ["Aitong School", "Naboisho School", "Ololomei School", "Olkimitare School"],
+};
+
+/* HPF programme projects a user can belong to */
+export const PROJECTS = ["MEP", "ICT Academy", "Infrastructure", "Education"];
+
+/* flat list of every school (teacher class creation, scorecard, etc.) */
+export const SCHOOLS = Object.values(REGIONS).flat();
 
 /* Field Officer data-collection form: visit types */
 export const VISIT_TYPES = [
