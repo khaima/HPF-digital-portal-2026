@@ -192,6 +192,35 @@ export const HERO_SLIDES = [
   },
 ];
 
+/* Digital library — categories, resource types, and a small seed set */
+export const LIBRARY_CATEGORIES = [
+  "Teacher Training", "Literacy", "Numeracy", "Science",
+  "Life Skills", "CBC", "ICT Skills", "Other",
+];
+
+export const RESOURCE_TYPES = {
+  document: { label: "Document", icon: "file" },
+  video: { label: "Video", icon: "play" },
+  audio: { label: "Audio", icon: "headphones" },
+  link: { label: "Web link", icon: "link" },
+  reading: { label: "Reading", icon: "book" },
+};
+
+export const LIBRARY_SEED = [
+  { title: "HPF Teacher Training Manual", category: "Teacher Training", type: "document",
+    description: "Comprehensive facilitator guide for HPF's core teacher training programme.",
+    url: "https://humanpracticefoundation.org/" },
+  { title: "Foundational Literacy Pack", category: "Literacy", type: "reading",
+    description: "Early-grade reading and phonics materials aligned to CBC.",
+    url: "https://globaldigitallibrary.org/" },
+  { title: "Numeracy Games & Activities", category: "Numeracy", type: "video",
+    description: "Hands-on activities that make number sense stick.",
+    url: "https://www.khanacademy.org/" },
+  { title: "Intro to Digital Skills", category: "ICT Skills", type: "video",
+    description: "Getting started with laptops, typing, and the internet — for the IT Academy.",
+    url: "https://www.khanacademy.org/computing" },
+];
+
 /* HPF-supported schools (teachers pick one when creating a class) */
 export const SCHOOLS = [
   "Aitong School",

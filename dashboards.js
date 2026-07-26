@@ -4,7 +4,8 @@
    ============================================================ */
 
 import { icon } from "./icons.js";
-import { DASH, ROLES, ORG_TYPES, COUNTIES, KOLIBRI, CONTENT_KINDS, SCHOOLS } from "./data.js";
+import { DASH, ROLES, ORG_TYPES, COUNTIES, KOLIBRI, CONTENT_KINDS, SCHOOLS,
+  LIBRARY_CATEGORIES, RESOURCE_TYPES, LIBRARY_SEED } from "./data.js";
 import { esc, timeAgo, runCounters, read, write, toast, uid } from "./util.js";
 import { adminClient, authMessage } from "./supabase.js";
 
@@ -322,6 +323,98 @@ function subTabs(tabs, active) {
    ============================================================ */
 const K_SUBS = "hpf_submissions";   // field-officer reports
 const K_EVENTS = "hpf_login_events"; // login / signup inbox
+const K_LIBRARY = "hpf_library";     // admin-curated digital library
+
+let adminLibOpen = false;            // admin "add resource" form toggle
+
+/* the shared digital library — seeded once, then admin-managed */
+function getLibrary() {
+  let lib = read(K_LIBRARY, null);
+  if (!lib) {
+    lib = LIBRARY_SEED.map((r) => ({ id: uid(), published: true, createdAt: Date.now(), ...r }));
+    write(K_LIBRARY, lib);
+  }
+  return lib;
+}
+const saveLibrary = (lib) => write(K_LIBRARY, lib);
+const publishedLibrary = () => getLibrary().filter((r) => r.published);
+
+/* open a library/shared resource — a data URL (upload) or a normal link */
+function openResource(res) {
+  const href = res.dataUrl || res.url;
+  if (!href) return toast("No file", "This resource has no link or file attached.", "error");
+  window.open(href, "_blank", "noopener");
+}
+
+/* one resource card (used in the admin library and the learner folder) */
+function resourceMeta(res) {
+  const t = RESOURCE_TYPES[res.type] || RESOURCE_TYPES.document;
+  return { t, sub: `${t.label}${res.fileName ? " · " + res.fileName : ""}${res.category ? " · " + res.category : ""}` };
+}
+
+/* ------------------------------------------------------------ admin: digital library */
+function digitalLibraryPanel() {
+  const lib = getLibrary();
+  const typeOpts = Object.entries(RESOURCE_TYPES)
+    .map(([v, t]) => `<option value="${v}">${t.label}</option>`)
+    .join("");
+  const catOpts = LIBRARY_CATEGORIES.map((c) => `<option>${esc(c)}</option>`).join("");
+
+  const rows = lib.length
+    ? lib
+        .map((r) => {
+          const { t, sub } = resourceMeta(r);
+          return `<div class="lib-row">
+            <span class="lib-ic">${icon(t.icon)}</span>
+            <div class="lib-main">
+              <div class="lib-title">${esc(r.title)}</div>
+              <div class="lib-sub">${esc(sub)}</div>
+            </div>
+            <button class="btn btn-outline btn-xs" data-lib-open="${r.id}">${icon("externalLink")} Open</button>
+            <button class="btn ${r.published ? "btn-outline" : "btn-primary"} btn-xs" data-lib-publish="${r.id}">${r.published ? "Unpublish" : "Publish"}</button>
+            <button class="icon-btn danger" data-lib-delete="${r.id}" title="Delete">${icon("trash")}</button>
+          </div>`;
+        })
+        .join("")
+    : `<div class="empty-state">The library is empty. Add your first resource above.</div>`;
+
+  return `
+    <div class="panel" style="margin-top:1.5rem" data-lib-panel>
+      <div class="panel-head-row">
+        <div>
+          <h2>${icon("library")} Digital Library</h2>
+          <p class="panel-sub" style="margin:0">Upload and publish resources teachers can share with learners · ${lib.filter((r) => r.published).length} published</p>
+        </div>
+        <button class="btn btn-primary" data-lib-toggle>${icon("plus")} ${adminLibOpen ? "Close" : "Add resource"}</button>
+      </div>
+
+      <form id="libForm" class="add-user-form" ${adminLibOpen ? "" : "hidden"}>
+        <div class="form-row">
+          <div class="field"><label>Title</label>
+            <input class="input" name="title" required maxlength="120" placeholder="e.g. Grade 4 Numeracy Workbook"></div>
+          <div class="field"><label>Category</label>
+            <select class="select" name="category">${catOpts}</select></div>
+        </div>
+        <div class="form-row">
+          <div class="field"><label>Type</label>
+            <select class="select" name="type">${typeOpts}</select></div>
+          <div class="field"><label>Link (URL)</label>
+            <input class="input" name="url" type="url" placeholder="https://…"></div>
+        </div>
+        <div class="field"><label>Description</label>
+          <input class="input" name="description" maxlength="200" placeholder="One line on what this resource is"></div>
+        <div class="field"><label>${icon("upload")} …or upload a file <span style="font-weight:400;color:var(--muted-foreground)">(optional, under 800 KB)</span></label>
+          <input class="input" name="file" type="file" data-lib-file>
+          <p class="hint">Small files are stored in the browser. For large files (videos, big PDFs), paste a link instead.</p></div>
+        <div class="add-user-actions">
+          <button class="btn btn-primary" type="submit">${icon("check")} Add to library</button>
+          <button class="btn btn-outline" type="button" data-lib-cancel>Cancel</button>
+        </div>
+      </form>
+
+      <div class="lib-list">${rows}</div>
+    </div>`;
+}
 let adminView = "scorecard";         // which analytics tab is open
 let scPillar = "education";           // which scorecard pillar is drilled into
 
@@ -898,6 +991,7 @@ function adminBody(ctx) {
       ${barChart(d.weekly, DAYS)}
     </div>
     ${userManagementPanel(ctx.user)}
+    ${digitalLibraryPanel()}
     <div class="panel" style="margin-top:1.5rem">
       <h2>Recent activity</h2>
       <p class="panel-sub">Across schools, teachers, learners and field teams</p>
@@ -979,7 +1073,8 @@ function liveSessionPanel(userId) {
 function learnerAssignments(userId) {
   const assignments = [];
   const assessments = [];
-  if (!userId) return { assignments, assessments };
+  const resources = [];
+  if (!userId) return { assignments, assessments, resources };
   read(K_CLASSES, []).forEach((c) => {
     const enrolled = c.learners.some((l) => l.id === userId);
     (c.assignments || []).forEach((a) => {
@@ -993,13 +1088,31 @@ function learnerAssignments(userId) {
       const submission = (a.submissions || []).find((s) => s.learnerId === userId) || null;
       assessments.push({ cls: c, a, submission });
     });
+    (c.resources || []).forEach((r) => {
+      const targeted = (r.audience || "all") === "all" ? enrolled : (r.targetIds || []).includes(userId);
+      if (targeted) resources.push({ cls: c, r });
+    });
   });
-  return { assignments, assessments };
+  return { assignments, assessments, resources };
 }
 
 function learnerAssignmentsFolder(userId) {
-  const { assignments, assessments } = learnerAssignments(userId);
-  const total = assignments.length + assessments.length;
+  const { assignments, assessments, resources } = learnerAssignments(userId);
+  const total = assignments.length + assessments.length + resources.length;
+
+  const resourceRows = resources
+    .map(({ cls, r }) => {
+      const t = RESOURCE_TYPES[r.type] || RESOURCE_TYPES.document;
+      return `<div class="la-row">
+        <span class="assign-badge" style="background:oklch(55% 0.15 300)">${icon(t.icon)}</span>
+        <div class="la-main">
+          <div class="la-title">${esc(r.title)}</div>
+          <div class="la-meta">${t.label} · ${esc(cls.name)}${r.description ? " · " + esc(r.description) : ""}</div>
+        </div>
+        <div class="la-side"><button class="btn btn-primary btn-xs" data-learn-resource="${r.id}" data-learn-class="${cls.id}">${icon("externalLink")} Open</button></div>
+      </div>`;
+    })
+    .join("");
 
   const assignRows = assignments
     .map(({ cls, a, result }) => {
@@ -1055,9 +1168,10 @@ function learnerAssignmentsFolder(userId) {
         <div><h2>${icon("clipboard")} My assignments</h2>
           <p class="panel-sub" style="margin:0">Everything your teacher has assigned to you — ${total} item${total === 1 ? "" : "s"}</p></div>
       </div>
-      ${total ? "" : `<div class="empty-state">Nothing assigned yet.<br>When your teacher publishes a lesson, quiz, or assessment, it appears here right away.</div>`}
+      ${total ? "" : `<div class="empty-state">Nothing assigned yet.<br>When your teacher publishes a lesson, quiz, assessment, or resource, it appears here right away.</div>`}
       ${assignments.length ? `<h3 class="la-head">${icon("book")} Lessons & quizzes</h3><div class="la-list">${assignRows}</div>` : ""}
       ${assessments.length ? `<h3 class="la-head" style="margin-top:1.5rem">${icon("chartColumn")} Assessments</h3><div class="la-list">${assessRows}</div>` : ""}
+      ${resources.length ? `<h3 class="la-head" style="margin-top:1.5rem">${icon("library")} Learning resources</h3><div class="la-list">${resourceRows}</div>` : ""}
     </div>`;
 }
 
@@ -1259,6 +1373,8 @@ const coachState = {
   openAssessForm: false,
   analyzeId: null, // assessment whose analytics panel is expanded
   publishId: null, // assessment whose publish dialog is open
+  editAssignId: null, // assignment being edited in the planner
+  openResourceForm: false, // teacher "share resource" form
 };
 
 /* A seeded MCQ assessment (with auto-marked submissions) so the demo class
@@ -1460,12 +1576,12 @@ function typeBadge(type) {
 }
 
 /* one row in the Overview / Assignments lists */
-function assignmentRow(a) {
+function assignmentRow(a, clickable) {
   const comp = assignmentCompletion(a);
   const sc = assignmentAvgScore(a);
   const cnt = statusCounts(a);
   const t = ASSIGN_TYPES[a.type];
-  return `<div class="assign-row">
+  return `<div class="assign-row${clickable ? " clickable" : ""}"${clickable ? ` data-assign-preview="${a.id}" title="Preview“${esc(a.title)}”"` : ""}>
     ${typeBadge(a.type)}
     <div class="assign-main">
       <div class="assign-title">${esc(a.title)}</div>
@@ -1534,11 +1650,35 @@ function learnerChecklist(learners, checked) {
     .join("");
 }
 
-/* the Plan workspace form — create a lesson, assignment, or quiz */
-function planForm(cls, classes) {
+/* the Plan workspace form — create, or (when editing) update a lesson/quiz */
+function planForm(cls, classes, editing) {
   const typeOpts = Object.entries(ASSIGN_TYPES)
-    .map(([v, t]) => `<option value="${v}">${t.label}</option>`)
+    .map(([v, t]) => `<option value="${v}" ${editing && editing.type === v ? "selected" : ""}>${t.label}</option>`)
     .join("");
+
+  // edit mode: metadata only (title/type/detail/due) — audience & class stay put
+  if (editing) {
+    return `
+      <form id="assignForm" class="add-user-form" data-editing="${editing.id}">
+        <div class="form-row">
+          <div class="field"><label>Type</label>
+            <select class="select" name="type">${typeOpts}</select></div>
+          <div class="field"><label>Title</label>
+            <input class="input" name="title" required value="${esc(editing.title)}"></div>
+        </div>
+        <div class="form-row">
+          <div class="field"><label>Detail</label>
+            <input class="input" name="detail" value="${esc(editing.detail || "")}"></div>
+          <div class="field"><label>Due</label>
+            <input class="input" name="due" value="${esc(editing.due || "")}"></div>
+        </div>
+        <div class="add-user-actions">
+          <button class="btn btn-primary" type="submit">${icon("check")} Save changes</button>
+          <button class="btn btn-outline" type="button" data-assign-cancel>Cancel</button>
+        </div>
+      </form>`;
+  }
+
   const classOpts = classes
     .map(
       (c) => `<option value="${c.id}" ${c.id === cls.id ? "selected" : ""}>${esc(c.name)} · ${esc(c.school || "")} (${c.learners.length})</option>`
@@ -1582,24 +1722,100 @@ function planForm(cls, classes) {
     </form>`;
 }
 
+/* teacher shares a resource — from the digital library or a new upload/link */
+function shareResourceForm(cls, classes) {
+  const pub = publishedLibrary();
+  const libOpts =
+    `<option value="">— none (add a new one below) —</option>` +
+    pub.map((r) => `<option value="${r.id}">${esc(r.title)} · ${RESOURCE_TYPES[r.type]?.label || ""}</option>`).join("");
+  const typeOpts = Object.entries(RESOURCE_TYPES).map(([v, t]) => `<option value="${v}">${t.label}</option>`).join("");
+  const classOpts = classes
+    .map((c) => `<option value="${c.id}" ${c.id === cls.id ? "selected" : ""}>${esc(c.name)} (${c.learners.length})</option>`)
+    .join("");
+  return `
+    <form id="resourceForm" class="add-user-form">
+      <div class="form-row">
+        <div class="field"><label>${icon("library")} From digital library</label>
+          <select class="select" name="libId">${libOpts}</select>
+          <p class="hint">${pub.length} published resource${pub.length === 1 ? "" : "s"} available.</p></div>
+        <div class="field"><label>Share with class</label>
+          <select class="select" name="classId" data-res-class>${classOpts}</select></div>
+      </div>
+      <div class="form-row">
+        <div class="field"><label>…or new resource title</label>
+          <input class="input" name="title" maxlength="120" placeholder="Leave blank if picking from library"></div>
+        <div class="field"><label>Type</label>
+          <select class="select" name="type">${typeOpts}</select></div>
+      </div>
+      <div class="form-row">
+        <div class="field"><label>Link (URL)</label>
+          <input class="input" name="url" type="url" placeholder="https://…"></div>
+        <div class="field"><label>Audience</label>
+          <select class="select" name="audience" data-res-audience>
+            <option value="all" selected>Whole class</option>
+            <option value="individual">Individual learner(s)</option>
+          </select></div>
+      </div>
+      <div class="field"><label>${icon("upload")} …or upload a file <span style="font-weight:400;color:var(--muted-foreground)">(under 800 KB)</span></label>
+        <input class="input" name="file" type="file" data-res-file></div>
+      <div class="field" data-res-picker hidden>
+        <div class="picker-head"><label style="margin-bottom:0">Pick learner(s)</label>
+          <label class="lchk select-all-chk"><input type="checkbox" data-res-select-all> Select all</label></div>
+        <div class="assign-learners" data-res-learners>${cls.learners.map((l) => `<label class="lchk"><input type="checkbox" name="reslearner" value="${l.id}"> ${esc(l.name)}</label>`).join("")}</div>
+      </div>
+      <div class="add-user-actions">
+        <button class="btn btn-primary" type="submit">${icon("send")} Publish to learners</button>
+        <button class="btn btn-outline" type="button" data-share-resource-cancel>Cancel</button>
+      </div>
+    </form>`;
+}
+
+function sharedResourceList(cls) {
+  const res = cls.resources || [];
+  if (!res.length) return "";
+  return `<div class="shared-res">
+    <div class="shared-res-head">${icon("library")} Shared with this class <span class="hint">· ${res.length}</span></div>
+    ${res
+      .map((r) => {
+        const t = RESOURCE_TYPES[r.type] || RESOURCE_TYPES.document;
+        const who = (r.audience || "all") === "individual" ? `${(r.targetIds || []).length} learner(s)` : "Whole class";
+        return `<div class="lib-row">
+          <span class="lib-ic">${icon(t.icon)}</span>
+          <div class="lib-main"><div class="lib-title">${esc(r.title)}</div>
+            <div class="lib-sub">${t.label} · ${who}${r.fileName ? " · " + esc(r.fileName) : ""}</div></div>
+          <button class="btn btn-outline btn-xs" data-res-open="${r.id}">${icon("externalLink")} Open</button>
+          <button class="icon-btn danger" data-res-unshare="${r.id}" title="Remove from class">${icon("trash")}</button>
+        </div>`;
+      })
+      .join("")}
+  </div>`;
+}
+
 /* Plan & Assign — one flow: plan a lesson/assignment/quiz at the top, then it
    drops into the list below where you start a session to publish it live. */
 function coachAssignments(list, learners, cls, classes) {
+  const editing = coachState.editAssignId ? list.find((a) => a.id === coachState.editAssignId) : null;
+  const showForm = coachState.openForm || !!editing;
   return `
     <div class="panel">
       <div class="panel-head-row">
         <div>
           <h2>${icon("clipboard")} Plan &amp; assign</h2>
-          <p class="panel-sub" style="margin:0">Plan a <strong>lesson</strong>, <strong>assignment</strong>, or <strong>quiz</strong>, then start its session to publish it live to learners — all in one place. MCQ auto-marked tests live in <strong>Assessments</strong>.</p>
+          <p class="panel-sub" style="margin:0">Plan a <strong>lesson</strong>, <strong>assignment</strong>, or <strong>quiz</strong>, then start its session to publish it live to learners. Tap a row to preview, or use edit &amp; delete. MCQ tests live in <strong>Assessments</strong>.</p>
         </div>
-        <button class="btn btn-primary" data-new-assign-toggle>${icon("plus")} ${coachState.openForm ? "Close planner" : "Plan work"}</button>
+        <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+          <button class="btn btn-outline" data-share-resource-toggle>${icon("library")} ${coachState.openResourceForm ? "Close" : "Share resource"}</button>
+          <button class="btn btn-primary" data-new-assign-toggle>${icon("plus")} ${showForm ? "Close planner" : "Plan work"}</button>
+        </div>
       </div>
-      ${coachState.openForm ? planForm(cls, classes) : ""}
+      ${coachState.openResourceForm ? shareResourceForm(cls, classes) : ""}
+      ${sharedResourceList(cls)}
+      ${showForm ? planForm(cls, classes, editing) : ""}
       <div class="assign-list">${
         list.length
           ? list
               .map(
-                (a) => `<div class="assign-item">${assignmentRow(a)}${sessionBar(a, cls)}</div>`
+                (a) => `<div class="assign-item">${assignmentRow(a, true)}${sessionBar(a, cls)}</div>`
               )
               .join("")
           : `<div class="empty-state">Nothing planned yet. Click <strong>Plan work</strong> to create a lesson, assignment, or quiz — it'll appear here, ready to publish.</div>`
@@ -1631,8 +1847,61 @@ function sessionBar(a, cls) {
   return `<div class="session-bar">
     <span class="session-audience">${icon("users")} ${audience}</span>
     ${badge}
-    ${btn}
+    <span class="assign-actions">
+      <button class="icon-btn" data-assign-preview="${a.id}" title="Preview">${icon("eye")}</button>
+      <button class="icon-btn" data-assign-edit="${a.id}" title="Edit">${icon("pen")}</button>
+      <button class="icon-btn danger" data-assign-delete="${a.id}" title="Delete">${icon("trash")}</button>
+      ${btn}
+    </span>
   </div>`;
+}
+
+/* preview modal for a planned lesson/assignment/quiz */
+function openAssignPreview(classId, assignId) {
+  const cls = read(K_CLASSES, []).find((c) => c.id === classId);
+  const a = cls?.assignments.find((x) => x.id === assignId);
+  if (!a) return;
+  const t = ASSIGN_TYPES[a.type] || ASSIGN_TYPES.lesson;
+  const comp = assignmentCompletion(a);
+  const cnt = statusCounts(a);
+  const whole = a.results.length >= cls.learners.length && cls.learners.length;
+  const state = sessionOf(a);
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay";
+  overlay.innerHTML = `
+    <div class="modal" role="dialog" aria-modal="true">
+      <div class="modal-head">
+        <div style="display:flex;align-items:center;gap:.7rem">
+          <span class="assign-badge" style="background:${t.color}">${icon(t.icon)}</span>
+          <div><h2>${esc(a.title)}</h2>
+            <p class="panel-sub" style="margin:0">${t.label} · ${esc(cls.name)}</p></div>
+        </div>
+        <button class="icon-btn" data-modal-close aria-label="Close">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="prev-grid">
+          <div><span class="prev-k">Type</span><span class="prev-v">${t.label}</span></div>
+          <div><span class="prev-k">Detail</span><span class="prev-v">${esc(a.detail || "—")}</span></div>
+          <div><span class="prev-k">Due</span><span class="prev-v">${esc(a.due || "—")}</span></div>
+          <div><span class="prev-k">Audience</span><span class="prev-v">${whole ? "Whole class" : a.results.length + " learner(s)"}</span></div>
+          <div><span class="prev-k">Session</span><span class="prev-v">${state === "active" ? "Live now" : state === "ended" ? "Ended" : "Planned"}</span></div>
+          <div><span class="prev-k">Class completion</span><span class="prev-v">${comp}%</span></div>
+        </div>
+        <div class="hbar-track" style="margin-top:1rem"><div class="hbar-fill" style="width:${comp}%;background:var(--primary)"></div></div>
+        <div class="dist-legend" style="margin-top:1rem">
+          <span><span class="dot done"></span> Completed · <strong>${cnt.completed}</strong></span>
+          <span><span class="dot prog"></span> In progress · <strong>${cnt.in_progress}</strong></span>
+          <span><span class="dot none"></span> Not started · <strong>${cnt.not_started}</strong></span>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn btn-primary" data-modal-close>Close preview</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  overlay.querySelectorAll("[data-modal-close]").forEach((b) => b.addEventListener("click", close));
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
 }
 
 function coachLearnersList(list, learners, cls) {
@@ -2518,6 +2787,69 @@ export function wireMyDashboard(user, events) {
         renderRole("admin");
       })
     );
+
+    // --- digital library ---
+    body.querySelector("[data-lib-toggle]")?.addEventListener("click", () => {
+      adminLibOpen = !adminLibOpen;
+      renderRole("admin");
+    });
+    body.querySelector("[data-lib-cancel]")?.addEventListener("click", () => {
+      adminLibOpen = false;
+      renderRole("admin");
+    });
+    body.querySelectorAll("[data-lib-open]").forEach((b) =>
+      b.addEventListener("click", () => openResource(getLibrary().find((r) => r.id === b.dataset.libOpen) || {}))
+    );
+    body.querySelectorAll("[data-lib-publish]").forEach((b) =>
+      b.addEventListener("click", () => {
+        const lib = getLibrary();
+        const r = lib.find((x) => x.id === b.dataset.libPublish);
+        if (r) { r.published = !r.published; saveLibrary(lib); toast(r.published ? "Published" : "Unpublished", `“${r.title}” is now ${r.published ? "available to teachers" : "hidden"}.`, "success"); }
+        renderRole("admin");
+      })
+    );
+    body.querySelectorAll("[data-lib-delete]").forEach((b) =>
+      b.addEventListener("click", () => {
+        const lib = getLibrary();
+        const r = lib.find((x) => x.id === b.dataset.libDelete);
+        saveLibrary(lib.filter((x) => x.id !== b.dataset.libDelete));
+        toast("Deleted", r ? `“${r.title}” removed from the library.` : "", "success");
+        renderRole("admin");
+      })
+    );
+    body.querySelector("#libForm")?.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const form = e.currentTarget;
+      const data = Object.fromEntries(new FormData(form).entries());
+      const title = (data.title || "").trim();
+      if (!title) return toast("Title required", "Give the resource a title.", "error");
+      const fileInput = form.querySelector("[data-lib-file]");
+      const file = fileInput?.files?.[0];
+
+      const add = (extra) => {
+        const lib = getLibrary();
+        lib.unshift({
+          id: uid(), title, category: data.category || "Other", type: data.type || "document",
+          description: (data.description || "").trim(), url: (data.url || "").trim(),
+          published: true, createdAt: Date.now(), ...extra,
+        });
+        saveLibrary(lib);
+        adminLibOpen = false;
+        toast("Added to library", `“${title}” is published and available to teachers.`, "success");
+        renderRole("admin");
+      };
+
+      if (file) {
+        if (file.size > 800 * 1024) return toast("File too large", "Keep uploads under 800 KB, or paste a link instead.", "error");
+        const reader = new FileReader();
+        reader.onload = () => add({ dataUrl: reader.result, fileName: file.name });
+        reader.readAsDataURL(file);
+      } else if (!(data.url || "").trim()) {
+        return toast("Add a link or file", "Paste a URL or choose a file to upload.", "error");
+      } else {
+        add({});
+      }
+    });
   }
 
   // Kolibri-style + school-leader interactions
@@ -2562,6 +2894,15 @@ export function wireMyDashboard(user, events) {
         btn.innerHTML = `${icon("check")} Joined`;
         btn.disabled = true;
         toast("Session joined", `You're in “${btn.dataset.joinTitle}”. Work through it before your teacher ends the session.`, "success");
+      })
+    );
+
+    // learner: open a resource shared by their teacher
+    body.querySelectorAll("[data-learn-resource]").forEach((btn) =>
+      btn.addEventListener("click", () => {
+        const cls = read(K_CLASSES, []).find((c) => c.id === btn.dataset.learnClass);
+        const r = (cls?.resources || []).find((x) => x.id === btn.dataset.learnResource);
+        if (r) openResource(r);
       })
     );
 
@@ -2616,11 +2957,132 @@ export function wireMyDashboard(user, events) {
     // in-tab toggle reveals / hides the planner form
     body.querySelector("[data-new-assign-toggle]")?.addEventListener("click", () => {
       coachState.openForm = !coachState.openForm;
+      coachState.editAssignId = null;
       renderRole("teacher");
     });
     body.querySelector("[data-assign-cancel]")?.addEventListener("click", () => {
       coachState.openForm = false;
+      coachState.editAssignId = null;
       renderRole("teacher");
+    });
+
+    // preview / edit / delete a planned assignment
+    body.querySelectorAll("[data-assign-preview]").forEach((el) =>
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openAssignPreview(currentClass().cls.id, el.dataset.assignPreview);
+      })
+    );
+    body.querySelectorAll("[data-assign-edit]").forEach((el) =>
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        coachState.editAssignId = el.dataset.assignEdit;
+        coachState.openForm = true;
+        renderRole("teacher");
+      })
+    );
+    body.querySelectorAll("[data-assign-delete]").forEach((el) =>
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const { classes, cls } = currentClass();
+        const a = cls.assignments.find((x) => x.id === el.dataset.assignDelete);
+        if (!a) return;
+        cls.assignments = cls.assignments.filter((x) => x.id !== a.id);
+        saveClasses(classes);
+        if (coachState.editAssignId === a.id) coachState.editAssignId = null;
+        toast("Deleted", `“${a.title}” was removed from ${cls.name}.`, "success");
+        renderRole("teacher");
+      })
+    );
+
+    // --- teacher: share a resource with learners ---
+    body.querySelector("[data-share-resource-toggle]")?.addEventListener("click", () => {
+      coachState.openResourceForm = !coachState.openResourceForm;
+      renderRole("teacher");
+    });
+    body.querySelector("[data-share-resource-cancel]")?.addEventListener("click", () => {
+      coachState.openResourceForm = false;
+      renderRole("teacher");
+    });
+    body.querySelectorAll("[data-res-open]").forEach((b) =>
+      b.addEventListener("click", () => {
+        const r = (currentClass().cls.resources || []).find((x) => x.id === b.dataset.resOpen);
+        if (r) openResource(r);
+      })
+    );
+    body.querySelectorAll("[data-res-unshare]").forEach((b) =>
+      b.addEventListener("click", () => {
+        const { classes, cls } = currentClass();
+        cls.resources = (cls.resources || []).filter((x) => x.id !== b.dataset.resUnshare);
+        saveClasses(classes);
+        toast("Removed", "Resource unshared from this class.", "success");
+        renderRole("teacher");
+      })
+    );
+    const resForm = body.querySelector("#resourceForm");
+    const resClass = resForm?.querySelector("[data-res-class]");
+    const resAudience = resForm?.querySelector("[data-res-audience]");
+    const resPicker = resForm?.querySelector("[data-res-picker]");
+    resAudience?.addEventListener("change", () => {
+      if (resPicker) resPicker.hidden = resAudience.value !== "individual";
+    });
+    resClass?.addEventListener("change", () => {
+      const target = getClasses().find((c) => c.id === resClass.value);
+      const wrap = resPicker?.querySelector("[data-res-learners]");
+      if (target && wrap)
+        wrap.innerHTML = target.learners.map((l) => `<label class="lchk"><input type="checkbox" name="reslearner" value="${l.id}"> ${esc(l.name)}</label>`).join("");
+    });
+    resPicker?.addEventListener("change", (e) => {
+      const boxes = [...resPicker.querySelectorAll('input[name="reslearner"]')];
+      const master = resPicker.querySelector("[data-res-select-all]");
+      if (e.target.matches("[data-res-select-all]")) boxes.forEach((b) => { b.checked = e.target.checked; });
+      else if (e.target.name === "reslearner" && master) {
+        master.checked = boxes.length > 0 && boxes.every((b) => b.checked);
+        master.indeterminate = !master.checked && boxes.some((b) => b.checked);
+      }
+    });
+    resForm?.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const form = e.currentTarget;
+      const data = Object.fromEntries(new FormData(form).entries());
+      const classes = getClasses();
+      const target = classes.find((c) => c.id === data.classId) || classes[0];
+      if (!target.learners.length) return toast("Class is empty", `“${target.name}” has no learners yet.`, "error");
+      const audience = data.audience || "all";
+      const targetIds = audience === "individual" ? [...form.querySelectorAll('input[name="reslearner"]:checked')].map((c) => c.value) : [];
+      if (audience === "individual" && !targetIds.length) return toast("Pick learner(s)", "Select at least one learner, or choose Whole class.", "error");
+
+      const finish = (base) => {
+        target.resources = target.resources || [];
+        target.resources.unshift({ id: uid(), audience, targetIds, sharedAt: Date.now(), ...base });
+        saveClasses(classes);
+        coachState.classId = target.id;
+        coachState.openResourceForm = false;
+        toast("Resource shared", `“${base.title}” is now in ${target.name} learners' portal.`, "success");
+        renderRole("teacher");
+      };
+
+      // 1) from the digital library
+      if (data.libId) {
+        const lib = getLibrary().find((r) => r.id === data.libId);
+        if (!lib) return toast("Resource not found", "", "error");
+        return finish({ libId: lib.id, title: lib.title, type: lib.type, url: lib.url, dataUrl: lib.dataUrl, fileName: lib.fileName, description: lib.description });
+      }
+      // 2) a new resource — title required, plus a link or file
+      const title = (data.title || "").trim();
+      if (!title) return toast("Pick or name a resource", "Choose one from the library, or type a title for a new one.", "error");
+      const fileInput = form.querySelector("[data-res-file]");
+      const file = fileInput?.files?.[0];
+      if (file) {
+        if (file.size > 800 * 1024) return toast("File too large", "Keep uploads under 800 KB, or paste a link.", "error");
+        const reader = new FileReader();
+        reader.onload = () => finish({ title, type: data.type || "document", dataUrl: reader.result, fileName: file.name, url: "" });
+        reader.readAsDataURL(file);
+      } else if ((data.url || "").trim()) {
+        finish({ title, type: data.type || "link", url: data.url.trim() });
+      } else {
+        toast("Add a link or file", "Paste a URL or upload a file for the new resource.", "error");
+      }
     });
     // assign form: switching the target class rebuilds the learner picker
     const assignForm = body.querySelector("#assignForm");
@@ -2655,6 +3117,23 @@ export function wireMyDashboard(user, events) {
       const form = e.currentTarget;
       const data = Object.fromEntries(new FormData(form).entries());
       if (!(data.title || "").trim()) return toast("Title required", "Give the assignment a title.", "error");
+
+      // --- edit mode: update the metadata of an existing assignment ---
+      if (form.dataset.editing) {
+        const { classes, cls } = currentClass();
+        const a = cls.assignments.find((x) => x.id === form.dataset.editing);
+        if (a) {
+          a.title = data.title.trim();
+          a.type = data.type || a.type;
+          a.detail = (data.detail || "").trim();
+          a.due = (data.due || "").trim() || "no due date";
+          saveClasses(classes);
+        }
+        coachState.editAssignId = null;
+        coachState.openForm = false;
+        toast("Changes saved", `“${data.title.trim()}” updated.`, "success");
+        return renderRole("teacher");
+      }
 
       const classes = getClasses();
       const target = classes.find((c) => c.id === data.classId) || classes[0];

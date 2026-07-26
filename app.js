@@ -213,12 +213,20 @@ function brand() {
     </a>`;
 }
 
+/* the Field Officer App is only relevant to field officers and admins */
+const HIDE_FIELD_OFFICER = new Set(["teacher", "learner", "school_leader"]);
+
 function header(path) {
   const user = Auth.current();
-  const links = (user ? NAV_AUTHED : NAV).map(
-    (n) =>
-      `<a href="${n.href}" data-link class="${path === n.href ? "active" : ""}">${n.label}</a>`
-  ).join("");
+  const nav = (user ? NAV_AUTHED : NAV).filter(
+    (n) => !(n.href === "/field-officer" && user && HIDE_FIELD_OFFICER.has(user.role))
+  );
+  const links = nav
+    .map(
+      (n) =>
+        `<a href="${n.href}" data-link class="${path === n.href ? "active" : ""}">${n.label}</a>`
+    )
+    .join("");
 
   const action = user
     ? `<a class="user-chip" href="/dashboard" data-link title="${esc(user.fullName || user.username || "")}">
