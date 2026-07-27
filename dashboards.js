@@ -475,9 +475,15 @@ function digitalLibraryPanel() {
 }
 let adminView = "scorecard";         // which analytics tab is open
 let scPillar = "education";           // which scorecard pillar is drilled into
-/* ELOG-style scorecard filters */
-const scFilter = { school: "all", term: "all", pillar: "all", q: "" };
+/* ELOG-style scorecard filters + board theme */
+const scFilter = { region: "all", school: "all", term: "all", pillar: "all", programme: "all", q: "" };
 const HPF_TERMS = ["Term 1", "Term 2", "Term 3"];
+let scTheme = "dark"; // "dark" | "light"
+
+/* schools available under the current region filter */
+function filterSchools() {
+  return scFilter.region === "all" ? SCHOOLS : REGIONS[scFilter.region] || [];
+}
 
 const ROLE_COLOR = {
   learner: "oklch(52% 0.14 148)",
@@ -641,15 +647,16 @@ function groupedBars(categories, seriesNames, matrix, colors) {
 }
 
 /* region cartogram — a map-style grid of HPF regions coloured by score */
-function regionMap(regions) {
+function regionMap(regions, activeRegion) {
   return `<div class="rmap">${regions
     .map(
-      (r) => `<div class="rmap-cell rag-${rag(r.score)}" title="${esc(r.name)}: ${r.score}/100">
+      (r) => `<button class="rmap-cell rag-${rag(r.score)} ${r.name === activeRegion ? "active" : ""}"
+        data-sc-region-pick="${esc(r.name)}" title="Click to focus ${esc(r.name)}">
         <div class="rmap-name">${esc(r.name)}</div>
-        <div class="rmap-score">${r.score}</div>
+        <div class="rmap-score">${countNum(r.score)}</div>
         <div class="rmap-meta">${r.schools} school${r.schools === 1 ? "" : "s"} · ${r.reports} report${r.reports === 1 ? "" : "s"}</div>
         <div class="rmap-bar"><span style="width:${r.score}%;background:${ragColor(r.score)}"></span></div>
-      </div>`
+      </button>`
     )
     .join("")}</div>`;
 }
@@ -943,7 +950,7 @@ const ragColor = (v) =>
 const ragLabel = (v) => (v >= 75 ? "On track" : v >= 60 ? "Watch" : "Needs attention");
 
 /* a single-value ring gauge for the overall impact score */
-function ringGauge(score, label) {
+function ringGauge(score, label, animate = true) {
   const R = 56, C = 2 * Math.PI * R;
   const dash = (Math.max(0, Math.min(100, score)) / 100) * C;
   return `<div class="donut sc-ring">
@@ -953,7 +960,8 @@ function ringGauge(score, label) {
         stroke-linecap="round" stroke-dasharray="${dash} ${C - dash}" transform="rotate(-90 70 70)"
         style="transition:stroke-dasharray .9s ease"/>
     </svg>
-    <div class="donut-center"><div class="donut-num">${score}</div><div class="donut-label">${esc(label)}</div></div>
+    <div class="donut-center"><div class="donut-num">${animate ? countNum(score) : score}</div>
+      <div class="donut-label">${esc(label)}</div></div>
   </div>`;
 }
 
@@ -1017,7 +1025,7 @@ function adminScorecard(s) {
       (p) => `<button class="sc-card rag-${rag(p.score)} ${p.id === active.id ? "active" : ""}" data-sc-pillar="${p.id}">
         <span class="sc-ic">${icon(p.icon)}</span>
         <div class="sc-meta"><div class="sc-name">${esc(p.name)}</div><div class="sc-src">${esc(p.source)}</div></div>
-        <div class="sc-val">${p.score}<span class="sc-unit">/100</span></div>
+        <div class="sc-val">${countNum(p.score)}<span class="sc-unit">/100</span></div>
         <div class="sc-track"><div class="sc-fill" style="width:${p.score}%;background:${ragColor(p.score)}"></div></div>
         <div class="sc-foot"><span class="rag-badge rag-${rag(p.score)}">${ragLabel(p.score)}</span>${trendBadge(p.trend)}</div>
       </button>`
@@ -1097,9 +1105,16 @@ function adminScorecard(s) {
     : `<div class="empty-state">No custom activities yet. Add one above and it will appear in the charts and pillar scores.</div>`;
 
   // ---------- filters ----------
-  const schoolNames = SCHOOLS;
+  const schoolNames = filterSchools();               // cascades from the region
+  if (scFilter.school !== "all" && !schoolNames.includes(scFilter.school)) scFilter.school = "all";
   const q = (scFilter.q || "").toLowerCase();
-  const schoolOpts = [`<option value="all">All schools</option>`]
+  const regionOpts = [`<option value="all">All regions</option>`]
+    .concat(Object.keys(REGIONS).map((n) => `<option value="${esc(n)}" ${scFilter.region === n ? "selected" : ""}>${esc(n)}</option>`))
+    .join("");
+  const programmeOpts = [`<option value="all">All HPF programmes</option>`]
+    .concat(PROJECTS.map((p) => `<option value="${esc(p)}" ${scFilter.programme === p ? "selected" : ""}>${esc(p)}</option>`))
+    .join("");
+  const schoolOpts = [`<option value="all">All schools${scFilter.region !== "all" ? " in " + esc(scFilter.region) : ""}</option>`]
     .concat(schoolNames.map((n) => `<option value="${esc(n)}" ${scFilter.school === n ? "selected" : ""}>${esc(n)}</option>`))
     .join("");
   const termOpts = [`<option value="all">All terms</option>`]
@@ -1109,7 +1124,15 @@ function adminScorecard(s) {
     .concat(sc.pillars.map((p) => `<option value="${p.id}" ${scFilter.pillar === p.id ? "selected" : ""}>${esc(p.name)}</option>`))
     .join("");
 
-  const shownPillars = scFilter.pillar === "all" ? sc.pillars : sc.pillars.filter((p) => p.id === scFilter.pillar);
+  // an HPF programme maps onto its delivery pillar
+  const PROGRAMME_PILLAR = { MEP: "mep", "ICT Academy": "ict", Infrastructure: "infrastructure", Education: "education" };
+  let shownPillars = sc.pillars;
+  if (scFilter.pillar !== "all") shownPillars = shownPillars.filter((p) => p.id === scFilter.pillar);
+  if (scFilter.programme !== "all") {
+    const pid = PROGRAMME_PILLAR[scFilter.programme];
+    if (pid) shownPillars = shownPillars.filter((p) => p.id === pid);
+  }
+  if (!shownPillars.length) shownPillars = sc.pillars;
   const filteredOverall = shownPillars.length
     ? Math.round(shownPillars.reduce((a, p) => a + p.score, 0) / shownPillars.length)
     : 0;
@@ -1179,17 +1202,27 @@ function adminScorecard(s) {
         .join("")
     : `<div class="empty-state">No indicators match “${esc(scFilter.q)}”.</div>`;
 
+  const scope =
+    scFilter.school !== "all" ? scFilter.school
+    : scFilter.region !== "all" ? scFilter.region + " region"
+    : "all regions";
+
   return `
-  <div class="sc-dark">
+  <div class="sc-dark ${scTheme === "light" ? "sc-bright" : ""}">
     <div class="scd-head">
       <div>
-        <div class="scd-eyebrow">Scorecard</div>
+        <div class="scd-eyebrow">Scorecard · ${esc(scope)}</div>
         <h2 class="scd-title">HPF Scorecard Dashboard</h2>
         <div class="scd-sub">HPF Programme Duty Bearer Scorecard</div>
       </div>
-      <div class="scd-search">
-        ${icon("search")}
-        <input class="input" data-sc-search value="${esc(scFilter.q)}" placeholder="Search indicators or risks">
+      <div class="scd-head-right">
+        <div class="scd-search">
+          ${icon("search")}
+          <input class="input" data-sc-search value="${esc(scFilter.q)}" placeholder="Search indicators or risks">
+        </div>
+        <button class="btn btn-outline btn-xs scd-theme" data-sc-theme title="Switch theme">
+          ${icon(scTheme === "dark" ? "sparkles" : "shield")} ${scTheme === "dark" ? "Bright mode" : "Dark mode"}
+        </button>
       </div>
     </div>
 
@@ -1199,10 +1232,20 @@ function adminScorecard(s) {
       comparisons, geographic distribution, risk indicators and termly readiness trends.</p>
 
     <div class="scd-filters">
-      <select class="select" data-sc-school>${schoolOpts}</select>
-      <select class="select" data-sc-term>${termOpts}</select>
-      <select class="select" data-sc-pillar>${pillarFilterOpts}</select>
+      <select class="select" data-sc-region title="Filter by region">${regionOpts}</select>
+      <select class="select" data-sc-school title="Filter by school">${schoolOpts}</select>
+      <select class="select" data-sc-programme title="Filter by HPF programme">${programmeOpts}</select>
+      <select class="select" data-sc-term title="Filter by term">${termOpts}</select>
+      <select class="select" data-sc-pillar title="Filter by pillar">${pillarFilterOpts}</select>
       <button class="btn btn-primary btn-xs" data-admin-refresh>${icon("refresh")} Refresh</button>
+      ${scFilter.region !== "all" || scFilter.school !== "all" || scFilter.programme !== "all" || scFilter.term !== "all" || scFilter.pillar !== "all" || scFilter.q
+        ? `<button class="btn btn-outline btn-xs" data-sc-clear>Clear filters</button>` : ""}
+    </div>
+    <div class="scd-chips">
+      ${Object.keys(REGIONS)
+        .map((r) => `<button class="kchip ${scFilter.region === r ? "active" : ""}" data-sc-region-pick="${esc(r)}">${icon("mapPin")} ${esc(r)}</button>`)
+        .join("")}
+      ${scFilter.region !== "all" ? `<button class="kchip kchip-add" data-sc-region-pick="all">${icon("refresh")} All regions</button>` : ""}
     </div>
 
     <div class="scd-kpis">
@@ -1240,7 +1283,7 @@ function adminScorecard(s) {
     <div class="scd-panel">
       <h3>Regional Impact Map</h3>
       <p class="scd-narrative">Composite score by HPF region — greener is stronger, red needs attention.</p>
-      ${regionMap(regionRows)}
+      ${regionMap(regionRows, scFilter.region === "all" ? null : scFilter.region)}
     </div>
 
     <div class="scd-grid">
@@ -3272,6 +3315,33 @@ export function wireMyDashboard(user, events) {
       bindFilter("[data-sc-school]", "school");
       bindFilter("[data-sc-term]", "term");
       bindFilter("[data-sc-pillar]", "pillar");
+      bindFilter("[data-sc-programme]", "programme");
+      // region change resets the school so the cascade stays valid
+      body.querySelector("[data-sc-region]")?.addEventListener("change", (e) => {
+        scFilter.region = e.target.value;
+        scFilter.school = "all";
+        renderAnalytics();
+      });
+      // region chips + clickable map cells
+      body.querySelectorAll("[data-sc-region-pick]").forEach((b) =>
+        b.addEventListener("click", () => {
+          const r = b.dataset.scRegionPick;
+          scFilter.region = scFilter.region === r ? "all" : r;
+          scFilter.school = "all";
+          renderAnalytics();
+          if (scFilter.region !== "all") toast("Region focus", `Dashboard now showing ${scFilter.region}.`, "success");
+        })
+      );
+      body.querySelector("[data-sc-clear]")?.addEventListener("click", () => {
+        Object.assign(scFilter, { region: "all", school: "all", term: "all", pillar: "all", programme: "all", q: "" });
+        renderAnalytics();
+        toast("Filters cleared", "Showing all regions, schools and programmes.", "success");
+      });
+      // dark / bright board theme
+      body.querySelector("[data-sc-theme]")?.addEventListener("click", () => {
+        scTheme = scTheme === "dark" ? "light" : "dark";
+        renderAnalytics();
+      });
       const searchEl = body.querySelector("[data-sc-search]");
       if (searchEl) {
         let t = null;

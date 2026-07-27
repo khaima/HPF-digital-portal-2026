@@ -3055,6 +3055,58 @@ textarea.input:focus {
 .sc-dark .add-user-form { background: var(--sd-panel); border-color: var(--sd-line); }
 .sc-dark label { color: var(--sd-text); }
 
+/* bright mode — same layout, light surfaces */
+.sc-dark.sc-bright {
+  --sd-bg: oklch(97% 0.005 240);
+  --sd-panel: oklch(100% 0 0);
+  --sd-line: oklch(90% 0.008 240);
+  --sd-text: oklch(22% 0.02 240);
+  --sd-dim: oklch(48% 0.015 240);
+  box-shadow: inset 0 0 0 1px var(--sd-line);
+}
+.sc-bright .hbar-track,
+.sc-bright .bar-track,
+.sc-bright .rank-bar,
+.sc-bright .ind-bar,
+.sc-bright .sub-bar,
+.sc-bright .sc-track,
+.sc-bright .rmap-bar { background: oklch(93% 0.006 240); }
+.sc-bright .rmap-cell,
+.sc-bright .sub-row { background: oklch(98.5% 0.003 240); }
+.sc-bright .sub-pill { background: oklch(93% 0.01 155); color: oklch(38% 0.12 155); }
+.sc-bright .rank-i { background: oklch(92% 0.006 240); color: var(--sd-dim); }
+.sc-bright .ind-tag.baseline { background: oklch(93% 0.006 240); color: var(--sd-dim); }
+.sc-bright .scd-eyebrow { color: oklch(48% 0.14 155); }
+
+/* region quick-pick chips */
+.scd-chips { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1.25rem; }
+.sc-dark .scd-chips .kchip {
+  background: var(--sd-panel);
+  border-color: var(--sd-line);
+  color: var(--sd-dim);
+}
+.sc-dark .scd-chips .kchip:hover { color: var(--sd-text); border-color: var(--primary); }
+.sc-dark .scd-chips .kchip.active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+.sc-dark .scd-chips .kchip svg { width: 13px; height: 13px; }
+
+.scd-head-right { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+.sc-dark .scd-theme { background: var(--sd-panel); border-color: var(--sd-line); color: var(--sd-text); }
+.sc-dark .scd-theme:hover { border-color: var(--primary); }
+
+/* map cells become buttons */
+.rmap-cell {
+  text-align: left;
+  width: 100%;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.rmap-cell:hover { transform: translateY(-2px); box-shadow: 0 8px 18px -8px oklch(0% 0 0 / 0.5); }
+.rmap-cell.active { box-shadow: 0 0 0 2px var(--rag); }
+
 /* header */
 .scd-head {
   display: flex;
