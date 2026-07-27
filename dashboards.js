@@ -5,7 +5,7 @@
 
 import { icon } from "./icons.js";
 import { DASH, ROLES, ORG_TYPES, COUNTIES, KOLIBRI, CONTENT_KINDS, SCHOOLS,
-  LIBRARY_CATEGORIES, RESOURCE_TYPES, LIBRARY_SEED } from "./data.js";
+  LIBRARY_CATEGORIES, RESOURCE_TYPES, LIBRARY_SEED, REGIONS, PROJECTS } from "./data.js";
 import { esc, timeAgo, runCounters, read, write, toast, uid } from "./util.js";
 import { adminClient, authMessage } from "./supabase.js";
 
@@ -193,54 +193,49 @@ function userManagementPanel(currentUser) {
       (r) => `<option value="${r.value}" ${r.value === selected ? "selected" : ""}>${r.label}</option>`
     ).join("");
 
+  const dash = (v) => (v ? esc(v) : "—");
   const rows = users.length
     ? users
         .map((u) => {
           const isSelf = u.id === currentUser.id;
-          return `<div class="ut-row">
-            <div class="ut-cell ut-user">
+          const pw = u.password || "";
+          return `<div class="utx-row">
+            <div class="utx-cell utx-user">
               <span class="avatar-sm">${esc((u.fullName || u.username || "U").slice(0, 1).toUpperCase())}</span>
-              <div>
-                <div class="ut-name">${esc(u.fullName || "—")}${isSelf ? ' <span class="ut-you">you</span>' : ""}</div>
-                <div class="ut-sub">${esc(u.email || u.username || "—")}</div>
-              </div>
+              <div class="utx-name">${esc(u.fullName || "—")}${isSelf ? ' <span class="ut-you">you</span>' : ""}
+                <div class="utx-email">${dash(u.email)}</div></div>
             </div>
-            <div class="ut-cell ut-county">${esc(u.county || "—")}</div>
-            <div class="ut-cell">
-              <select class="select select-sm" data-role-edit="${u.id}" aria-label="Role for ${esc(u.fullName || u.username)}">
-                ${roleOpts(u.role)}
-              </select>
+            <div class="utx-cell">${dash(u.username)}</div>
+            <div class="utx-cell utx-pw">
+              <span data-pw="${esc(pw)}" class="pw-mask">${pw ? "••••••••" : "—"}</span>
+              ${pw ? `<button class="icon-btn pw-eye" data-pw-toggle title="Show/hide">${icon("eye")}</button>` : ""}
             </div>
-            <div class="ut-cell ut-actions">
-              <button class="icon-btn" data-enter-account="${u.id}" title="Enter this account" ${
-                isSelf ? "disabled" : ""
-              }>${icon("login")}</button>
-              <button class="icon-btn danger" data-remove-user="${u.id}" title="Remove user" ${
-                isSelf ? "disabled" : ""
-              }>${icon("trash")}</button>
+            <div class="utx-cell"><span class="pill role-pill">${esc(ROLE_LABEL[u.role] || u.role || "—")}</span></div>
+            <div class="utx-cell">${dash(u.project)}</div>
+            <div class="utx-cell">${dash(u.region)}</div>
+            <div class="utx-cell">${dash(u.school)}</div>
+            <div class="utx-cell utx-actions">
+              <button class="icon-btn" data-edit-user="${u.id}" title="Edit credentials">${icon("pen")}</button>
+              <button class="icon-btn" data-enter-account="${u.id}" title="Enter account" ${isSelf ? "disabled" : ""}>${icon("login")}</button>
+              <button class="icon-btn danger" data-remove-user="${u.id}" title="Remove" ${isSelf ? "disabled" : ""}>${icon("trash")}</button>
             </div>
           </div>`;
         })
         .join("")
     : `<div class="empty-state">No users yet.</div>`;
 
-  const orgOpts =
-    `<option value="" selected>Organization type</option>` +
-    ORG_TYPES.map((o) => `<option>${o}</option>`).join("");
-  const countyOpts =
-    `<option value="" selected>County / region</option>` +
-    COUNTIES.map((c) => `<option>${c}</option>`).join("");
+  const regionOpts = `<option value="">Region</option>` + Object.keys(REGIONS).map((r) => `<option>${esc(r)}</option>`).join("");
+  const schoolOpts = `<option value="">School</option>` + SCHOOLS.map((s) => `<option>${esc(s)}</option>`).join("");
+  const projectOpts = `<option value="">Project / department</option>` + PROJECTS.map((p) => `<option>${esc(p)}</option>`).join("");
 
   return `
     <div class="panel" style="margin-top:1.5rem">
       <div class="panel-head-row">
         <div>
-          <h2>User management</h2>
-          <p class="panel-sub" style="margin-bottom:0">${users.length} account${
-            users.length === 1 ? "" : "s"
-          } · view, add, and change roles</p>
+          <h2>${icon("users")} User management</h2>
+          <p class="panel-sub" style="margin-bottom:0">${users.length} account${users.length === 1 ? "" : "s"} · full details · edit credentials, passwords &amp; roles</p>
         </div>
-        <button class="btn btn-primary" data-add-user-toggle>${icon("users")} Add user</button>
+        <button class="btn btn-primary" data-add-user-toggle>${icon("userPlus")} Add user</button>
       </div>
 
       <form id="addUserForm" class="add-user-form" hidden>
@@ -259,25 +254,76 @@ function userManagementPanel(currentUser) {
         <div class="form-row">
           <div class="field"><label>Password</label>
             <input class="input" name="password" type="password" minlength="6" placeholder="min. 6 characters" required></div>
-          <div class="field"><label>County</label>
-            <select class="select" name="county">${countyOpts}</select></div>
+          <div class="field"><label>Project / department</label>
+            <select class="select" name="project">${projectOpts}</select></div>
         </div>
-        <div class="field"><label>Organization</label>
-          <select class="select" name="orgType">${orgOpts}</select></div>
+        <div class="form-row">
+          <div class="field"><label>Region</label>
+            <select class="select" name="region">${regionOpts}</select></div>
+          <div class="field"><label>School</label>
+            <select class="select" name="school">${schoolOpts}</select></div>
+        </div>
         <div class="add-user-actions">
           <button class="btn btn-primary" type="submit">Create account</button>
           <button class="btn btn-outline" type="button" data-add-user-cancel>Cancel</button>
         </div>
       </form>
 
-      <div class="user-table">
-        <div class="ut-row ut-head">
-          <div class="ut-cell">User</div>
-          <div class="ut-cell">County</div>
-          <div class="ut-cell">Role</div>
-          <div class="ut-cell"></div>
+      <div class="utx-scroll">
+        <div class="utx-table">
+          <div class="utx-row utx-head">
+            <div class="utx-cell">Name</div>
+            <div class="utx-cell">Username</div>
+            <div class="utx-cell">Password</div>
+            <div class="utx-cell">Role</div>
+            <div class="utx-cell">Department</div>
+            <div class="utx-cell">Region</div>
+            <div class="utx-cell">School</div>
+            <div class="utx-cell"></div>
+          </div>
+          <div id="userRows">${rows}</div>
         </div>
-        <div id="userRows">${rows}</div>
+      </div>
+    </div>
+    ${editUserId ? editUserModal(users.find((u) => u.id === editUserId), currentUser) : ""}`;
+}
+
+/* full-detail edit modal — admin can change every credential incl. password */
+function editUserModal(u, currentUser) {
+  if (!u) return "";
+  const roleOpts = ROLES.map((r) => `<option value="${r.value}" ${r.value === u.role ? "selected" : ""}>${r.label}</option>`).join("");
+  const regionOpts = `<option value="">— none —</option>` + Object.keys(REGIONS).map((r) => `<option ${r === u.region ? "selected" : ""}>${esc(r)}</option>`).join("");
+  const schoolOpts = `<option value="">— none —</option>` + SCHOOLS.map((s) => `<option ${s === u.school ? "selected" : ""}>${esc(s)}</option>`).join("");
+  const projectOpts = `<option value="">— none —</option>` + PROJECTS.map((p) => `<option ${p === u.project ? "selected" : ""}>${esc(p)}</option>`).join("");
+  return `
+    <div class="modal-overlay" data-edit-overlay>
+      <div class="modal" role="dialog" aria-modal="true">
+        <div class="modal-head">
+          <div><h2>Edit user</h2><p class="panel-sub" style="margin:0">${esc(u.fullName || u.username || "")} · full credentials</p></div>
+          <button class="icon-btn" data-edit-close aria-label="Close">✕</button>
+        </div>
+        <form id="editUserForm" class="modal-body" data-uid="${u.id}">
+          <div class="form-row">
+            <div class="field"><label>Full name</label><input class="input" name="fullName" value="${esc(u.fullName || "")}" required></div>
+            <div class="field"><label>Role</label><select class="select" name="role">${roleOpts}</select></div>
+          </div>
+          <div class="form-row">
+            <div class="field"><label>Email</label><input class="input" name="email" type="email" value="${esc(u.email || "")}"></div>
+            <div class="field"><label>Username</label><input class="input" name="username" value="${esc(u.username || "")}"></div>
+          </div>
+          <div class="field"><label>Password</label>
+            <div class="pw-edit"><input class="input" name="password" type="password" value="${esc(u.password || "")}" minlength="6">
+              <button class="btn btn-outline btn-xs" type="button" data-editpw-toggle>${icon("eye")} Show</button></div></div>
+          <div class="form-row">
+            <div class="field"><label>Project / department</label><select class="select" name="project">${projectOpts}</select></div>
+            <div class="field"><label>Region</label><select class="select" name="region">${regionOpts}</select></div>
+          </div>
+          <div class="field"><label>School</label><select class="select" name="school">${schoolOpts}</select></div>
+        </form>
+        <div class="modal-foot">
+          <button class="btn btn-primary" data-edit-save>${icon("check")} Save changes</button>
+          <button class="btn btn-outline" data-edit-close>Cancel</button>
+        </div>
       </div>
     </div>`;
 }
@@ -326,6 +372,10 @@ const K_EVENTS = "hpf_login_events"; // login / signup inbox
 const K_LIBRARY = "hpf_library";     // admin-curated digital library
 
 let adminLibOpen = false;            // admin "add resource" form toggle
+let adminInboxOpen = false;          // expand the full login-requests list
+let editUserId = null;               // user open in the admin edit modal
+const ADMIN_EMAIL = "patrick@humanpractice.org";
+const ORG_DOMAIN = "humanpractice.org"; // org email → admin
 
 /* the shared digital library — seeded once, then admin-managed */
 function getLibrary() {
@@ -918,9 +968,15 @@ function adminScorecard(s) {
 function adminBody(ctx) {
   const d = DASH.admin;
   const events = ctx.events || [];
+  const dayAgo = Date.now() - 864e5;
+  const signupsDay = events.filter((e) => e.type === "signup" && e.at >= dayAgo).length;
+  const loginsDay = events.filter((e) => e.type === "login" && e.at >= dayAgo).length;
+
+  // smart inbox — a compact summary + only the latest few, not a long list
+  const RECENT = adminInboxOpen ? 200 : 4;
   const feed = events.length
     ? events
-        .slice(0, 8)
+        .slice(0, RECENT)
         .map(
           (e) => `<div class="submission">
             <span class="s-icon">${icon(e.type === "signup" ? "plus" : "login")}</span>
@@ -932,8 +988,17 @@ function adminBody(ctx) {
             <span class="pill synced">delivered</span>
           </div>`
         )
-        .join("")
+        .join("") +
+      (events.length > 4
+        ? `<button class="btn btn-outline btn-xs inbox-more" data-inbox-toggle style="margin-top:.75rem">${icon("inbox")} ${adminInboxOpen ? "Show less" : "View all " + events.length + " requests"}</button>`
+        : "")
     : `<div class="empty-state">No login requests yet.<br>Sign in from another account to see requests arrive here.</div>`;
+
+  const inboxSummary = `<div class="inbox-summary">
+    <span class="ib-chip"><strong>${signupsDay}</strong> signups today</span>
+    <span class="ib-chip"><strong>${loginsDay}</strong> logins today</span>
+    <span class="ib-chip muted"><strong>${events.length}</strong> total</span>
+  </div>`;
 
   const totalRoles = d.roleBreakdown.reduce((a, b) => a + b.value, 0);
 
@@ -971,8 +1036,9 @@ function adminBody(ctx) {
     </div>
     <div class="dash-grid">
       <div class="panel">
-        <h2>Login requests inbox</h2>
-        <p class="panel-sub">Delivered to patrick@humanpractice.org · ${events.length} total</p>
+        <h2>${icon("inbox")} Login requests inbox</h2>
+        <p class="panel-sub">Delivered to ${esc(ADMIN_EMAIL)}</p>
+        ${inboxSummary}
         <div id="adminFeed">${feed}</div>
       </div>
       <div class="panel">
@@ -2782,9 +2848,9 @@ export function wireMyDashboard(user, events) {
         delete data.email;
       } else {
         if (!data.email) return toast("Email required", "Enter an email for this account.", "error");
-        if (data.role === "admin" && !/@humanpractice\.org$/i.test(data.email))
-          return toast("Invalid staff email", "Admins require an @humanpractice.org email.", "error");
       }
+      // anyone with an organisation email is an admin
+      if ((data.email || "").trim().toLowerCase().endsWith("@" + ORG_DOMAIN)) data.role = "admin";
       if ((data.password || "").length < 6) return toast("Weak password", "Min. 6 characters.", "error");
 
       const users = read(K_USERS, []);
@@ -2809,6 +2875,58 @@ export function wireMyDashboard(user, events) {
         renderRole("admin");
       })
     );
+
+    // reveal / hide a password in the table
+    body.querySelectorAll("[data-pw-toggle]").forEach((btn) =>
+      btn.addEventListener("click", () => {
+        const span = btn.parentElement.querySelector(".pw-mask");
+        const shown = span.dataset.shown === "1";
+        span.textContent = shown ? "••••••••" : span.dataset.pw;
+        span.dataset.shown = shown ? "0" : "1";
+      })
+    );
+
+    // smart inbox: expand / collapse the full request list
+    body.querySelector("[data-inbox-toggle]")?.addEventListener("click", () => {
+      adminInboxOpen = !adminInboxOpen;
+      renderRole("admin");
+    });
+
+    // --- edit a user's full credentials (incl. password) ---
+    body.querySelectorAll("[data-edit-user]").forEach((btn) =>
+      btn.addEventListener("click", () => { editUserId = btn.dataset.editUser; renderRole("admin"); })
+    );
+    const closeEdit = () => { editUserId = null; renderRole("admin"); };
+    body.querySelector("[data-edit-overlay]")?.addEventListener("click", (e) => { if (e.target.hasAttribute("data-edit-overlay")) closeEdit(); });
+    body.querySelectorAll("[data-edit-close]").forEach((b) => b.addEventListener("click", closeEdit));
+    body.querySelector("[data-editpw-toggle]")?.addEventListener("click", (e) => {
+      const inp = body.querySelector("#editUserForm [name=password]");
+      const on = inp.type === "password";
+      inp.type = on ? "text" : "password";
+      e.currentTarget.innerHTML = `${icon("eye")} ${on ? "Hide" : "Show"}`;
+    });
+    body.querySelector("[data-edit-save]")?.addEventListener("click", () => {
+      const form = body.querySelector("#editUserForm");
+      const data = Object.fromEntries(new FormData(form).entries());
+      if (!(data.fullName || "").trim()) return toast("Name required", "", "error");
+      if ((data.password || "").length < 6) return toast("Weak password", "Password must be at least 6 characters.", "error");
+      const users = read(K_USERS, []);
+      const u = users.find((x) => x.id === form.dataset.uid);
+      if (!u) return closeEdit();
+      let role = data.role;
+      if ((data.email || "").trim().toLowerCase().endsWith("@" + ORG_DOMAIN)) role = "admin";
+      Object.assign(u, {
+        fullName: data.fullName.trim(), email: (data.email || "").trim(), username: (data.username || "").trim(),
+        password: data.password, role, project: data.project || "", region: data.region || "", school: data.school || "",
+      });
+      write(K_USERS, users);
+      // keep the live session in sync if the admin edited their own account
+      const sess = read(K_SESSION, null);
+      if (sess && sess.id === u.id) { const { password, ...safe } = u; write(K_SESSION, safe); }
+      editUserId = null;
+      toast("User updated", `${u.fullName}'s details were saved.`, "success");
+      renderRole("admin");
+    });
 
     // --- digital library ---
     body.querySelector("[data-lib-toggle]")?.addEventListener("click", () => {

@@ -3027,6 +3027,63 @@ textarea.input:focus {
   .sc-cards { grid-template-columns: 1fr; }
 }
 
+/* ---------------------------------------------------------- admin: user table + inbox */
+.inbox-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+.ib-chip {
+  font-size: 0.8rem;
+  padding: 0.35rem 0.7rem;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+.ib-chip.muted { background: var(--muted); color: var(--muted-foreground); }
+.ib-chip strong { font-weight: 800; }
+.inbox-more { width: 100%; }
+
+.utx-scroll { overflow-x: auto; }
+.utx-table {
+  min-width: 940px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.utx-row {
+  display: grid;
+  grid-template-columns: 1.5fr 1fr 1fr 0.9fr 1fr 0.9fr 1.2fr auto;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.7rem 1rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.85rem;
+}
+.utx-row:last-child { border-bottom: none; }
+.utx-head {
+  background: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted-foreground);
+}
+#userRows .utx-row:hover { background: var(--accent); }
+.utx-cell { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.utx-user { display: flex; align-items: center; gap: 0.6rem; }
+.utx-name { font-weight: 600; min-width: 0; }
+.utx-email { font-weight: 400; font-size: 0.75rem; color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; }
+.utx-pw { display: flex; align-items: center; gap: 0.35rem; }
+.pw-mask { font-family: ui-monospace, monospace; letter-spacing: 0.05em; }
+.pw-eye { width: 26px; height: 26px; }
+.pw-eye svg { width: 13px; height: 13px; }
+.role-pill { background: var(--secondary); color: var(--secondary-foreground); }
+.utx-actions { display: inline-flex; gap: 0.3rem; justify-content: flex-end; }
+.pw-edit { display: flex; gap: 0.5rem; align-items: center; }
+.pw-edit .input { flex: 1; }
+
 /* status distribution bar */
 .dist-bar {
   display: flex;
