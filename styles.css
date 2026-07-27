@@ -2325,6 +2325,23 @@ textarea.input:focus {
   color: var(--muted-foreground);
 }
 
+/* status summary strip (learner folder + admin user list collapse) */
+.la-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+  align-items: center;
+}
+.la-chip {
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 0.3rem 0.7rem;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+
 /* learner: My assignments folder */
 .la-head {
   display: flex;

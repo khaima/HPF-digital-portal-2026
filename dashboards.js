@@ -188,6 +188,7 @@ function taskList(tasks) {
 /* ---------------------------------------------------------- user management */
 function userManagementPanel(currentUser) {
   const users = read(K_USERS, []);
+  const roleTally = users.reduce((m, u) => ((m[u.role] = (m[u.role] || 0) + 1), m), {});
   const roleOpts = (selected) =>
     ROLES.map(
       (r) => `<option value="${r.value}" ${r.value === selected ? "selected" : ""}>${r.label}</option>`
@@ -235,7 +236,10 @@ function userManagementPanel(currentUser) {
           <h2>${icon("users")} User management</h2>
           <p class="panel-sub" style="margin-bottom:0">${users.length} account${users.length === 1 ? "" : "s"} · full details · edit credentials, passwords &amp; roles</p>
         </div>
-        <button class="btn btn-primary" data-add-user-toggle>${icon("userPlus")} Add user</button>
+        <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+          <button class="btn btn-outline" data-users-toggle>${icon(usersListOpen ? "arrowUpRight" : "list")} ${usersListOpen ? "Collapse" : "Show list"}</button>
+          <button class="btn btn-primary" data-add-user-toggle>${icon("userPlus")} Add user</button>
+        </div>
       </div>
 
       <form id="addUserForm" class="add-user-form" hidden>
@@ -269,21 +273,24 @@ function userManagementPanel(currentUser) {
         </div>
       </form>
 
-      <div class="utx-scroll">
-        <div class="utx-table">
-          <div class="utx-row utx-head">
-            <div class="utx-cell">Name</div>
-            <div class="utx-cell">Username</div>
-            <div class="utx-cell">Password</div>
-            <div class="utx-cell">Role</div>
-            <div class="utx-cell">Department</div>
-            <div class="utx-cell">Region</div>
-            <div class="utx-cell">School</div>
-            <div class="utx-cell"></div>
-          </div>
-          <div id="userRows">${rows}</div>
-        </div>
-      </div>
+      ${usersListOpen
+        ? `<div class="utx-scroll">
+            <div class="utx-table">
+              <div class="utx-row utx-head">
+                <div class="utx-cell">Name</div>
+                <div class="utx-cell">Username</div>
+                <div class="utx-cell">Password</div>
+                <div class="utx-cell">Role</div>
+                <div class="utx-cell">Department</div>
+                <div class="utx-cell">Region</div>
+                <div class="utx-cell">School</div>
+                <div class="utx-cell"></div>
+              </div>
+              <div id="userRows">${rows}</div>
+            </div>
+          </div>`
+        : `<div class="la-summary">${ROLES.filter((r) => roleTally[r.value]).map((r) => `<span class="la-chip">${roleTally[r.value]} ${esc(r.label)}</span>`).join("") || `<span class="hint">No users yet.</span>`}
+            <span class="hint" style="align-self:center">— click <strong>Show list</strong> for full details</span></div>`}
     </div>
     ${editUserId ? editUserModal(users.find((u) => u.id === editUserId), currentUser) : ""}`;
 }
@@ -373,6 +380,7 @@ const K_LIBRARY = "hpf_library";     // admin-curated digital library
 
 let adminLibOpen = false;            // admin "add resource" form toggle
 let adminInboxOpen = false;          // expand the full login-requests list
+let usersListOpen = false;           // expand the full user table
 let editUserId = null;               // user open in the admin edit modal
 const ADMIN_EMAIL = "patrick@humanpractice.org";
 const ORG_DOMAIN = "humanpractice.org"; // org email → admin
@@ -1162,9 +1170,34 @@ function learnerAssignments(userId) {
   return { assignments, assessments, resources };
 }
 
+/* learner activity status → { key, label, pill } */
+const LA_STATUS = {
+  pending: { label: "Pending", pill: "status-not_started" },
+  started: { label: "Started", pill: "status-in_progress" },
+  incomplete: { label: "Incomplete", pill: "danger-pill" },
+  complete: { label: "Complete", pill: "status-completed" },
+  submitted: { label: "Submitted", pill: "synced" },
+};
+function assignStatusKey(pct) {
+  return pct >= 100 ? "complete" : pct > 0 ? "started" : "pending";
+}
+function assessStatusKey(a, submission) {
+  if (submission) return "submitted";
+  return (a.session || "planned") === "active" ? "pending" : "incomplete";
+}
+
+let learnerListOpen = false; // collapse/expand the full assignments list
+
 function learnerAssignmentsFolder(userId) {
   const { assignments, assessments, resources } = learnerAssignments(userId);
   const total = assignments.length + assessments.length + resources.length;
+
+  // tally activity statuses for the summary bar
+  const counts = { pending: 0, started: 0, incomplete: 0, complete: 0, submitted: 0 };
+  assignments.forEach(({ result }) => counts[assignStatusKey(result.pct)]++);
+  assessments.forEach(({ a, submission }) => counts[assessStatusKey(a, submission)]++);
+
+  const statusPill = (key) => `<span class="pill ${LA_STATUS[key].pill}">${LA_STATUS[key].label}</span>`;
 
   const resourceRows = resources
     .map(({ cls, r }) => {
@@ -1183,61 +1216,63 @@ function learnerAssignmentsFolder(userId) {
   const assignRows = assignments
     .map(({ cls, a, result }) => {
       const t = ASSIGN_TYPES[a.type] || ASSIGN_TYPES.lesson;
-      const st = statusOf(result.pct);
+      const key = assignStatusKey(result.pct);
       const live = (a.session || "planned") === "active";
-      const stLabel = st === "completed" ? "Completed" : st === "in_progress" ? "In progress" : "Not started";
       const scoreBit = typeof result.score === "number" && result.pct >= 100 ? ` · scored ${result.score}%` : "";
-      return `<div class="la-row">
+      return `<div class="la-row" data-status="${key}">
         <span class="assign-badge" style="background:${t.color}">${icon(t.icon)}</span>
         <div class="la-main">
           <div class="la-title">${esc(a.title)}${live ? ` <span class="la-live">${icon("radio")} live</span>` : ""}</div>
           <div class="la-meta">${t.label} · ${esc(cls.name)} · Due ${esc(a.due)}${scoreBit}</div>
           <div class="hbar-track" style="margin-top:.45rem"><div class="hbar-fill" style="width:${result.pct}%;background:var(--primary)"></div></div>
         </div>
-        <div class="la-side">
-          <span class="pill status-${st}">${stLabel}</span>
-          <span class="la-pct">${result.pct}%</span>
-        </div>
+        <div class="la-side">${statusPill(key)}<span class="la-pct">${result.pct}%</span></div>
       </div>`;
     })
     .join("");
 
   const assessRows = assessments
     .map(({ cls, a, submission }) => {
+      const key = assessStatusKey(a, submission);
       const active = (a.session || "planned") === "active";
-      let side;
-      if (submission) {
-        // taken & auto-marked — show their score
-        side = `<span class="pill ${scoreClass(submission.pct)}">${submission.pct}%</span>
-          <span class="la-pct">${submission.correct}/${submission.total}</span>`;
-      } else if (active) {
-        // open now — let them take it
-        side = `<button class="btn btn-primary btn-xs" data-take-assess="${a.id}" data-take-class="${cls.id}">${icon("clipboard")} Take now</button>`;
-      } else {
-        // published but the session is closed and they never submitted → skipped
-        side = `<span class="pill danger-pill">${icon("alert")} Skipped</span>`;
-      }
-      return `<div class="la-row">
+      let action;
+      if (submission) action = `<span class="la-pct">${submission.pct}% · ${submission.correct}/${submission.total}</span>`;
+      else if (active) action = `<button class="btn btn-primary btn-xs" data-take-assess="${a.id}" data-take-class="${cls.id}">${icon("clipboard")} Take now</button>`;
+      else action = "";
+      return `<div class="la-row" data-status="${key}">
         <span class="assign-badge" style="background:var(--primary)">${icon("clipboard")}</span>
         <div class="la-main">
           <div class="la-title">${esc(a.title)}${active && !submission ? ` <span class="la-live">${icon("radio")} open now</span>` : ""}</div>
-          <div class="la-meta">Assessment · ${a.questions.length} questions · ${esc(cls.name)}${submission ? "" : active ? " · available to take" : " · session closed"}</div>
+          <div class="la-meta">Assessment · ${a.questions.length} questions · ${esc(cls.name)}</div>
         </div>
-        <div class="la-side">${side}</div>
+        <div class="la-side">${statusPill(key)}${action}</div>
       </div>`;
     })
     .join("");
+
+  // compact status summary — always visible
+  const summary = total
+    ? `<div class="la-summary">${Object.keys(LA_STATUS)
+        .filter((k) => counts[k])
+        .map((k) => `<span class="pill ${LA_STATUS[k].pill}">${counts[k]} ${LA_STATUS[k].label}</span>`)
+        .join("")}</div>`
+    : "";
+
+  const fullList = `
+    ${assignments.length ? `<h3 class="la-head">${icon("book")} Lessons & quizzes</h3><div class="la-list">${assignRows}</div>` : ""}
+    ${assessments.length ? `<h3 class="la-head" style="margin-top:1.5rem">${icon("chartColumn")} Assessments</h3><div class="la-list">${assessRows}</div>` : ""}
+    ${resources.length ? `<h3 class="la-head" style="margin-top:1.5rem">${icon("library")} Learning resources</h3><div class="la-list">${resourceRows}</div>` : ""}`;
 
   return `
     <div class="panel">
       <div class="panel-head-row">
         <div><h2>${icon("clipboard")} My assignments</h2>
           <p class="panel-sub" style="margin:0">Everything your teacher has assigned to you — ${total} item${total === 1 ? "" : "s"}</p></div>
+        ${total ? `<button class="btn btn-outline btn-xs" data-la-toggle>${icon(learnerListOpen ? "arrowUpRight" : "list")} ${learnerListOpen ? "Collapse" : "Show all"}</button>` : ""}
       </div>
       ${total ? "" : `<div class="empty-state">Nothing assigned yet.<br>When your teacher publishes a lesson, quiz, assessment, or resource, it appears here right away.</div>`}
-      ${assignments.length ? `<h3 class="la-head">${icon("book")} Lessons & quizzes</h3><div class="la-list">${assignRows}</div>` : ""}
-      ${assessments.length ? `<h3 class="la-head" style="margin-top:1.5rem">${icon("chartColumn")} Assessments</h3><div class="la-list">${assessRows}</div>` : ""}
-      ${resources.length ? `<h3 class="la-head" style="margin-top:1.5rem">${icon("library")} Learning resources</h3><div class="la-list">${resourceRows}</div>` : ""}
+      ${summary}
+      ${learnerListOpen ? fullList : ""}
     </div>`;
 }
 
@@ -1532,11 +1567,26 @@ function getClasses() {
 }
 const saveClasses = (classes) => write(K_CLASSES, classes);
 
+/* the signed-in user whose coach dashboard is rendering (set in dashboardBody).
+   A real teacher is scoped to their own school; an admin previewing the
+   teacher view sees every school. */
+let coachUser = null;
+function coachSchool() {
+  return coachUser && coachUser.role === "teacher" && coachUser.school ? coachUser.school : null;
+}
+/* classes visible to the current coach — only their school's, if scoped */
+function scopedClasses() {
+  const all = getClasses();
+  const school = coachSchool();
+  return school ? all.filter((c) => c.school === school) : all;
+}
+
 function currentClass() {
-  const classes = getClasses();
-  const cls = classes.find((c) => c.id === coachState.classId) || classes[0];
-  coachState.classId = cls.id;
-  return { classes, cls };
+  const classes = getClasses();          // full store — used when saving
+  const scoped = scopedClasses();        // only what this coach may see
+  const cls = scoped.find((c) => c.id === coachState.classId) || scoped[0] || null;
+  coachState.classId = cls ? cls.id : null;
+  return { classes, scoped, cls };
 }
 
 /* registered learner accounts not yet enrolled in this class */
@@ -2422,11 +2472,22 @@ function classSwitcher(classes, cls) {
   const chips = classes
     .map(
       (c) =>
-        `<button class="kchip ${c.id === cls.id ? "active" : ""}" data-class-switch="${c.id}">
+        `<button class="kchip ${cls && c.id === cls.id ? "active" : ""}" data-class-switch="${c.id}">
           ${icon("graduation")} ${esc(c.name)} <span class="kchip-count">${c.learners.length}</span>
         </button>`
     )
     .join("");
+  // a scoped teacher can only create classes in their own school
+  const locked = coachSchool();
+  const schoolField = locked
+    ? `<div class="field"><label>School</label>
+         <input class="input" value="${esc(locked)}" disabled>
+         <input type="hidden" name="school" value="${esc(locked)}"></div>`
+    : `<div class="field"><label>School (HPF-supported)</label>
+         <select class="select" name="school" required>
+           <option value="" disabled selected>Select your school</option>
+           ${SCHOOLS.map((s) => `<option>${esc(s)}</option>`).join("")}
+         </select></div>`;
   return `
     <div class="kchips" style="margin-bottom:1rem">
       ${chips}
@@ -2436,11 +2497,7 @@ function classSwitcher(classes, cls) {
       <div class="form-row">
         <div class="field"><label>Class / grade name</label>
           <input class="input" name="name" required maxlength="60" placeholder="e.g. Grade 4 — Red"></div>
-        <div class="field"><label>School (HPF-supported)</label>
-          <select class="select" name="school" required>
-            <option value="" disabled selected>Select your school</option>
-            ${SCHOOLS.map((s) => `<option>${esc(s)}</option>`).join("")}
-          </select></div>
+        ${schoolField}
       </div>
       <div class="add-user-actions">
         <button class="btn btn-primary" type="submit">${icon("plus")} Create class</button>
@@ -2450,7 +2507,23 @@ function classSwitcher(classes, cls) {
 }
 
 function teacherBody() {
-  const { classes, cls } = currentClass();
+  const { scoped, cls } = currentClass();
+  const school = coachSchool();
+
+  // a scoped teacher with no class yet in their school
+  if (!cls) {
+    return `
+      <div class="panel-head-row" style="margin-bottom:1rem">
+        <div>
+          <h2 style="font-size:1.15rem">Coach</h2>
+          <p class="panel-sub" style="margin:0">${icon("school")} ${esc(school || "")}</p>
+        </div>
+      </div>
+      ${classSwitcher(scoped, null)}
+      <div class="panel"><div class="empty-state">No classes yet for <strong>${esc(school || "your school")}</strong>.<br>Click <strong>New class</strong> above to create your first grade.</div></div>`;
+  }
+
+  const classes = scoped; // dropdowns & switcher only show this coach's school
   const list = cls.assignments;
   const learners = cls.learners;
 
@@ -2704,6 +2777,7 @@ const BODIES = {
 };
 
 export function dashboardBody(role, ctx) {
+  coachUser = ctx && ctx.user ? ctx.user : null; // scope the coach view by school
   return roleBanner(role) + (BODIES[role] || learnerBody)(ctx);
 }
 
@@ -2891,6 +2965,11 @@ export function wireMyDashboard(user, events) {
       adminInboxOpen = !adminInboxOpen;
       renderRole("admin");
     });
+    // user list: collapse / expand the full table
+    body.querySelector("[data-users-toggle]")?.addEventListener("click", () => {
+      usersListOpen = !usersListOpen;
+      renderRole("admin");
+    });
 
     // --- edit a user's full credentials (incl. password) ---
     body.querySelectorAll("[data-edit-user]").forEach((btn) =>
@@ -3054,6 +3133,12 @@ export function wireMyDashboard(user, events) {
         toast("Session joined", `You're in “${btn.dataset.joinTitle}”. Work through it before your teacher ends the session.`, "success");
       })
     );
+
+    // learner: collapse / expand the full assignments list
+    body.querySelector("[data-la-toggle]")?.addEventListener("click", () => {
+      learnerListOpen = !learnerListOpen;
+      renderRole(document.querySelector(".role-tab.active")?.dataset.role || "learner");
+    });
 
     // learner: open a resource shared by their teacher
     body.querySelectorAll("[data-learn-resource]").forEach((btn) =>
