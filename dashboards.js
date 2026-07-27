@@ -1498,6 +1498,10 @@ const coachState = {
   publishId: null, // assessment whose publish dialog is open
   editAssignId: null, // assignment being edited in the planner
   openResourceForm: false, // teacher "share resource" form
+  peopleGrade: "all", // People tab grade/class filter
+  peopleOpen: false, // People tab list collapse
+  resultsOpen: false, // Results tab list collapse
+  editUserId: null, // user open in the teacher edit modal
 };
 
 /* A seeded MCQ assessment (with auto-marked submissions) so the demo class
@@ -1691,19 +1695,24 @@ function coachResults(list, learners, cls) {
           <p class="panel-sub" style="margin:0">${esc(cls.school || "")} · per-student results and areas needing help</p>
         </div>
         <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+          <button class="btn btn-outline btn-xs" data-results-toggle>${icon(coachState.resultsOpen ? "arrowUpRight" : "list")} ${coachState.resultsOpen ? "Collapse" : "Show list"}</button>
           <button class="btn btn-outline btn-xs" data-export-csv>${icon("download")} CSV</button>
           <button class="btn btn-outline btn-xs" data-export-xls>${icon("download")} Excel</button>
           <button class="btn btn-outline btn-xs" data-export-pdf>${icon("download")} PDF</button>
         </div>
       </div>
       ${learners.length
-        ? `<div class="user-table">
-            <div class="ut-row ut-head" style="grid-template-columns:minmax(0,1.2fr) auto auto minmax(0,1.6fr)">
-              <div class="ut-cell">Student</div><div class="ut-cell">Completion</div>
-              <div class="ut-cell">Avg score</div><div class="ut-cell">Areas needing help</div>
-            </div>
-            <div>${rows}</div>
-          </div>`
+        ? (coachState.resultsOpen
+            ? `<div class="user-table">
+                <div class="ut-row ut-head" style="grid-template-columns:minmax(0,1.2fr) auto auto minmax(0,1.6fr)">
+                  <div class="ut-cell">Student</div><div class="ut-cell">Completion</div>
+                  <div class="ut-cell">Avg score</div><div class="ut-cell">Areas needing help</div>
+                </div>
+                <div>${rows}</div>
+              </div>`
+            : `<div class="la-summary"><span class="la-chip">${learners.length} students</span>
+                <span class="la-chip">${learners.filter((l) => learnerOverall(list, l.id) < 70).length} need attention</span>
+                <span class="hint" style="align-self:center">— click <strong>Show list</strong> for per-student results</span></div>`)
         : `<div class="empty-state">No learners in this class yet — enroll some in the Learners tab.</div>`}
     </div>`;
 }
@@ -1817,11 +1826,13 @@ function planForm(cls, classes, editing) {
       </form>`;
   }
 
-  const classOpts = classes
-    .map(
-      (c) => `<option value="${c.id}" ${c.id === cls.id ? "selected" : ""}>${esc(c.name)} · ${esc(c.school || "")} (${c.learners.length})</option>`
-    )
-    .join("");
+  const classOpts =
+    (classes.length > 1 ? `<option value="__all__">${esc(coachSchool() ? "All grades — " + coachSchool() : "All my grades")}</option>` : "") +
+    classes
+      .map(
+        (c) => `<option value="${c.id}" ${c.id === cls.id ? "selected" : ""}>${esc(c.name)} · ${esc(c.school || "")} (${c.learners.length})</option>`
+      )
+      .join("");
 
   return `
     <form id="assignForm" class="add-user-form">
@@ -1832,7 +1843,7 @@ function planForm(cls, classes, editing) {
           <input class="input" name="title" required placeholder="e.g. Fractions — Part 2"></div>
       </div>
       <div class="form-row">
-        <div class="field"><label>Assign to class</label>
+        <div class="field"><label>Assign to grade / class</label>
           <select class="select" name="classId" data-assign-class>${classOpts}</select></div>
         <div class="field"><label>Audience</label>
           <select class="select" name="audience" data-assign-audience>
@@ -2468,6 +2479,82 @@ function simulateAssessment(a, cls) {
     });
 }
 
+/* People — school-scoped list of teachers & learners the teacher may edit,
+   filterable by grade, collapsible to save space */
+function coachPeople(cls, scoped) {
+  const school = coachSchool();
+  const allUsers = read(K_USERS, []);
+  const schoolUsers = allUsers.filter((u) => (!school || u.school === school) && (u.role === "teacher" || u.role === "learner"));
+  const grade = coachState.peopleGrade || "all";
+  const gradeClass = scoped.find((c) => c.id === grade);
+
+  const teachers = schoolUsers.filter((u) => u.role === "teacher");
+  let learners = schoolUsers.filter((u) => u.role === "learner");
+  if (gradeClass) learners = learners.filter((u) => gradeClass.learners.some((l) => l.id === u.id));
+
+  const gradeOpts =
+    `<option value="all" ${grade === "all" ? "selected" : ""}>All grades</option>` +
+    scoped.map((c) => `<option value="${c.id}" ${c.id === grade ? "selected" : ""}>${esc(c.name)} (${c.learners.length})</option>`).join("");
+
+  const row = (u) => {
+    const pw = u.password || "";
+    return `<div class="utx-row utx-people">
+      <div class="utx-cell utx-user"><span class="avatar-sm">${esc((u.fullName || u.username || "U").slice(0, 1).toUpperCase())}</span>
+        <div class="utx-name">${esc(u.fullName || "—")}</div></div>
+      <div class="utx-cell">${esc(u.username || "—")}</div>
+      <div class="utx-cell utx-pw"><span data-pw="${esc(pw)}" class="pw-mask">${pw ? "••••••••" : "—"}</span>
+        ${pw ? `<button class="icon-btn pw-eye" data-tpw-toggle title="Show/hide">${icon("eye")}</button>` : ""}</div>
+      <div class="utx-cell utx-actions"><button class="icon-btn" data-tedit-user="${u.id}" title="Edit">${icon("pen")}</button></div>
+    </div>`;
+  };
+  const table = (label, arr) => arr.length
+    ? `<h3 class="la-head" style="margin-top:1.25rem">${label} · ${arr.length}</h3>
+       <div class="utx-scroll"><div class="utx-table utx-narrow">
+         <div class="utx-row utx-people utx-head"><div class="utx-cell">Name</div><div class="utx-cell">Username</div><div class="utx-cell">Password</div><div class="utx-cell"></div></div>
+         ${arr.map(row).join("")}
+       </div></div>`
+    : "";
+
+  return `
+    <div class="panel">
+      <div class="panel-head-row">
+        <div><h2>${icon("users")} People — ${esc(school || "all schools")}</h2>
+          <p class="panel-sub" style="margin:0">Teachers &amp; learners in your school · edit name, username &amp; password</p></div>
+        <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
+          <select class="select select-sm" data-people-grade aria-label="Filter by grade">${gradeOpts}</select>
+          <button class="btn btn-outline btn-xs" data-people-enroll>${icon("userPlus")} Enroll learner</button>
+          <button class="btn btn-outline btn-xs" data-people-toggle>${icon(coachState.peopleOpen ? "arrowUpRight" : "list")} ${coachState.peopleOpen ? "Collapse" : "Show list"}</button>
+        </div>
+      </div>
+      <div class="la-summary"><span class="la-chip">${teachers.length} Teachers</span><span class="la-chip">${learners.length} Learners${gradeClass ? " in " + esc(gradeClass.name) : ""}</span></div>
+      ${coachState.peopleOpen
+        ? `${table(icon("users") + " Teachers", teachers)}${table(icon("graduation") + " Learners", learners)}${!teachers.length && !learners.length ? `<div class="empty-state">No users in this school yet.</div>` : ""}`
+        : ""}
+    </div>
+    ${coachState.editUserId ? teacherEditUserModal(allUsers.find((u) => u.id === coachState.editUserId)) : ""}`;
+}
+
+function teacherEditUserModal(u) {
+  if (!u) return "";
+  return `
+    <div class="modal-overlay" data-tedit-overlay>
+      <div class="modal" role="dialog" aria-modal="true">
+        <div class="modal-head">
+          <div><h2>Edit ${esc(ROLE_LABEL[u.role] || u.role)}</h2><p class="panel-sub" style="margin:0">${esc(u.fullName || u.username || "")}</p></div>
+          <button class="icon-btn" data-tedit-close aria-label="Close">✕</button>
+        </div>
+        <form id="tEditForm" class="modal-body" data-uid="${u.id}">
+          <div class="field"><label>Full name</label><input class="input" name="fullName" value="${esc(u.fullName || "")}" required></div>
+          <div class="field"><label>Username</label><input class="input" name="username" value="${esc(u.username || "")}"></div>
+          <div class="field"><label>Password</label>
+            <div class="pw-edit"><input class="input" name="password" type="password" value="${esc(u.password || "")}" minlength="6">
+              <button class="btn btn-outline btn-xs" type="button" data-teditpw-toggle>${icon("eye")} Show</button></div></div>
+        </form>
+        <div class="modal-foot"><button class="btn btn-primary" data-tedit-save>${icon("check")} Save</button><button class="btn btn-outline" data-tedit-close>Cancel</button></div>
+      </div>
+    </div>`;
+}
+
 function classSwitcher(classes, cls) {
   const chips = classes
     .map(
@@ -2543,6 +2630,7 @@ function teacherBody() {
     { id: "assignments", label: "Plan & Assign" },
     { id: "assessments", label: "Assessments" },
     { id: "learners", label: "Learners" },
+    { id: "people", label: "People" },
     { id: "results", label: "Results" },
   ]
     .map(
@@ -2581,6 +2669,7 @@ function teacherBody() {
   let content;
   if (coachState.tab === "assignments") content = coachAssignments(list, learners, cls, classes);
   else if (coachState.tab === "assessments") content = coachAssessments(cls, classes);
+  else if (coachState.tab === "people") content = coachPeople(cls, scoped);
   else if (coachState.tab === "results") content = coachResults(list, learners, cls);
   else if (coachState.tab === "learners")
     content = coachState.learnerId
@@ -3191,6 +3280,63 @@ export function wireMyDashboard(user, events) {
         renderRole("teacher");
       })
     );
+
+    // --- People tab: filter, collapse, enroll, edit users, reveal password ---
+    body.querySelector("[data-people-grade]")?.addEventListener("change", (e) => {
+      coachState.peopleGrade = e.target.value;
+      renderRole("teacher");
+    });
+    body.querySelector("[data-people-toggle]")?.addEventListener("click", () => {
+      coachState.peopleOpen = !coachState.peopleOpen;
+      renderRole("teacher");
+    });
+    body.querySelector("[data-people-enroll]")?.addEventListener("click", () => {
+      coachState.tab = "learners";
+      coachState.openLearnerForm = true;
+      renderRole("teacher");
+    });
+    body.querySelectorAll("[data-tpw-toggle]").forEach((btn) =>
+      btn.addEventListener("click", () => {
+        const span = btn.parentElement.querySelector(".pw-mask");
+        const shown = span.dataset.shown === "1";
+        span.textContent = shown ? "••••••••" : span.dataset.pw;
+        span.dataset.shown = shown ? "0" : "1";
+      })
+    );
+    body.querySelectorAll("[data-tedit-user]").forEach((btn) =>
+      btn.addEventListener("click", () => { coachState.editUserId = btn.dataset.teditUser; renderRole("teacher"); })
+    );
+    const tCloseEdit = () => { coachState.editUserId = null; renderRole("teacher"); };
+    body.querySelector("[data-tedit-overlay]")?.addEventListener("click", (e) => { if (e.target.hasAttribute("data-tedit-overlay")) tCloseEdit(); });
+    body.querySelectorAll("[data-tedit-close]").forEach((b) => b.addEventListener("click", tCloseEdit));
+    body.querySelector("[data-teditpw-toggle]")?.addEventListener("click", (e) => {
+      const inp = body.querySelector("#tEditForm [name=password]");
+      const on = inp.type === "password";
+      inp.type = on ? "text" : "password";
+      e.currentTarget.innerHTML = `${icon("eye")} ${on ? "Hide" : "Show"}`;
+    });
+    body.querySelector("[data-tedit-save]")?.addEventListener("click", () => {
+      const form = body.querySelector("#tEditForm");
+      const data = Object.fromEntries(new FormData(form).entries());
+      if (!(data.fullName || "").trim()) return toast("Name required", "", "error");
+      if ((data.password || "").length < 6) return toast("Weak password", "Password must be at least 6 characters.", "error");
+      const users = read(K_USERS, []);
+      const u = users.find((x) => x.id === form.dataset.uid);
+      if (!u) return tCloseEdit();
+      Object.assign(u, { fullName: data.fullName.trim(), username: (data.username || "").trim(), password: data.password });
+      write(K_USERS, users);
+      const sess = read(K_SESSION, null);
+      if (sess && sess.id === u.id) { const { password, ...safe } = u; write(K_SESSION, safe); }
+      coachState.editUserId = null;
+      toast("User updated", `${u.fullName}'s details were saved.`, "success");
+      renderRole("teacher");
+    });
+
+    // Results tab: collapse / expand the per-student list
+    body.querySelector("[data-results-toggle]")?.addEventListener("click", () => {
+      coachState.resultsOpen = !coachState.resultsOpen;
+      renderRole("teacher");
+    });
     // header "Plan work" opens the Plan & Assign tab with the planner form open
     body.querySelector("[data-new-assign]")?.addEventListener("click", () => {
       coachState.tab = "assignments";
@@ -3379,6 +3525,29 @@ export function wireMyDashboard(user, events) {
       }
 
       const classes = getClasses();
+      const withScore0 = data.type !== "lesson";
+      const makeWork = (learnerIds) => ({
+        id: uid(), type: data.type || "lesson", title: data.title.trim(),
+        detail: (data.detail || "").trim() || (withScore0 ? "questions" : "resources"),
+        due: (data.due || "").trim() || "no due date", session: "planned",
+        results: learnerIds.map((id) => (withScore0 ? { id, pct: 0, score: 0 } : { id, pct: 0 })),
+      });
+
+      // --- assign to every grade in the teacher's school ---
+      if (data.classId === "__all__") {
+        const targets = scopedClasses().filter((c) => c.learners.length);
+        if (!targets.length) return toast("No classes with learners", "Enroll learners first.", "error");
+        targets.forEach((sc) => {
+          const c = classes.find((x) => x.id === sc.id);
+          c.assignments.unshift(makeWork(c.learners.map((l) => l.id)));
+        });
+        saveClasses(classes);
+        coachState.tab = "assignments";
+        coachState.openForm = false;
+        toast(`${ASSIGN_TYPES[data.type]?.label || "Work"} created`, `“${data.title.trim()}” assigned to all ${targets.length} grades${coachSchool() ? " in " + coachSchool() : ""}.`, "success");
+        return renderRole("teacher");
+      }
+
       const target = classes.find((c) => c.id === data.classId) || classes[0];
       if (!target.learners.length)
         return toast("Class is empty", `“${target.name}” has no learners yet — enroll some first.`, "error");

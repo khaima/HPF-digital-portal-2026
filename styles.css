@@ -3101,6 +3101,10 @@ textarea.input:focus {
 .pw-edit { display: flex; gap: 0.5rem; align-items: center; }
 .pw-edit .input { flex: 1; }
 
+/* People tab table (Name / Username / Password / actions) */
+.utx-table.utx-narrow { min-width: 560px; }
+.utx-row.utx-people { grid-template-columns: 1.6fr 1fr 1fr auto; }
+
 /* status distribution bar */
 .dist-bar {
   display: flex;
