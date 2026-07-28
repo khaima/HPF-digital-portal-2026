@@ -623,26 +623,103 @@ function lineChart(series, labels, color = "var(--primary)") {
   </div>`;
 }
 
+/* categorical palette used across the scorecard charts */
+const CHART_COLORS = [
+  "oklch(62% 0.19 250)", "oklch(70% 0.14 175)", "oklch(76% 0.15 75)", "oklch(58% 0.20 300)",
+  "oklch(66% 0.17 20)", "oklch(70% 0.15 220)", "oklch(72% 0.17 140)", "oklch(66% 0.18 45)",
+];
+const chartColor = (i) => CHART_COLORS[i % CHART_COLORS.length];
+
+/* y-axis ticks shared by the axis charts */
+function axisTicks(max, steps = 8) {
+  const out = [];
+  for (let i = steps; i >= 0; i--) out.push(Math.round((max / steps) * i));
+  return out;
+}
+
+/* ELOG-style vertical bar chart: y-axis, gridlines, multi-colour animated
+   bars, rotated x labels and a hover tooltip */
+function axisChart(values, labels, opts = {}) {
+  if (!values.length) return `<div class="empty-state">No data yet.</div>`;
+  const max = Math.max(10, Math.ceil(Math.max(...values) / 10) * 10);
+  const ticks = axisTicks(max);
+  const rotate = opts.rotate !== false && labels.some((l) => l.length > 6);
+  return `<div class="axc ${rotate ? "axc-rot" : ""}">
+    <div class="axc-y">${ticks.map((t) => `<span>${t}</span>`).join("")}</div>
+    <div class="axc-plot">
+      <div class="axc-grid">${ticks.map(() => `<i></i>`).join("")}</div>
+      <div class="axc-bars">${values
+        .map(
+          (v, i) => `<div class="axc-col">
+            <div class="axc-bar" style="height:${(v / max) * 100}%;background:${opts.color || chartColor(i)};animation-delay:${i * 70}ms">
+              <span class="axc-tip">${esc(labels[i])}<b>${opts.label || "Score"}: ${v}${opts.unit || ""}</b></span>
+            </div>
+          </div>`
+        )
+        .join("")}</div>
+    </div>
+    <div class="axc-x">${labels.map((l) => `<span title="${esc(l)}">${esc(l)}</span>`).join("")}</div>
+  </div>`;
+}
+
+/* horizontal multi-colour bars — "Performance by Pillar" */
+function hBarChart(items) {
+  if (!items.length) return `<div class="empty-state">No data yet.</div>`;
+  const max = Math.max(10, Math.ceil(Math.max(...items.map((i) => i.value)) / 10) * 10);
+  return `<div class="hbc">${items
+    .map(
+      (it, i) => `<div class="hbc-row">
+        <span class="hbc-lab" title="${esc(it.label)}">${esc(it.label)}</span>
+        <span class="hbc-track">
+          <span class="hbc-fill" style="width:${(it.value / max) * 100}%;background:${it.color || chartColor(i)};animation-delay:${i * 80}ms">
+            <b class="hbc-val">${it.value}</b>
+          </span>
+        </span>
+      </div>`
+    )
+    .join("")}</div>`;
+}
+
+/* every chart panel gets a maximize control */
+function chartPanel(title, bodyHtml, id, note) {
+  return `<div class="scd-panel" data-chart-panel="${id}">
+    <div class="scd-panel-head">
+      <h3>${title}</h3>
+      <button class="icon-btn scd-max" data-chart-max="${id}" title="Full screen">${icon("externalLink")}</button>
+    </div>
+    ${note ? `<p class="scd-narrative">${note}</p>` : ""}
+    <div class="scd-panel-body">${bodyHtml}</div>
+  </div>`;
+}
+
 /* grouped bar chart — one cluster per category, one bar per series */
 function groupedBars(categories, seriesNames, matrix, colors) {
   if (!categories.length) return `<div class="empty-state">No data yet.</div>`;
+  const flat = matrix.flat();
+  const max = Math.max(10, Math.ceil(Math.max(...flat, 10) / 10) * 10);
+  const ticks = axisTicks(max);
   return `<div class="gb-wrap">
     <div class="gb-legend">${seriesNames
       .map((n, i) => `<span class="cl-row"><span class="cl-dot" style="background:${colors[i]}"></span>${esc(n)}</span>`)
       .join("")}</div>
-    <div class="gb-chart">${categories
-      .map(
-        (cat, ci) => `<div class="gb-group">
-          <div class="gb-bars">${seriesNames
-            .map(
-              (n, si) => `<div class="gb-bar" style="height:${Math.max(matrix[ci][si], 2)}%;background:${colors[si]}"
-                title="${esc(cat)} · ${esc(n)}: ${matrix[ci][si]}"></div>`
-            )
-            .join("")}</div>
-          <div class="gb-lab">${esc(cat)}</div>
-        </div>`
-      )
-      .join("")}</div>
+    <div class="axc axc-rot">
+      <div class="axc-y">${ticks.map((t) => `<span>${t}</span>`).join("")}</div>
+      <div class="axc-plot">
+        <div class="axc-grid">${ticks.map(() => `<i></i>`).join("")}</div>
+        <div class="axc-bars">${categories
+          .map(
+            (cat, ci) => `<div class="axc-col gb-col">${seriesNames
+              .map(
+                (n, si) => `<div class="axc-bar gb-bar" style="height:${(matrix[ci][si] / max) * 100}%;background:${colors[si]};animation-delay:${(ci * seriesNames.length + si) * 60}ms">
+                  <span class="axc-tip">${esc(cat)} · ${esc(n)}<b>Score: ${matrix[ci][si]}</b></span>
+                </div>`
+              )
+              .join("")}</div>`
+          )
+          .join("")}</div>
+      </div>
+      <div class="axc-x">${categories.map((c) => `<span title="${esc(c)}">${esc(c)}</span>`).join("")}</div>
+    </div>
   </div>`;
 }
 
@@ -1033,7 +1110,9 @@ function adminScorecard(s) {
     .join("");
 
   const tagLabel = { live: "live", baseline: "M&E", custom: "custom" };
+  const qq = (scFilter.q || "").toLowerCase();
   const inds = active.indicators
+    .filter((ind) => !qq || ind.name.toLowerCase().includes(qq))
     .map(
       (ind) => `<div class="ind-row">
         <div class="ind-name">${esc(ind.name)} <span class="ind-tag ${ind.kind}">${tagLabel[ind.kind]}</span></div>
@@ -1185,22 +1264,8 @@ function adminScorecard(s) {
     return { name, score, schools: rSchools.length, reports: reports.length };
   });
 
-  // ---------- subdomain performance (all indicators, searchable) ----------
-  const subdomains = shownPillars
-    .flatMap((p) => p.indicators.map((i) => ({ ...i, pillar: p.short, picon: p.icon })))
-    .filter((i) => !q || i.name.toLowerCase().includes(q) || i.pillar.toLowerCase().includes(q));
-  const subRows = subdomains.length
-    ? subdomains
-        .map(
-          (i) => `<div class="sub-row">
-            <span class="sub-pill">${icon(i.picon)} ${esc(i.pillar)}</span>
-            <span class="sub-name">${esc(i.name)} <span class="ind-tag ${i.kind}">${tagLabel[i.kind]}</span></span>
-            <span class="sub-bar"><span style="width:${i.value}%;background:${ragColor(i.value)}"></span></span>
-            <span class="sub-val rag-${rag(i.value)}">${i.value}</span>
-          </div>`
-        )
-        .join("")
-    : `<div class="empty-state">No indicators match “${esc(scFilter.q)}”.</div>`;
+  // indicator count matching the current search (drives the Pillar Detail list)
+  const matching = shownPillars.flatMap((p) => p.indicators).filter((i) => !q || i.name.toLowerCase().includes(q));
 
   const scope =
     scFilter.school !== "all" ? scFilter.school
@@ -1262,43 +1327,31 @@ function adminScorecard(s) {
       </div>
     </div>
 
-    <div class="scd-panel">
-      <h3>Termly Readiness Trend</h3>
-      <p class="scd-narrative">Programme readiness ${dir} from <strong>${first}%</strong> in ${MONTHS[0]}
-        to <strong>${last}%</strong> in ${MONTHS[MONTHS.length - 1]}, based on ${observations} observations.</p>
-      ${lineChart(trendSeries, MONTHS, "oklch(72% 0.17 155)")}
+    ${chartPanel("Termly Readiness Trend",
+      lineChart(trendSeries, MONTHS, "oklch(70% 0.14 175)"), "trend",
+      `Programme readiness ${dir} from <strong>${first}%</strong> in ${MONTHS[0]} to <strong>${last}%</strong> in ${MONTHS[MONTHS.length - 1]}, based on ${observations} observations.`)}
+
+    <div class="scd-grid">
+      ${chartPanel("Pillar Performance",
+        axisChart(shownPillars.map((p) => p.score), shownPillars.map((p) => p.name), { label: "Average score" }), "pillars")}
+      ${chartPanel("School Score by Term", byTerm, "byterm")}
     </div>
 
     <div class="scd-grid">
-      <div class="scd-panel"><h3>Pillar Performance</h3>${pillarBars}</div>
-      <div class="scd-panel"><h3>School Score by Term</h3>${byTerm}</div>
+      ${chartPanel("Average Score by School",
+        axisChart(schoolAvgs.map((r) => r.score), schoolAvgs.map((r) => r.name), { label: "Average score" }), "byschool")}
+      ${chartPanel("Performance by Pillar",
+        hBarChart(sc.pillars.map((p, i) => ({ label: p.name, value: p.score, color: chartColor(i) }))), "perfpillar")}
     </div>
+
+    ${chartPanel("Regional Impact Map",
+      regionMap(regionRows, scFilter.region === "all" ? null : scFilter.region), "regionmap",
+      "Composite score by HPF region — click a region to focus the whole dashboard.")}
 
     <div class="scd-grid">
-      <div class="scd-panel"><h3>Average Score by School</h3><div class="rank-list">${avgRows}</div></div>
-      <div class="scd-panel"><h3>Performance by Pillar</h3>
-        <div class="donut-wrap">${pieChart(pieSegs)}${chartLegend(pieSegs)}</div></div>
-    </div>
-
-    <div class="scd-panel">
-      <h3>Regional Impact Map</h3>
-      <p class="scd-narrative">Composite score by HPF region — greener is stronger, red needs attention.</p>
-      ${regionMap(regionRows, scFilter.region === "all" ? null : scFilter.region)}
-    </div>
-
-    <div class="scd-grid">
-      <div class="scd-panel"><h3>Indicator Distribution</h3>${histogram(bins, binLabels, "oklch(72% 0.17 155)")}</div>
-      <div class="scd-panel"><h3>Risk Heatmap — Pillar × County</h3>
-        <div class="heatmap-scroll">
-          <div class="heatmap" style="grid-template-columns:150px repeat(${cols.length}, minmax(56px, 1fr))">${hmHead}${hmRows}</div>
-        </div>
-      </div>
-    </div>
-
-    <div class="scd-panel">
-      <h3>Subdomain Performance</h3>
-      <p class="scd-narrative">${subdomains.length} indicator${subdomains.length === 1 ? "" : "s"}${scFilter.q ? ` matching “${esc(scFilter.q)}”` : ""} across the selected pillars.</p>
-      <div class="sub-list">${subRows}</div>
+      ${chartPanel("Indicator Distribution", histogram(bins, binLabels, "oklch(70% 0.14 175)"), "histo")}
+      ${chartPanel("Risk Heatmap — Pillar × County",
+        `<div class="heatmap-scroll"><div class="heatmap" style="grid-template-columns:150px repeat(${cols.length}, minmax(56px, 1fr))">${hmHead}${hmRows}</div></div>`, "heat")}
     </div>
 
     <div class="scd-panel">
@@ -1317,9 +1370,15 @@ function adminScorecard(s) {
     </div>
 
     <div class="scd-panel">
-      <h3>Pillar Detail — ${esc(active.name)}</h3>
-      <div class="sc-cards scd-cards">${cards}</div>
-      <div class="ind-list" style="margin-top:1rem">${inds}</div>
+      <div class="scd-panel-head">
+        <h3>Pillar Detail — ${esc(active.name)}</h3>
+        <button class="icon-btn scd-max" data-chart-max="detail" title="Full screen">${icon("externalLink")}</button>
+      </div>
+      <p class="scd-narrative">${matching.length} indicator${matching.length === 1 ? "" : "s"}${scFilter.q ? ` matching “${esc(scFilter.q)}”` : ""} · tap a card to switch pillar</p>
+      <div class="scd-panel-body" data-chart-panel="detail">
+        <div class="sc-cards scd-cards">${cards}</div>
+        <div class="ind-list" style="margin-top:1rem">${inds || `<div class="empty-state">No indicators match “${esc(scFilter.q)}”.</div>`}</div>
+      </div>
     </div>
   </div>`;
 }
@@ -3342,6 +3401,34 @@ export function wireMyDashboard(user, events) {
         scTheme = scTheme === "dark" ? "light" : "dark";
         renderAnalytics();
       });
+
+      // maximize any chart into a full-screen overlay (minimize to return)
+      body.querySelectorAll("[data-chart-max]").forEach((btn) =>
+        btn.addEventListener("click", () => {
+          const id = btn.dataset.chartMax;
+          const panel = body.querySelector(`[data-chart-panel="${id}"]`);
+          const src = panel?.classList.contains("scd-panel")
+            ? panel.querySelector(".scd-panel-body")
+            : panel;
+          if (!src) return;
+          const title = (panel.querySelector("h3") || btn.closest(".scd-panel")?.querySelector("h3"))?.textContent || "Chart";
+          const ov = document.createElement("div");
+          ov.className = `chart-full ${scTheme === "light" ? "sc-bright" : ""} sc-dark`;
+          ov.innerHTML = `
+            <div class="cf-head">
+              <h3>${esc(title.trim())}</h3>
+              <button class="btn btn-outline btn-xs" data-cf-close>${icon("arrowLeft")} Minimize</button>
+            </div>
+            <div class="cf-body">${src.innerHTML}</div>`;
+          document.body.appendChild(ov);
+          const close = () => { ov.remove(); document.removeEventListener("keydown", onKey); };
+          const onKey = (e) => { if (e.key === "Escape") close(); };
+          ov.querySelector("[data-cf-close]").addEventListener("click", close);
+          ov.addEventListener("click", (e) => { if (e.target === ov) close(); });
+          document.addEventListener("keydown", onKey);
+          runCounters(); // re-animate any numbers inside the blown-up chart
+        })
+      );
       const searchEl = body.querySelector("[data-sc-search]");
       if (searchEl) {
         let t = null;
