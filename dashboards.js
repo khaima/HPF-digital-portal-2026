@@ -369,6 +369,19 @@ function subTabs(tabs, active) {
     .join("")}</div>`;
 }
 
+/* vertical icon rail used down the left of the teacher & learner dashboards.
+   `attr` is the data-attribute the click wiring already listens for. */
+function sideNav(tabs, active, attr) {
+  return `<nav class="dash-side" aria-label="Dashboard sections">${tabs
+    .map(
+      (t) => `<button class="ds-item ${t.id === active ? "active" : ""}" ${attr}="${t.id}" title="${esc(t.label)}">
+        <span class="ds-ic">${icon(t.icon)}</span>
+        <span class="ds-lab">${esc(t.label)}</span>
+      </button>`
+    )
+    .join("")}</nav>`;
+}
+
 /* ---------------------------------------------------------- role bodies */
 /* ============================================================
    Admin analytics — live visuals aggregated from the real data
@@ -1807,21 +1820,24 @@ function learnerBody(ctx) {
   return `
     ${statTiles(d.stats)}
     ${smart}
-    ${subTabs(
-      [
-        { id: "assignments", label: "My Assignments" },
-        { id: "resources", label: "Learning Resources" },
-      ],
-      "assignments"
-    )}
-
-    <div data-subpanel="assignments">
-      ${liveHtml}
-      ${assignFolder}
-    </div>
-
-    <div data-subpanel="resources" hidden>
-      ${learnerResources(ctx?.user?.id)}
+    <div class="dash-shell">
+      ${sideNav(
+        [
+          { id: "assignments", label: "My Assignments", icon: "clipboard" },
+          { id: "resources", label: "Learning Resources", icon: "library" },
+        ],
+        "assignments",
+        "data-subtab"
+      )}
+      <div class="dash-main">
+        <div data-subpanel="assignments">
+          ${liveHtml}
+          ${assignFolder}
+        </div>
+        <div data-subpanel="resources" hidden>
+          ${learnerResources(ctx?.user?.id)}
+        </div>
+      </div>
     </div>`;
 }
 
@@ -3035,18 +3051,18 @@ function teacherBody() {
     <div class="stat-tile"><div class="st-label">${icon("trophy")} Class avg score</div><div class="st-num">${countNum(classScore, "%")}</div></div>
   </div>`;
 
-  const tabBar = `<div class="ksubtabs">${[
-    { id: "overview", label: "Overview" },
-    { id: "assignments", label: "Plan & Assign" },
-    { id: "assessments", label: "Assessments" },
-    { id: "learners", label: "Learners" },
-    { id: "people", label: "People" },
-    { id: "results", label: "Results" },
-  ]
-    .map(
-      (t) => `<button class="ksubtab ${t.id === coachState.tab ? "active" : ""}" data-coach-tab="${t.id}">${t.label}</button>`
-    )
-    .join("")}</div>`;
+  const tabBar = sideNav(
+    [
+      { id: "overview", label: "Overview", icon: "chartColumn" },
+      { id: "assignments", label: "Plan & Assign", icon: "clipboard" },
+      { id: "assessments", label: "Assessments", icon: "trophy" },
+      { id: "learners", label: "Learners", icon: "graduation" },
+      { id: "people", label: "People", icon: "users" },
+      { id: "results", label: "Results", icon: "chartColumn" },
+    ],
+    coachState.tab,
+    "data-coach-tab"
+  );
 
   // computed insights: at-risk learners, weakest assignment, top performer
   const atRisk = learners.filter((l) => learnerOverall(list, l.id) < 70);
@@ -3102,8 +3118,10 @@ function teacherBody() {
     ${classSwitcher(classes, cls)}
     ${metricTiles}
     ${smart}
-    ${tabBar}
-    <div>${content}</div>`;
+    <div class="dash-shell">
+      ${tabBar}
+      <div class="dash-main">${content}</div>
+    </div>`;
 }
 
 /* add a user — pick Teacher or Learner, then role-specific fields + password */

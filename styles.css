@@ -3186,6 +3186,85 @@ textarea.input:focus {
 .scd-grid .scd-panel { margin-bottom: 1rem; }
 .scd-cards { grid-template-columns: repeat(4, 1fr); }
 
+/* ---------------------------------------------------------- left icon rail */
+.dash-shell {
+  display: grid;
+  grid-template-columns: 208px minmax(0, 1fr);
+  gap: 1.25rem;
+  align-items: start;
+}
+
+.dash-side {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  position: sticky;
+  top: 80px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 1rem;
+  padding: 0.5rem;
+  box-shadow: 0 1px 2px oklch(20% 0.04 150 / 0.05);
+}
+
+.ds-item {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  width: 100%;
+  padding: 0.6rem 0.7rem;
+  border: none;
+  border-radius: 0.7rem;
+  background: transparent;
+  color: var(--muted-foreground);
+  font: inherit;
+  font-size: 0.88rem;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.ds-ic {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: var(--muted);
+  color: var(--muted-foreground);
+  flex: none;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.ds-ic svg { width: 16px; height: 16px; }
+
+.ds-item:hover { background: var(--muted); color: var(--foreground); }
+.ds-item:hover .ds-ic { color: var(--primary); }
+
+.ds-item.active { background: var(--accent); color: var(--primary); }
+.ds-item.active .ds-ic { background: var(--primary); color: var(--primary-foreground); }
+
+.dash-main { min-width: 0; }
+
+/* tablet: icon-only rail */
+@media (max-width: 1100px) {
+  .dash-shell { grid-template-columns: 60px minmax(0, 1fr); gap: 0.85rem; }
+  .ds-lab { display: none; }
+  .ds-item { justify-content: center; padding: 0.5rem; }
+}
+
+/* mobile: rail becomes a scrollable top strip */
+@media (max-width: 720px) {
+  .dash-shell { grid-template-columns: 1fr; }
+  .dash-side {
+    flex-direction: row;
+    position: static;
+    overflow-x: auto;
+    padding: 0.4rem;
+  }
+  .ds-item { width: auto; flex: none; }
+}
+
 /* ---------------------------------------------------------- axis bar chart */
 @keyframes bar-rise { from { transform: scaleY(0); } to { transform: scaleY(1); } }
 @keyframes bar-grow { from { transform: scaleX(0); } to { transform: scaleX(1); } }
