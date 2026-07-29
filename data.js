@@ -231,8 +231,27 @@ export const REGIONS = {
   Narok: ["Aitong School", "Naboisho School", "Ololomei School", "Olkimitare School"],
 };
 
+/* Approximate GPS for each HPF-supported school, used by the satellite map.
+   NOTE: these are placeholder coordinates for the region — replace each with
+   the school's real GPS reading so the satellite view lands on the compound. */
+export const SCHOOL_COORDS = {
+  "Meru Primary School": { lat: 0.0463, lng: 37.6559, county: "Meru" },
+  "Kithoka Primary School": { lat: 0.1018, lng: 37.6472, county: "Meru" },
+  "Nkubu Primary School": { lat: -0.0619, lng: 37.6650, county: "Meru" },
+  "Isiolo Central Primary": { lat: 0.3546, lng: 37.5822, county: "Isiolo" },
+  "Garbatulla Primary School": { lat: 0.5300, lng: 38.5200, county: "Isiolo" },
+  "Kinna Primary School": { lat: 0.5833, lng: 38.3167, county: "Isiolo" },
+  "Nanyuki Primary School": { lat: 0.0100, lng: 37.0731, county: "Laikipia" },
+  "Rumuruti Primary School": { lat: 0.2725, lng: 36.5372, county: "Laikipia" },
+  "Doldol Primary School": { lat: 0.3833, lng: 37.1500, county: "Laikipia" },
+  "Aitong School": { lat: -1.1667, lng: 35.2500, county: "Narok" },
+  "Naboisho School": { lat: -1.3167, lng: 35.3167, county: "Narok" },
+  "Ololomei School": { lat: -1.2500, lng: 35.2000, county: "Narok" },
+  "Olkimitare School": { lat: -1.4000, lng: 35.1500, county: "Narok" },
+};
+
 /* HPF programme projects a user can belong to */
-export const PROJECTS = ["MEP", "ICT Academy", "Infrastructure", "Education"];
+export const PROJECTS = ["Micro Enterprise Programme", "ICT Academy", "Infrastructure", "Education"];
 
 /* flat list of every school (teacher class creation, scorecard, etc.) */
 export const SCHOOLS = Object.values(REGIONS).flat();

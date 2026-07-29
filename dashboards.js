@@ -5,7 +5,7 @@
 
 import { icon } from "./icons.js";
 import { DASH, ROLES, ORG_TYPES, COUNTIES, KOLIBRI, CONTENT_KINDS, SCHOOLS,
-  LIBRARY_CATEGORIES, RESOURCE_TYPES, LIBRARY_SEED, REGIONS, PROJECTS } from "./data.js";
+  LIBRARY_CATEGORIES, RESOURCE_TYPES, LIBRARY_SEED, REGIONS, PROJECTS, SCHOOL_COORDS } from "./data.js";
 import { esc, timeAgo, runCounters, read, write, toast, uid } from "./util.js";
 import { adminClient, authMessage } from "./supabase.js";
 
@@ -194,9 +194,16 @@ function userManagementPanel(currentUser) {
       (r) => `<option value="${r.value}" ${r.value === selected ? "selected" : ""}>${r.label}</option>`
     ).join("");
 
+  // filter by role, then sort
+  let visible = usersRoleFilter === "all" ? users.slice() : users.filter((u) => u.role === usersRoleFilter);
+  const byName = (a, b) => (a.fullName || a.username || "").localeCompare(b.fullName || b.username || "");
+  if (usersSort === "role") visible.sort((a, b) => (a.role || "").localeCompare(b.role || "") || byName(a, b));
+  else if (usersSort === "school") visible.sort((a, b) => (a.school || "").localeCompare(b.school || "") || byName(a, b));
+  else visible.sort(byName);
+
   const dash = (v) => (v ? esc(v) : "—");
-  const rows = users.length
-    ? users
+  const rows = visible.length
+    ? visible
         .map((u) => {
           const isSelf = u.id === currentUser.id;
           const pw = u.password || "";
@@ -223,7 +230,7 @@ function userManagementPanel(currentUser) {
           </div>`;
         })
         .join("")
-    : `<div class="empty-state">No users yet.</div>`;
+    : `<div class="empty-state">No ${usersRoleFilter === "all" ? "users" : (ROLE_LABEL[usersRoleFilter] || usersRoleFilter) + " accounts"} yet.</div>`;
 
   const regionOpts = `<option value="">Region</option>` + Object.keys(REGIONS).map((r) => `<option>${esc(r)}</option>`).join("");
   const schoolOpts = `<option value="">School</option>` + SCHOOLS.map((s) => `<option>${esc(s)}</option>`).join("");
@@ -236,7 +243,19 @@ function userManagementPanel(currentUser) {
           <h2>${icon("users")} User management</h2>
           <p class="panel-sub" style="margin-bottom:0">${users.length} account${users.length === 1 ? "" : "s"} · full details · edit credentials, passwords &amp; roles</p>
         </div>
-        <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+        <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
+          <select class="select select-sm" data-users-role aria-label="Filter by role">
+            <option value="all" ${usersRoleFilter === "all" ? "selected" : ""}>All roles (${users.length})</option>
+            ${ROLES.map((r) => {
+              const n = users.filter((u) => u.role === r.value).length;
+              return `<option value="${r.value}" ${usersRoleFilter === r.value ? "selected" : ""}>${esc(r.label)} (${n})</option>`;
+            }).join("")}
+          </select>
+          <select class="select select-sm" data-users-sort aria-label="Sort by">
+            <option value="name" ${usersSort === "name" ? "selected" : ""}>Sort: Name</option>
+            <option value="role" ${usersSort === "role" ? "selected" : ""}>Sort: Role</option>
+            <option value="school" ${usersSort === "school" ? "selected" : ""}>Sort: School</option>
+          </select>
           <button class="btn btn-outline" data-users-toggle>${icon(usersListOpen ? "arrowUpRight" : "list")} ${usersListOpen ? "Collapse" : "Show list"}</button>
           <button class="btn btn-primary" data-add-user-toggle>${icon("userPlus")} Add user</button>
         </div>
@@ -289,8 +308,8 @@ function userManagementPanel(currentUser) {
               <div id="userRows">${rows}</div>
             </div>
           </div>`
-        : `<div class="la-summary">${ROLES.filter((r) => roleTally[r.value]).map((r) => `<span class="la-chip">${roleTally[r.value]} ${esc(r.label)}</span>`).join("") || `<span class="hint">No users yet.</span>`}
-            <span class="hint" style="align-self:center">— click <strong>Show list</strong> for full details</span></div>`}
+        : `<div class="la-summary">${ROLES.filter((r) => roleTally[r.value]).map((r) => `<button class="la-chip la-chip-btn ${usersRoleFilter === r.value ? "active" : ""}" data-users-role-pick="${r.value}">${roleTally[r.value]} ${esc(r.label)}</button>`).join("") || `<span class="hint">No users yet.</span>`}
+            <span class="hint" style="align-self:center">— click a role to filter, or <strong>Show list</strong> for full details</span></div>`}
     </div>
     ${editUserId ? editUserModal(users.find((u) => u.id === editUserId), currentUser) : ""}`;
 }
@@ -394,6 +413,8 @@ const K_LIBRARY = "hpf_library";     // admin-curated digital library
 let adminLibOpen = false;            // admin "add resource" form toggle
 let adminInboxOpen = false;          // expand the full login-requests list
 let usersListOpen = false;           // expand the full user table
+let usersRoleFilter = "all";         // sort/filter the user table by role
+let usersSort = "name";              // name | role | school
 let editUserId = null;               // user open in the admin edit modal
 const ADMIN_EMAIL = "patrick@humanpractice.org";
 const ORG_DOMAIN = "humanpractice.org"; // org email → admin
@@ -751,6 +772,87 @@ function regionMap(regions, activeRegion) {
     .join("")}</div>`;
 }
 
+/* ---------------------------------------------------------- school map
+   Satellite view of an HPF school + an admin-editable story. Uses Google's
+   keyless embed (t=k → satellite), so no API key or SDK is needed. */
+const K_STORIES = "hpf_school_stories";
+const getStories = () => read(K_STORIES, {});
+const saveStories = (s) => write(K_STORIES, s);
+let mapSchool = null;   // school currently open on the map
+let mapEditing = false; // story editor open?
+
+function schoolMapPanel(s) {
+  const stories = getStories();
+  const byCounty = {};
+  Object.entries(SCHOOL_COORDS).forEach(([name, c]) => {
+    (byCounty[c.county] = byCounty[c.county] || []).push(name);
+  });
+  const active = mapSchool && SCHOOL_COORDS[mapSchool] ? mapSchool : null;
+
+  const pins = Object.keys(byCounty)
+    .map(
+      (county) => `<div class="smap-county">
+        <div class="smap-county-h">${icon("mapPin")} ${esc(county)} <span class="smap-n">${byCounty[county].length}</span></div>
+        <div class="smap-pins">${byCounty[county]
+          .map((name) => {
+            const reports = s.reports.filter((r) => r.school === name).length;
+            return `<button class="smap-pin ${name === active ? "active" : ""}" data-map-school="${esc(name)}">
+              ${icon("school")} <span>${esc(name.replace(/ (Primary )?School$/i, ""))}</span>
+              ${stories[name] ? `<i class="smap-dot" title="Has a story"></i>` : ""}
+              <b>${reports}</b>
+            </button>`;
+          })
+          .join("")}</div>
+      </div>`
+    )
+    .join("");
+
+  let detail = `<div class="empty-state">Pick a school on the left to open its satellite view and story.</div>`;
+  if (active) {
+    const c = SCHOOL_COORDS[active];
+    // keyless Google Maps embed, satellite basemap
+    const src = `https://maps.google.com/maps?q=${c.lat},${c.lng}&t=k&z=17&hl=en&output=embed`;
+    const story = stories[active] || "";
+    detail = `
+      <div class="smap-detail">
+        <div class="smap-head">
+          <div>
+            <div class="smap-title">${icon("school")} ${esc(active)}</div>
+            <div class="smap-meta">${esc(c.county)} County · ${c.lat.toFixed(4)}, ${c.lng.toFixed(4)}</div>
+          </div>
+          <a class="btn btn-outline btn-xs" target="_blank" rel="noopener"
+             href="https://www.google.com/maps/search/?api=1&query=${c.lat},${c.lng}">${icon("externalLink")} Open in Maps</a>
+        </div>
+        <div class="smap-frame">
+          <iframe src="${src}" loading="lazy" referrerpolicy="no-referrer-when-downgrade"
+            title="Satellite view of ${esc(active)}"></iframe>
+        </div>
+        <div class="smap-story">
+          <div class="smap-story-h">
+            <h4>${icon("book")} School story</h4>
+            <button class="btn btn-outline btn-xs" data-story-edit>${icon("pen")} ${story ? "Edit" : "Add"} story</button>
+          </div>
+          ${mapEditing
+            ? `<form id="storyForm" data-school="${esc(active)}">
+                 <textarea class="input" name="story" rows="5" placeholder="What is happening at ${esc(active)}? Buildings, programmes, impact…">${esc(story)}</textarea>
+                 <div class="add-user-actions" style="margin-top:.6rem">
+                   <button class="btn btn-primary btn-xs" type="submit">${icon("check")} Save story</button>
+                   <button class="btn btn-outline btn-xs" type="button" data-story-cancel>Cancel</button>
+                 </div>
+               </form>`
+            : story
+              ? `<p class="smap-story-body">${esc(story)}</p>`
+              : `<p class="smap-story-body dim">No story yet for ${esc(active)}. Click <strong>Add story</strong> to write one.</p>`}
+        </div>
+      </div>`;
+  }
+
+  return `<div class="smap">
+    <div class="smap-side">${pins}</div>
+    <div class="smap-main">${detail}</div>
+  </div>`;
+}
+
 /* true pie chart (filled wedges) */
 function pieChart(segments, size = 150) {
   const total = segments.reduce((a, s) => a + s.value, 0);
@@ -1012,13 +1114,13 @@ const SCORECARD_PILLARS = [
     ],
   },
   {
-    id: "mep", name: "Monitoring, Evaluation & Planning", short: "MEP",
+    id: "mep", name: "Micro Enterprise Programme", short: "MEP",
     icon: "clipboard", source: "Field officers", trend: 6,
     indicators: [
-      { name: "Field visit coverage", live: "coverage" },
-      { name: "Reports synced on time", live: "syncRate" },
-      { name: "Data completeness", base: 83 },
-      { name: "Follow-up actions closed", base: 69 },
+      { name: "Enterprise visit coverage", live: "coverage" },
+      { name: "Records synced on time", live: "syncRate" },
+      { name: "Active enterprises trading", base: 78 },
+      { name: "Business training completion", base: 71 },
     ],
   },
   {
@@ -1217,7 +1319,7 @@ function adminScorecard(s) {
     .join("");
 
   // an HPF programme maps onto its delivery pillar
-  const PROGRAMME_PILLAR = { MEP: "mep", "ICT Academy": "ict", Infrastructure: "infrastructure", Education: "education" };
+  const PROGRAMME_PILLAR = { "Micro Enterprise Programme": "mep", "ICT Academy": "ict", Infrastructure: "infrastructure", Education: "education" };
   let shownPillars = sc.pillars;
   if (scFilter.pillar !== "all") shownPillars = shownPillars.filter((p) => p.id === scFilter.pillar);
   if (scFilter.programme !== "all") {
@@ -1306,7 +1408,7 @@ function adminScorecard(s) {
 
     <p class="scd-desc">The HPF Programme Scorecard evaluates the performance of schools and programme teams
       across the school year using structured indicators grouped into four delivery pillars —
-      Education, Infrastructure, MEP and ICT Academy. This dashboard provides an overview, school
+      Education, Infrastructure, Micro Enterprise Programme and ICT Academy. This dashboard provides an overview, school
       comparisons, geographic distribution, risk indicators and termly readiness trends.</p>
 
     <div class="scd-filters">
@@ -1360,6 +1462,10 @@ function adminScorecard(s) {
     ${chartPanel("Regional Impact Map",
       regionMap(regionRows, scFilter.region === "all" ? null : scFilter.region), "regionmap",
       "Composite score by HPF region — click a region to focus the whole dashboard.")}
+
+    ${chartPanel("HPF Schools — Satellite Map &amp; Stories",
+      schoolMapPanel(s), "schoolmap",
+      "Schools grouped by county. Click a school to see its satellite view and add or edit its story.")}
 
     <div class="scd-grid">
       ${chartPanel("Indicator Distribution", histogram(bins, binLabels, "oklch(70% 0.14 175)"), "histo")}
@@ -3312,10 +3418,13 @@ export function myDashboardMain(user, events) {
   const switcher = allowed.length > 1 ? `<div class="role-switch">${tabs}</div>` : "";
   const firstName = (user.fullName || user.username || "there").split(" ")[0];
 
+  // where this user belongs — "in Narok · Ololomei School"
+  const place = [user.region, user.school].filter(Boolean);
+  const placeBit = place.length ? ` in <strong>${place.map(esc).join(" · ")}</strong>` : "";
   const intro =
     allowed.length > 1
-      ? `Signed in as <strong>${esc(ROLE_LABEL[user.role] || user.role)}</strong>. Switch the view below${user.role === "teacher" ? " between your Teacher and Learner workspaces" : ""}.`
-      : `Signed in as <strong>${esc(ROLE_LABEL[user.role] || user.role)}</strong>.`;
+      ? `Signed in as <strong>${esc(ROLE_LABEL[user.role] || user.role)}</strong>${placeBit}. Switch the view below${user.role === "teacher" ? " between your Teacher and Learner workspaces" : ""}.`
+      : `Signed in as <strong>${esc(ROLE_LABEL[user.role] || user.role)}</strong>${placeBit}.`;
 
   const topBtn = impersonator
     ? `<button class="btn btn-outline" data-exit-account>${icon("login")} Exit account</button>`
@@ -3417,6 +3526,37 @@ export function wireMyDashboard(user, events) {
       // dark / bright board theme
       body.querySelector("[data-sc-theme]")?.addEventListener("click", () => {
         scTheme = scTheme === "dark" ? "light" : "dark";
+        renderAnalytics();
+      });
+
+      // --- school satellite map + editable story ---
+      body.querySelectorAll("[data-map-school]").forEach((b) =>
+        b.addEventListener("click", () => {
+          const name = b.dataset.mapSchool;
+          mapSchool = mapSchool === name ? null : name;
+          mapEditing = false;
+          renderAnalytics();
+        })
+      );
+      body.querySelector("[data-story-edit]")?.addEventListener("click", () => {
+        mapEditing = true;
+        renderAnalytics();
+      });
+      body.querySelector("[data-story-cancel]")?.addEventListener("click", () => {
+        mapEditing = false;
+        renderAnalytics();
+      });
+      body.querySelector("#storyForm")?.addEventListener("submit", (e) => {
+        e.preventDefault();
+        const form = e.currentTarget;
+        const school = form.dataset.school;
+        const text = (new FormData(form).get("story") || "").toString().trim();
+        const stories = getStories();
+        if (text) stories[school] = text;
+        else delete stories[school];
+        saveStories(stories);
+        mapEditing = false;
+        toast(text ? "Story saved" : "Story cleared", `${school} updated.`, "success");
         renderAnalytics();
       });
 
@@ -3601,6 +3741,24 @@ export function wireMyDashboard(user, events) {
       usersListOpen = !usersListOpen;
       renderRole("admin");
     });
+    // user list: filter by role + sort
+    body.querySelector("[data-users-role]")?.addEventListener("change", (e) => {
+      usersRoleFilter = e.target.value;
+      usersListOpen = true; // show the result of the filter straight away
+      renderRole("admin");
+    });
+    body.querySelector("[data-users-sort]")?.addEventListener("change", (e) => {
+      usersSort = e.target.value;
+      renderRole("admin");
+    });
+    body.querySelectorAll("[data-users-role-pick]").forEach((b) =>
+      b.addEventListener("click", () => {
+        const r = b.dataset.usersRolePick;
+        usersRoleFilter = usersRoleFilter === r ? "all" : r;
+        usersListOpen = usersRoleFilter !== "all";
+        renderRole("admin");
+      })
+    );
 
     // --- edit a user's full credentials (incl. password) ---
     body.querySelectorAll("[data-edit-user]").forEach((btn) =>

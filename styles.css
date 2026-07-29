@@ -3444,6 +3444,64 @@ textarea.input:focus {
 .gb-bar { width: 100%; max-width: 16px; border-radius: 3px 3px 0 0; transition: height 0.7s cubic-bezier(0.22,1,0.36,1); }
 .gb-lab { font-size: 0.68rem; color: var(--sd-dim); text-align: center; line-height: 1.2; }
 
+/* ---------------------------------------------------------- school satellite map */
+.smap { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 1rem; }
+.smap-side { display: grid; gap: 0.85rem; align-content: start; max-height: 520px; overflow-y: auto; padding-right: 0.25rem; }
+.smap-county-h {
+  display: flex; align-items: center; gap: 0.35rem;
+  font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--sd-dim, var(--muted-foreground)); margin-bottom: 0.4rem;
+}
+.smap-county-h svg { width: 13px; height: 13px; }
+.smap-n {
+  margin-left: auto; background: var(--sd-line, var(--muted));
+  padding: 0.05rem 0.4rem; border-radius: 999px; font-size: 0.7rem;
+}
+.smap-pins { display: grid; gap: 0.3rem; }
+.smap-pin {
+  display: flex; align-items: center; gap: 0.45rem; width: 100%;
+  padding: 0.5rem 0.6rem; font: inherit; font-size: 0.82rem; text-align: left;
+  border: 1px solid var(--sd-line, var(--border)); border-radius: 0.6rem;
+  background: var(--sd-panel, var(--card)); color: inherit; cursor: pointer;
+  transition: all 0.15s ease;
+}
+.smap-pin span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.smap-pin svg { width: 14px; height: 14px; color: var(--primary); flex: none; }
+.smap-pin b { font-size: 0.7rem; opacity: 0.6; }
+.smap-pin:hover { border-color: var(--primary); }
+.smap-pin.active { background: var(--primary); border-color: var(--primary); color: #fff; }
+.smap-pin.active svg { color: #fff; }
+.smap-dot { width: 6px; height: 6px; border-radius: 999px; background: oklch(76% 0.15 75); flex: none; }
+
+.smap-main { min-width: 0; }
+.smap-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; margin-bottom: 0.7rem; }
+.smap-title { display: flex; align-items: center; gap: 0.4rem; font-weight: 700; font-size: 1rem; }
+.smap-title svg { width: 17px; height: 17px; color: var(--primary); }
+.smap-meta { font-size: 0.75rem; color: var(--sd-dim, var(--muted-foreground)); margin-top: 0.15rem; }
+.smap-frame {
+  border-radius: 0.8rem; overflow: hidden; border: 1px solid var(--sd-line, var(--border));
+  background: var(--sd-line, var(--muted));
+}
+.smap-frame iframe { display: block; width: 100%; height: 340px; border: 0; }
+.smap-story { margin-top: 0.9rem; }
+.smap-story-h { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; margin-bottom: 0.5rem; }
+.smap-story-h h4 { display: flex; align-items: center; gap: 0.35rem; font-size: 0.9rem; font-weight: 700; }
+.smap-story-h svg { width: 15px; height: 15px; color: var(--primary); }
+.smap-story-body { font-size: 0.88rem; line-height: 1.55; white-space: pre-wrap; }
+.smap-story-body.dim { color: var(--sd-dim, var(--muted-foreground)); }
+.smap-story textarea { width: 100%; resize: vertical; }
+.cf-body .smap-frame iframe { height: min(60vh, 520px); }
+
+@media (max-width: 800px) {
+  .smap { grid-template-columns: 1fr; }
+  .smap-side { max-height: 220px; }
+}
+
+/* clickable role chips in the collapsed user list */
+.la-chip-btn { border: 1px solid transparent; cursor: pointer; font: inherit; }
+.la-chip-btn:hover { border-color: var(--primary); }
+.la-chip-btn.active { background: var(--primary); color: var(--primary-foreground); }
+
 /* region cartogram */
 .rmap { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.75rem; }
 .rmap-cell {
