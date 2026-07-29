@@ -1114,7 +1114,7 @@ const SCORECARD_PILLARS = [
     ],
   },
   {
-    id: "mep", name: "Micro Enterprise Programme", short: "MEP",
+    id: "mep", name: "Micro Enterprise Programme", short: "Micro Enterprise",
     icon: "clipboard", source: "Field officers", trend: 6,
     indicators: [
       { name: "Enterprise visit coverage", live: "coverage" },
