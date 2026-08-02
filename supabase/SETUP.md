@@ -11,8 +11,16 @@ frontend static (it still deploys on GitHub Pages).
    password and a region close to your users.
 
 2. **Create the tables** — in the Supabase dashboard open **SQL Editor → New
-   query**, paste the contents of [`schema.sql`](schema.sql), and click **Run**.
-   This creates every table and the security rules.
+   query**, then paste and **Run** each of these *in order*:
+
+   | # | File | What it does |
+   |---|------|--------------|
+   | 1 | [`schema.sql`](schema.sql) | Every table, plus the baseline security rules |
+   | 2 | [`patch-01-security.sql`](patch-01-security.sql) | Stops signups granting themselves `admin`, hides quiz answer keys |
+   | 3 | [`patch-02-schools.sql`](patch-02-schools.sql) | `schools` table (name, county, GPS, story) + seed data |
+
+   The patches are safe to re-run, so it does no harm to apply one twice. Run
+   them in order though — each builds on the last.
 
 3. **Create your admin login** — dashboard → **Authentication → Users → Add
    user**. Enter an email + password and tick **Auto Confirm User**. Then in the
