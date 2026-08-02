@@ -31,8 +31,10 @@ create table if not exists schools (
 create unique index if not exists schools_name_lower_idx on schools (lower(name));
 
 -- ---------- keep updated_at honest ----------
+-- search_path is pinned empty: the body touches no tables, and leaving it
+-- mutable is the usual way a trigger function gets hijacked.
 create or replace function touch_updated_at() returns trigger
-  language plpgsql set search_path = public as $$
+  language plpgsql set search_path = '' as $$
 begin
   new.updated_at := now();
   return new;
@@ -56,8 +58,11 @@ drop policy if exists "schools write" on schools;
 create policy "schools read" on schools for select to authenticated
   using (true);
 
+-- is_admin() is wrapped in a select so Postgres evaluates it once per
+-- statement instead of once per row — an unwrapped call re-runs the profiles
+-- lookup for every school the statement touches.
 create policy "schools write" on schools for all to authenticated
-  using (is_admin()) with check (is_admin());
+  using ((select is_admin())) with check ((select is_admin()));
 
 -- ---------- seed from the old SCHOOL_COORDS constant ----------
 -- Mirrors data.js at the time of writing. `on conflict do nothing` keeps this
