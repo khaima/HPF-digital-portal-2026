@@ -5,9 +5,9 @@
 
 import { icon } from "./icons.js";
 import { DASH, ROLES, ORG_TYPES, COUNTIES, KOLIBRI, CONTENT_KINDS, SCHOOLS,
-  LIBRARY_CATEGORIES, RESOURCE_TYPES, LIBRARY_SEED, REGIONS, PROJECTS, SCHOOL_COORDS } from "./data.js";
+  LIBRARY_CATEGORIES, RESOURCE_TYPES, LIBRARY_SEED, REGIONS, PROJECTS } from "./data.js";
 import { esc, timeAgo, runCounters, read, write, toast, uid } from "./util.js";
-import { adminClient, authMessage } from "./supabase.js";
+import { supabase, adminClient, authMessage } from "./supabase.js";
 
 const K_USERS = "hpf_users";
 const K_SESSION = "hpf_session";
@@ -774,30 +774,33 @@ function regionMap(regions, activeRegion) {
 
 /* ---------------------------------------------------------- school map
    Satellite view of an HPF school + an admin-editable story. Uses Google's
-   keyless embed (t=k → satellite), so no API key or SDK is needed. */
-const K_STORIES = "hpf_school_stories";
-const getStories = () => read(K_STORIES, {});
-const saveStories = (s) => write(K_STORIES, s);
-let mapSchool = null;   // school currently open on the map
-let mapEditing = false; // story editor open?
+   keyless embed (t=k → satellite), so no API key or SDK is needed.
 
-/* ---------------------------------------------------------- editable schools
-   Seeded from SCHOOL_COORDS, then fully admin-managed (add / edit / delete). */
-const K_SCHOOLS = "hpf_schools";
-function getSchools() {
-  let list = read(K_SCHOOLS, null);
-  if (!list || !list.length) {
-    list = Object.entries(SCHOOL_COORDS).map(([name, c]) => ({
-      id: uid(), name, county: c.county, lat: c.lat, lng: c.lng,
-    }));
-    write(K_SCHOOLS, list);
-  }
-  return list;
+   Schools (and their stories) live in Postgres — see
+   supabase/patch-02-schools.sql. The dashboard renders synchronously, so the
+   panel reads a module-level cache that loadSchools() fills; writes refresh
+   the cache before re-rendering. Reads are open to any signed-in user, writes
+   are admin-only, so a non-admin simply never sees the manage controls. */
+let schoolsCache = [];
+let schoolsLoaded = false;
+let schoolsError = null;
+
+async function loadSchools() {
+  const { data, error } = await supabase
+    .from("schools")
+    .select("id, name, county, lat, lng, story")
+    .order("county")
+    .order("name");
+  schoolsLoaded = true;
+  schoolsError = error ? authMessage(error) : null;
+  if (!error) schoolsCache = data || [];
+  return schoolsCache;
 }
-const saveSchools = (l) => write(K_SCHOOLS, l);
-const schoolNames = () => getSchools().map((s) => s.name);
-const schoolCounties = () => [...new Set(getSchools().map((s) => s.county).filter(Boolean))];
-const schoolsInCounty = (c) => getSchools().filter((s) => s.county === c).map((s) => s.name);
+const getSchools = () => schoolsCache;
+const findSchool = (id) => schoolsCache.find((s) => s.id === id) || null;
+
+let mapSchool = null;   // id of the school currently open on the map
+let mapEditing = false; // story editor open?
 let editSchoolId = null;   // school open in the admin editor
 let schoolFormOpen = false;
 let schoolManageOpen = false; // show edit/delete controls on the map pins
@@ -842,14 +845,13 @@ function schoolForm(existing) {
 }
 
 function schoolMapPanel(s) {
-  const stories = getStories();
   const schools = getSchools();
   const byCounty = {};
   schools.forEach((sc) => {
-    (byCounty[sc.county] = byCounty[sc.county] || []).push(sc);
+    (byCounty[sc.county || "Unassigned"] = byCounty[sc.county || "Unassigned"] || []).push(sc);
   });
-  const active = mapSchool && schools.some((sc) => sc.name === mapSchool) ? mapSchool : null;
-  const editing = editSchoolId ? schools.find((sc) => sc.id === editSchoolId) : null;
+  const active = findSchool(mapSchool);
+  const editing = findSchool(editSchoolId);
 
   const pins = Object.keys(byCounty).sort()
     .map(
@@ -859,9 +861,9 @@ function schoolMapPanel(s) {
           .map((sc) => {
             const reports = s.reports.filter((r) => r.school === sc.name).length;
             return `<div class="smap-pin-row">
-              <button class="smap-pin ${sc.name === active ? "active" : ""}" data-map-school="${esc(sc.name)}">
+              <button class="smap-pin ${sc.id === mapSchool ? "active" : ""}" data-map-school="${esc(sc.id)}">
                 ${icon("school")} <span>${esc(sc.name.replace(/ (Primary )?School$/i, ""))}</span>
-                ${stories[sc.name] ? `<i class="smap-dot" title="Has a story"></i>` : ""}
+                ${sc.story ? `<i class="smap-dot" title="Has a story"></i>` : ""}
                 <b>${reports}</b>
               </button>
               ${schoolManageOpen
@@ -873,36 +875,41 @@ function schoolMapPanel(s) {
           .join("")}</div>
       </div>`
     )
-    .join("") || `<div class="empty-state">No schools yet. Click <strong>Add school</strong> to create one.</div>`;
+    .join("");
 
   let detail = `<div class="empty-state">Pick a school on the left to open its satellite view and story.</div>`;
   if (active) {
-    const c = schools.find((sc) => sc.name === active);
     // keyless Google Maps embed, satellite basemap
-    const src = `https://maps.google.com/maps?q=${c.lat},${c.lng}&t=k&z=17&hl=en&output=embed`;
-    const story = stories[active] || "";
+    const src = `https://maps.google.com/maps?q=${active.lat},${active.lng}&t=k&z=17&hl=en&output=embed`;
+    const story = active.story || "";
+    const hasGps = Number.isFinite(active.lat) && Number.isFinite(active.lng);
     detail = `
       <div class="smap-detail">
         <div class="smap-head">
           <div>
-            <div class="smap-title">${icon("school")} ${esc(active)}</div>
-            <div class="smap-meta">${esc(c.county)} County · ${c.lat.toFixed(4)}, ${c.lng.toFixed(4)}</div>
+            <div class="smap-title">${icon("school")} ${esc(active.name)}</div>
+            <div class="smap-meta">${esc(active.county || "No county")}${active.county ? " County" : ""}${
+              hasGps ? ` · ${active.lat.toFixed(4)}, ${active.lng.toFixed(4)}` : " · no GPS recorded"}</div>
           </div>
-          <a class="btn btn-outline btn-xs" target="_blank" rel="noopener"
-             href="https://www.google.com/maps/search/?api=1&query=${c.lat},${c.lng}">${icon("externalLink")} Open in Maps</a>
+          ${hasGps
+            ? `<a class="btn btn-outline btn-xs" target="_blank" rel="noopener"
+                 href="https://www.google.com/maps/search/?api=1&query=${active.lat},${active.lng}">${icon("externalLink")} Open in Maps</a>`
+            : ""}
         </div>
-        <div class="smap-frame">
-          <iframe src="${src}" loading="lazy" referrerpolicy="no-referrer-when-downgrade"
-            title="Satellite view of ${esc(active)}"></iframe>
-        </div>
+        ${hasGps
+          ? `<div class="smap-frame">
+               <iframe src="${src}" loading="lazy" referrerpolicy="no-referrer-when-downgrade"
+                 title="Satellite view of ${esc(active.name)}"></iframe>
+             </div>`
+          : `<div class="empty-state">No coordinates for ${esc(active.name)} yet. Add a latitude and longitude to see the satellite view.</div>`}
         <div class="smap-story">
           <div class="smap-story-h">
             <h4>${icon("book")} School story</h4>
             <button class="btn btn-outline btn-xs" data-story-edit>${icon("pen")} ${story ? "Edit" : "Add"} story</button>
           </div>
           ${mapEditing
-            ? `<form id="storyForm" data-school="${esc(active)}">
-                 <textarea class="input" name="story" rows="5" placeholder="What is happening at ${esc(active)}? Buildings, programmes, impact…">${esc(story)}</textarea>
+            ? `<form id="storyForm" data-id="${esc(active.id)}">
+                 <textarea class="input" name="story" rows="5" placeholder="What is happening at ${esc(active.name)}? Buildings, programmes, impact…">${esc(story)}</textarea>
                  <div class="add-user-actions" style="margin-top:.6rem">
                    <button class="btn btn-primary btn-xs" type="submit">${icon("check")} Save story</button>
                    <button class="btn btn-outline btn-xs" type="button" data-story-cancel>Cancel</button>
@@ -910,9 +917,23 @@ function schoolMapPanel(s) {
                </form>`
             : story
               ? `<p class="smap-story-body">${esc(story)}</p>`
-              : `<p class="smap-story-body dim">No story yet for ${esc(active)}. Click <strong>Add story</strong> to write one.</p>`}
+              : `<p class="smap-story-body dim">No story yet for ${esc(active.name)}. Click <strong>Add story</strong> to write one.</p>`}
         </div>
       </div>`;
+  }
+
+  // the list arrives from Postgres, so distinguish "still loading" from
+  // "loaded and genuinely empty" — otherwise the first paint reads as an
+  // empty database and invites an admin to re-add schools that already exist.
+  if (!schoolsLoaded) {
+    return `<div class="smap-wrap"><div class="empty-state">Loading schools…</div></div>`;
+  }
+  if (schoolsError) {
+    return `<div class="smap-wrap">
+      <div class="empty-state">Could not load schools — ${esc(schoolsError)}
+        <div style="margin-top:.6rem"><button class="btn btn-outline btn-xs" data-schools-retry>${icon("refresh")} Try again</button></div>
+      </div>
+    </div>`;
   }
 
   return `<div class="smap-wrap">
@@ -922,7 +943,7 @@ function schoolMapPanel(s) {
     </div>
     ${schoolFormOpen ? schoolForm(editing) : ""}
     <div class="smap">
-      <div class="smap-side">${pins}</div>
+      <div class="smap-side">${pins || `<div class="empty-state">No schools yet. Click <strong>Add school</strong> to create one.</div>`}</div>
       <div class="smap-main">${detail}</div>
     </div>
   </div>`;
@@ -3605,10 +3626,17 @@ export function wireMyDashboard(user, events) {
       });
 
       // --- school satellite map + editable story ---
+      // Postgres is the source of truth, so every write re-reads the table
+      // before re-rendering rather than patching the cache optimistically —
+      // two admins editing at once should converge on what the database says.
+      const refreshSchools = async () => { await loadSchools(); renderAnalytics(); };
+
+      body.querySelector("[data-schools-retry]")?.addEventListener("click", refreshSchools);
+
       body.querySelectorAll("[data-map-school]").forEach((b) =>
         b.addEventListener("click", () => {
-          const name = b.dataset.mapSchool;
-          mapSchool = mapSchool === name ? null : name;
+          const id = b.dataset.mapSchool;
+          mapSchool = mapSchool === id ? null : id;
           mapEditing = false;
           renderAnalytics();
         })
@@ -3621,18 +3649,23 @@ export function wireMyDashboard(user, events) {
         mapEditing = false;
         renderAnalytics();
       });
-      body.querySelector("#storyForm")?.addEventListener("submit", (e) => {
+      body.querySelector("#storyForm")?.addEventListener("submit", async (e) => {
         e.preventDefault();
         const form = e.currentTarget;
-        const school = form.dataset.school;
+        const id = form.dataset.id;
+        const sc = findSchool(id);
         const text = (new FormData(form).get("story") || "").toString().trim();
-        const stories = getStories();
-        if (text) stories[school] = text;
-        else delete stories[school];
-        saveStories(stories);
+        const btn = form.querySelector("[type=submit]");
+        if (btn) btn.disabled = true;
+
+        const { error } = await supabase.from("schools").update({ story: text || null }).eq("id", id);
+        if (error) {
+          if (btn) btn.disabled = false;
+          return toast("Could not save story", authMessage(error), "error");
+        }
         mapEditing = false;
-        toast(text ? "Story saved" : "Story cleared", `${school} updated.`, "success");
-        renderAnalytics();
+        toast(text ? "Story saved" : "Story cleared", `${sc?.name || "School"} updated.`, "success");
+        await refreshSchools();
       });
 
       // --- admin-managed schools (add / edit / delete) ---
@@ -3655,18 +3688,21 @@ export function wireMyDashboard(user, events) {
         })
       );
       body.querySelectorAll("[data-school-delete]").forEach((btn) =>
-        btn.addEventListener("click", () => {
+        btn.addEventListener("click", async () => {
           const id = btn.dataset.schoolDelete;
-          const schools = getSchools();
-          const sc = schools.find((x) => x.id === id);
+          const sc = findSchool(id);
           if (!sc) return;
-          saveSchools(schools.filter((x) => x.id !== id));
-          if (mapSchool === sc.name) mapSchool = null;
-          const stories = getStories();
-          if (stories[sc.name]) { delete stories[sc.name]; saveStories(stories); }
+          btn.disabled = true;
+
+          const { error } = await supabase.from("schools").delete().eq("id", id);
+          if (error) {
+            btn.disabled = false;
+            return toast("Could not remove school", authMessage(error), "error");
+          }
+          if (mapSchool === id) mapSchool = null;
           if (editSchoolId === id) { editSchoolId = null; schoolFormOpen = false; }
           toast("School removed", `${sc.name} deleted.`, "success");
-          renderAnalytics();
+          await refreshSchools();
         })
       );
       body.querySelector("[data-school-form-cancel]")?.addEventListener("click", () => {
@@ -3674,7 +3710,7 @@ export function wireMyDashboard(user, events) {
         editSchoolId = null;
         renderAnalytics();
       });
-      body.querySelector("#schoolForm")?.addEventListener("submit", (e) => {
+      body.querySelector("#schoolForm")?.addEventListener("submit", async (e) => {
         e.preventDefault();
         const form = e.currentTarget;
         const data = Object.fromEntries(new FormData(form).entries());
@@ -3686,29 +3722,29 @@ export function wireMyDashboard(user, events) {
         if (!county) return toast("County required", "", "error");
         if (!Number.isFinite(lat) || !Number.isFinite(lng)) return toast("Invalid coordinates", "Enter numeric latitude & longitude.", "error");
 
-        const schools = getSchools();
         const id = form.dataset.id;
-        if (schools.some((x) => x.name.toLowerCase() === name.toLowerCase() && x.id !== id))
+        // cheap local check for the common case; the unique index on
+        // lower(name) is what actually guarantees it (23505 below).
+        if (getSchools().some((x) => x.name.toLowerCase() === name.toLowerCase() && x.id !== id))
           return toast("Duplicate school", "A school with that name already exists.", "error");
 
-        if (id) {
-          const sc = schools.find((x) => x.id === id);
-          if (!sc) return;
-          const oldName = sc.name;
-          Object.assign(sc, { name, county, lat, lng });
-          if (oldName !== name) {
-            const stories = getStories();
-            if (stories[oldName]) { stories[name] = stories[oldName]; delete stories[oldName]; saveStories(stories); }
-            if (mapSchool === oldName) mapSchool = name;
-          }
-        } else {
-          schools.push({ id: uid(), name, county, lat, lng });
+        const btn = form.querySelector("[type=submit]");
+        if (btn) btn.disabled = true;
+        const row = { name, county, lat, lng };
+        const { error } = id
+          ? await supabase.from("schools").update(row).eq("id", id)
+          : await supabase.from("schools").insert(row);
+
+        if (error) {
+          if (btn) btn.disabled = false;
+          if (error.code === "23505")
+            return toast("Duplicate school", "A school with that name already exists.", "error");
+          return toast(id ? "Could not update school" : "Could not add school", authMessage(error), "error");
         }
-        saveSchools(schools);
         schoolFormOpen = false;
         editSchoolId = null;
         toast(id ? "School updated" : "School added", name, "success");
-        renderAnalytics();
+        await refreshSchools();
       });
 
       // maximize any chart into a full-screen overlay (minimize to return)
@@ -3796,6 +3832,12 @@ export function wireMyDashboard(user, events) {
       runCounters();
     }
     wireAnalytics();
+    // schools come from Postgres — fetch once on mount, then re-render so the
+    // map swaps out of its loading state. Failures surface in the panel itself
+    // (with a retry), so nothing to catch here.
+    loadSchools().then(() => {
+      if (body.querySelector("[data-admin-panel]")) renderAnalytics();
+    });
     // update automatically when data changes in another tab (keep just one listener)
     if (window.__hpfAdminStorage) window.removeEventListener("storage", window.__hpfAdminStorage);
     window.__hpfAdminStorage = (e) => {
