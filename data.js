@@ -121,6 +121,18 @@ export const IMPACT = [
   { num: 4, suffix: "", label: "Counties Served", icon: "mapPin" },
 ];
 
+/* Programme targets the admin KPI cards measure against. Anchored to the
+   public IMPACT figures above where they line up — learners to the 10,000
+   reached, users to the 500 teachers trained — but these are the numbers HPF
+   should own. Edit them here; the cards derive their progress bars and
+   percentages from whatever is set. */
+export const KPI_TARGETS = {
+  users: 500,          // registered accounts across every role
+  learners: 10000,     // learners enrolled in a class
+  assessments: 1000,   // assessments completed and submitted
+  liveSessions: 10,    // lessons or quizzes running at once
+};
+
 export const ABOUT_POINTS = [
   "Strengthening schools with practical, sustainable systems",
   "Empowering teachers through hands-on professional development",
@@ -261,10 +273,14 @@ export const VISIT_TYPES = [
 export const DASH = {
   admin: {
     stats: [
-      { label: "Total users", count: 1284, suffix: "", icon: "users", trend: 4.2 },
-      { label: "Active schools", count: 32, suffix: "", icon: "school", trend: 6.7 },
-      { label: "Login requests (today)", count: 148, suffix: "", icon: "inbox", trend: 64 },
-      { label: "Learners reached", count: 10000, suffix: "+", compact: true, icon: "trendingUp", trend: 12 },
+      { label: "Total users", count: 1284, suffix: "", icon: "users", trend: 4.2,
+        target: 1500, freshMins: 5, action: "users", actionLabel: "Manage users" },
+      { label: "Active schools", count: 32, suffix: "", icon: "school", trend: 6.7,
+        target: 30, freshMins: 60, action: "scorecard", actionLabel: "View scorecard" },
+      { label: "Login requests (today)", count: 148, suffix: "", icon: "inbox", trend: 64,
+        target: 200, freshMins: 2, action: "inbox", actionLabel: "Open inbox" },
+      { label: "Learners reached", count: 10000, suffix: "+", compact: true, icon: "trendingUp", trend: 12,
+        target: 10000, freshMins: 180, action: "scorecard", actionLabel: "View scorecard" },
     ],
     roleBreakdown: [
       { label: "Learners", value: 820, color: "oklch(52% 0.14 148)" },
@@ -285,10 +301,14 @@ export const DASH = {
 
   learner: {
     stats: [
-      { label: "Courses enrolled", count: 6, suffix: "", icon: "book" },
-      { label: "Lessons completed", count: 48, suffix: "", icon: "check", trend: 14 },
-      { label: "Day streak", count: 12, suffix: "", icon: "flame", trend: 9 },
-      { label: "Badges earned", count: 9, suffix: "", icon: "award", trend: 2 },
+      { label: "Courses enrolled", count: 6, suffix: "", icon: "book",
+        target: 8, freshMins: 30, href: "/resources", actionLabel: "Browse courses" },
+      { label: "Lessons completed", count: 48, suffix: "", icon: "check", trend: 14,
+        target: 60, freshMins: 15, href: "/curriculum", actionLabel: "Continue learning" },
+      { label: "Day streak", count: 12, suffix: "", icon: "flame", trend: 9,
+        target: 30, freshMins: 5, href: "/resources", actionLabel: "Keep it going" },
+      { label: "Badges earned", count: 9, suffix: "", icon: "award", trend: 2,
+        target: 15, freshMins: 120, href: "/assessment", actionLabel: "View progress" },
     ],
     courses: [
       { name: "Foundational Literacy", progress: 82 },
@@ -307,10 +327,14 @@ export const DASH = {
 
   teacher: {
     stats: [
-      { label: "My classes", count: 4, suffix: "", icon: "users" },
-      { label: "Students", count: 156, suffix: "", icon: "graduation" },
-      { label: "Lesson plans", count: 38, suffix: "", icon: "file" },
-      { label: "Avg. attendance", count: 92, suffix: "%", icon: "check" },
+      { label: "My classes", count: 4, suffix: "", icon: "users",
+        target: 5, freshMins: 45, href: "/curriculum", actionLabel: "Open curriculum" },
+      { label: "Students", count: 156, suffix: "", icon: "graduation",
+        target: 180, freshMins: 45, href: "/assessment", actionLabel: "Assessment tools" },
+      { label: "Lesson plans", count: 38, suffix: "", icon: "file",
+        target: 50, freshMins: 90, href: "/resources", actionLabel: "Plan a lesson" },
+      { label: "Avg. attendance", count: 92, suffix: "%", icon: "check",
+        target: 95, freshMins: 20, href: "/assessment", actionLabel: "Check attendance" },
     ],
     classes: [
       { name: "Grade 4 — Blue", students: 42, attendance: 94 },
@@ -329,10 +353,14 @@ export const DASH = {
 
   field_officer: {
     stats: [
-      { label: "Assigned schools", count: 14, suffix: "", icon: "school" },
-      { label: "Visits this month", count: 27, suffix: "", icon: "mapPin", trend: 8 },
-      { label: "Reports synced", count: 24, suffix: "", icon: "cloud", trend: 4 },
-      { label: "Pending reviews", count: 3, suffix: "", icon: "clock", trend: -25 },
+      { label: "Assigned schools", count: 14, suffix: "", icon: "school",
+        target: 14, freshMins: 240, href: "/field-officer", actionLabel: "View schools" },
+      { label: "Visits this month", count: 27, suffix: "", icon: "mapPin", trend: 8,
+        target: 30, freshMins: 30, href: "/field-officer", actionLabel: "Log a visit" },
+      { label: "Reports synced", count: 24, suffix: "", icon: "cloud", trend: 4,
+        target: 27, freshMins: 10, href: "/field-officer", actionLabel: "Sync now" },
+      { label: "Pending reviews", count: 3, suffix: "", icon: "clock", trend: -25,
+        target: 0, freshMins: 10, href: "/field-officer", actionLabel: "Clear backlog" },
     ],
     schools: [
       { name: "Nyeri Hill Primary", county: "Nyeri", status: "Visited", health: 86 },
@@ -351,10 +379,14 @@ export const DASH = {
 
   school_leader: {
     stats: [
-      { label: "Enrolled learners", count: 640, suffix: "", icon: "graduation", trend: 3 },
-      { label: "Teaching staff", count: 28, suffix: "", icon: "users" },
-      { label: "Attendance rate", count: 93, suffix: "%", icon: "userCheck", trend: 2 },
-      { label: "Improvement score", count: 78, suffix: "/100", icon: "trendingUp", trend: 6 },
+      { label: "Enrolled learners", count: 640, suffix: "", icon: "graduation", trend: 3,
+        target: 700, freshMins: 120, href: "/assessment", actionLabel: "School progress" },
+      { label: "Teaching staff", count: 28, suffix: "", icon: "users",
+        target: 32, freshMins: 240, href: "/curriculum", actionLabel: "Review staff" },
+      { label: "Attendance rate", count: 93, suffix: "%", icon: "userCheck", trend: 2,
+        target: 95, freshMins: 30, href: "/assessment", actionLabel: "View attendance" },
+      { label: "Improvement score", count: 78, suffix: "/100", icon: "trendingUp", trend: 6,
+        target: 85, freshMins: 180, href: "/assessment", actionLabel: "See breakdown" },
     ],
     grades: [
       { label: "Grade 4", value: 88 },

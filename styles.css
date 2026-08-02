@@ -1201,6 +1201,100 @@ textarea.input:focus {
   margin-bottom: 1.75rem;
 }
 
+/* ---------------------------------------------------------- executive KPI card
+   Sits in the existing .stat-row grid, so the page layout is unchanged. Kept as
+   its own class rather than restyling .stat-tile, which a dozen other panels
+   still use and should not move. */
+.kpi-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 1rem;
+  padding: 1.1rem 1.25rem 1rem;
+  background: var(--card);
+  box-shadow: 0 1px 2px oklch(20% 0.04 150 / 0.05);
+  position: relative;
+  overflow: hidden;
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+}
+
+/* HPF green accent rail, revealed on hover */
+.kpi-card::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: var(--primary);
+  transform: scaleY(0);
+  transform-origin: top;
+  transition: transform 0.22s ease;
+}
+.kpi-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 20px -6px oklch(20% 0.04 150 / 0.12);
+  border-color: oklch(84% 0.05 150);
+}
+.kpi-card:hover::before { transform: scaleY(1); }
+
+.kpi-top { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.kpi-label {
+  display: flex; align-items: center; gap: 0.55rem; min-width: 0;
+  font-size: 0.75rem; font-weight: 500; color: var(--muted-foreground);
+}
+.kpi-label svg {
+  width: 30px; height: 30px; padding: 7px; box-sizing: border-box;
+  background: var(--accent); color: var(--primary); border-radius: 9px; flex: none;
+}
+
+.kpi-trend {
+  display: inline-flex; align-items: center; gap: 0.2rem; flex: none;
+  font-size: 0.72rem; font-weight: 700;
+  padding: 0.15rem 0.45rem; border-radius: 999px;
+}
+.kpi-trend svg { width: 12px; height: 12px; }
+.kpi-up   { color: oklch(45% 0.14 148); background: oklch(52% 0.14 148 / 0.12); }
+.kpi-down { color: oklch(52% 0.24 27);  background: oklch(62% 0.24 27 / 0.12); }
+.kpi-flat,
+.kpi-none { color: var(--muted-foreground); background: var(--muted); }
+
+.kpi-figures { display: flex; align-items: baseline; gap: 0.4rem; flex-wrap: wrap; }
+.kpi-value {
+  font-size: 1.7rem; font-weight: 700; letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums; line-height: 1.05;
+}
+.kpi-target { font-size: 0.74rem; color: var(--muted-foreground); }
+
+.kpi-bar { height: 5px; border-radius: 999px; background: var(--muted); overflow: hidden; }
+.kpi-bar > span {
+  display: block; height: 100%; border-radius: 999px; background: var(--primary);
+  transition: width 0.6s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.kpi-meta {
+  display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
+  font-size: 0.7rem; color: var(--muted-foreground);
+}
+.kpi-updated { display: inline-flex; align-items: center; gap: 0.25rem; }
+.kpi-updated svg { width: 11px; height: 11px; }
+
+.kpi-action {
+  display: inline-flex; align-items: center; justify-content: center; gap: 0.3rem;
+  margin-top: 0.1rem; padding: 0.4rem 0.6rem;
+  font: inherit; font-size: 0.75rem; font-weight: 600;
+  color: var(--primary); background: transparent;
+  border: 1px solid var(--border); border-radius: 0.55rem;
+  cursor: pointer;
+  transition: background 0.16s ease, border-color 0.16s ease, gap 0.16s ease;
+}
+.kpi-action svg { width: 13px; height: 13px; }
+.kpi-action:hover { background: var(--accent); border-color: oklch(52% 0.14 148 / 0.3); gap: 0.5rem; }
+.kpi-action:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .kpi-card, .kpi-card::before, .kpi-bar > span, .kpi-action { transition: none; }
+}
+
 .stat-tile {
   border: 1px solid var(--border);
   border-radius: 1rem;

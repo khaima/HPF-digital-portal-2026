@@ -5,7 +5,7 @@
 
 import { icon } from "./icons.js";
 import { DASH, ROLES, ORG_TYPES, COUNTIES, KOLIBRI, CONTENT_KINDS, SCHOOLS,
-  LIBRARY_CATEGORIES, RESOURCE_TYPES, LIBRARY_SEED, REGIONS, PROJECTS } from "./data.js";
+  LIBRARY_CATEGORIES, RESOURCE_TYPES, LIBRARY_SEED, REGIONS, PROJECTS, KPI_TARGETS } from "./data.js";
 import { esc, timeAgo, runCounters, read, write, toast, uid } from "./util.js";
 import { supabase, adminClient, authMessage } from "./supabase.js";
 
@@ -121,13 +121,27 @@ function trendBadge(trend) {
     ${icon(up ? "trendingUp" : "trendingDown")} ${up ? "+" : ""}${trend}%</span>`;
 }
 
+/* The KPI row every role dashboard opens with. Same executive card as the
+   admin analytics row — value against target, progress, direction, freshness
+   and a next action — fed from DASH rather than computed stats. */
 function statTiles(stats) {
   return `<div class="stat-row">${stats
-    .map(
-      (s) => `<div class="stat-tile">
-        <div class="st-label">${icon(s.icon)} ${esc(s.label)}</div>
-        <div class="st-num">${countNum(s.count, s.suffix, s.compact)}${trendBadge(s.trend)}</div>
-      </div>`
+    .map((s) =>
+      kpiCard({
+        icon: s.icon,
+        label: s.label,
+        value: s.count,
+        suffix: s.suffix,
+        compact: s.compact,
+        target: s.target,
+        trend: typeof s.trend === "number" ? s.trend : null,
+        // DASH is seed data with no timestamps of its own; freshMins stands in
+        // for how often each figure would really be refreshed.
+        updated: typeof s.freshMins === "number" ? Date.now() - s.freshMins * 6e4 : null,
+        action: s.action,
+        href: s.href,
+        actionLabel: s.actionLabel,
+      })
     )
     .join("")}</div>`;
 }
@@ -1090,13 +1104,95 @@ function adminAnalytics() {
     </div>`;
 }
 
+/* Change over the last 7 days against the 7 before it. Returns null when there
+   is nothing to compare against — an executive reads these arrows for
+   direction, so inventing one is worse than showing none. */
+function kpiTrend(timestamps) {
+  const day = 864e5, now = Date.now();
+  let cur = 0, prev = 0;
+  timestamps.forEach((t) => {
+    const ago = now - t;
+    if (ago < 7 * day) cur++;
+    else if (ago < 14 * day) prev++;
+  });
+  if (!cur && !prev) return null;          // no history at all
+  if (!prev) return cur ? 100 : null;      // first week of data
+  return Math.round(((cur - prev) / prev) * 100);
+}
+
+const kpiLatest = (list) => (list.length ? Math.max(...list) : null);
+
+/* One executive KPI card: value against target, progress, direction, freshness
+   and the action you would take next. Any field with no honest source renders
+   as an em dash rather than a plausible-looking number. */
+function kpiCard(k) {
+  // A target of 0 means "drive this to nothing" (pending reviews, backlog), so
+  // progress runs the other way: at zero you are done, above it you are not.
+  const zeroGoal = k.target === 0;
+  const pct = zeroGoal
+    ? (k.value === 0 ? 100 : 0)
+    : k.target ? Math.round((k.value / k.target) * 100) : null;
+  const fill = pct === null ? 0 : Math.max(0, Math.min(100, pct));
+  const dir = k.trend === null ? null : k.trend > 0 ? "up" : k.trend < 0 ? "down" : "flat";
+  const trendHtml = dir
+    ? `<span class="kpi-trend kpi-${dir}" title="vs the previous 7 days">
+         ${dir === "flat" ? icon("arrowRight") : icon(dir === "up" ? "trendingUp" : "trendingDown")}
+         ${dir === "flat" ? "0%" : `${k.trend > 0 ? "+" : ""}${k.trend}%`}
+       </span>`
+    : `<span class="kpi-trend kpi-none" title="Not enough history to compare">—</span>`;
+
+  return `<article class="kpi-card">
+    <div class="kpi-top">
+      <span class="kpi-label">${icon(k.icon)} ${esc(k.label)}</span>
+      ${trendHtml}
+    </div>
+
+    <div class="kpi-figures">
+      <span class="kpi-value">${countNum(k.value, k.suffix || "", k.compact)}</span>
+      <span class="kpi-target">${zeroGoal ? "target: clear all" : `of ${(k.target || 0).toLocaleString()} target`}</span>
+    </div>
+
+    <div class="kpi-bar" role="progressbar" aria-valuenow="${fill}" aria-valuemin="0" aria-valuemax="100"
+         aria-label="${esc(k.label)} progress to target">
+      <span style="width:${fill}%"></span>
+    </div>
+
+    <div class="kpi-meta">
+      <span class="kpi-pct">${pct === null ? "—" : zeroGoal ? (k.value === 0 ? "cleared" : k.value + " outstanding") : pct + "% of target"}</span>
+      <span class="kpi-updated">${icon("clock")} ${k.updated ? esc(timeAgo(k.updated)) : "—"}</span>
+    </div>
+
+    ${k.href
+      // Links for anything that lives on another page, buttons for in-page
+      // actions. Either way the control does something real — no dead affordances.
+      ? `<a class="kpi-action" href="${esc(k.href)}" data-link>${esc(k.actionLabel)} ${icon("arrowRight")}</a>`
+      : `<button class="kpi-action" data-kpi-action="${esc(k.action || "")}">${esc(k.actionLabel)} ${icon("arrowRight")}</button>`}
+  </article>`;
+}
+
 function adminKpis(s) {
-  return `<div class="stat-row" style="margin-bottom:1.25rem">
-    <div class="stat-tile"><div class="st-label">${icon("users")} Total users</div><div class="st-num">${countNum(s.totalUsers)}</div></div>
-    <div class="stat-tile"><div class="st-label">${icon("graduation")} Learners enrolled</div><div class="st-num">${countNum(s.enrolled)}</div></div>
-    <div class="stat-tile"><div class="st-label">${icon("clipboard")} Assessments taken</div><div class="st-num">${countNum(s.subs.length)}</div></div>
-    <div class="stat-tile"><div class="st-label">${icon("radio")} Live sessions</div><div class="st-num">${countNum(s.activeSessions)}</div></div>
-  </div>`;
+  // Only two of the four have a real history to trend from: accounts carry
+  // createdAt and submissions carry `at`. Class rosters and live sessions are
+  // point-in-time state with nothing stored to compare against, so those cards
+  // show a dash instead of a fabricated arrow.
+  const userTs = s.users.map((u) => u.createdAt).filter(Boolean);
+  const subTs = s.subs.map((x) => x.at).filter(Boolean);
+
+  const cards = [
+    { icon: "users", label: "Total users", value: s.totalUsers, target: KPI_TARGETS.users,
+      trend: kpiTrend(userTs), updated: kpiLatest(userTs),
+      action: "users", actionLabel: "Manage users" },
+    { icon: "graduation", label: "Learners enrolled", value: s.enrolled, target: KPI_TARGETS.learners,
+      trend: null, updated: null,
+      action: "people", actionLabel: "View people" },
+    { icon: "clipboard", label: "Assessments taken", value: s.subs.length, target: KPI_TARGETS.assessments,
+      trend: kpiTrend(subTs), updated: kpiLatest(subTs),
+      action: "people", actionLabel: "View results" },
+    { icon: "radio", label: "Live sessions", value: s.activeSessions, target: KPI_TARGETS.liveSessions,
+      trend: null, updated: Date.now(),
+      action: "refresh", actionLabel: "Refresh now" },
+  ];
+  return `<div class="stat-row" style="margin-bottom:1.25rem">${cards.map(kpiCard).join("")}</div>`;
 }
 
 function adminOverview(s) {
@@ -3604,6 +3700,36 @@ export function wireMyDashboard(user, events) {
   }
 
   function wireAdmin() {
+    /* KPI quick actions, delegated. The top KPI row sits outside the analytics
+       panel and survives its re-renders, while the cards inside it are replaced
+       on every one — binding directly would both miss the new buttons and stack
+       duplicate listeners on the old. One listener on the container handles
+       both. wireAdmin runs once per renderRole, so it is never doubled. */
+    body.addEventListener("click", (e) => {
+      const b = e.target.closest("[data-kpi-action]");
+      if (!b || !body.contains(b)) return;
+      const act = b.dataset.kpiAction;
+      if (act === "refresh") {
+        renderAnalytics();
+        return toast("Refreshed", "KPIs recomputed from the latest data.", "success");
+      }
+      if (act === "people")    { adminView = "people";    return renderAnalytics(); }
+      if (act === "scorecard") { adminView = "scorecard"; return renderAnalytics(); }
+      if (act === "inbox")     { adminInboxOpen = true;   return renderRole("admin"); }
+      if (act === "users") {
+        // The user table lives outside the analytics panel, so open it and
+        // scroll rather than switching tab. renderRole() replaces the body and
+        // restarts its fade-in in the same frame, which cancels a smooth scroll
+        // started synchronously — wait for the next frame.
+        usersListOpen = true;
+        renderRole("admin");
+        requestAnimationFrame(() =>
+          body.querySelector("[data-users-role]")?.closest(".panel")
+            ?.scrollIntoView({ behavior: "smooth", block: "start" })
+        );
+      }
+    });
+
     // --- live analytics: sub-tabs, refresh, and cross-tab updates ---
     function wireAnalytics() {
       body.querySelectorAll("[data-admin-tab]").forEach((t) =>
