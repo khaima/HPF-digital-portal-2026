@@ -19,6 +19,7 @@ frontend static (it still deploys on GitHub Pages).
    | 2 | [`patch-01-security.sql`](patch-01-security.sql) | Stops signups granting themselves `admin`, hides quiz answer keys |
    | 3 | [`patch-02-schools.sql`](patch-02-schools.sql) | `schools` table (name, county, GPS, story) + seed data |
    | 4 | [`patch-03-profile-fields.sql`](patch-03-profile-fields.sql) | `profiles.project`; stops signup dropping county & project |
+   | 5 | [`patch-04-revoke-trigger-fn-execute.sql`](patch-04-revoke-trigger-fn-execute.sql) | Stops the trigger functions being callable over the REST API |
 
    **All four are safe to re-run**, so if you are unsure what state the
    database is in, just run all four in order — that is the reliable way to

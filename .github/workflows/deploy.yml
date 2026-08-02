@@ -1,0 +1,54 @@
+# Publishes the site automatically.
+#
+# GitHub Pages serves the gh-pages branch, not main, which is why the live site
+# kept drifting behind — every deploy was a manual push someone had to
+# remember. This mirrors main to gh-pages on every push instead.
+#
+# The site is static: no build step, no dependencies, nothing to install. The
+# published tree is exactly what is on main, so a deploy is reproducible from
+# the commit alone, and only actions/checkout (official) is used — no
+# third-party actions in the path to production.
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}   # lets you redeploy by hand without an empty commit
+
+# Only what is needed to push the branch.
+permissions:
+  contents: write
+
+# A queued deploy should not overtake a running one, but never cancel a deploy
+# midway — that could leave gh-pages half-written.
+concurrency:
+  group: deploy-gh-pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # gh-pages has its own history; a shallow clone cannot force-update it
+
+      - name: Mirror main to gh-pages
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # gh-pages is a publish target, not a source of truth — its history is
+          # disposable and every state is reproducible from main.
+          git push origin "${GITHUB_SHA}:refs/heads/gh-pages" --force
+
+      - name: Summary
+        run: |
+          {
+            echo "### Deployed"
+            echo ""
+            echo "- commit: \`${GITHUB_SHA}\`"
+            echo "- live: https://khaima.github.io/HPF-digital-portal-2026/"
+            echo ""
+            echo "Pages usually reflects this within a minute."
+          } >> "$GITHUB_STEP_SUMMARY"
