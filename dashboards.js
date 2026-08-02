@@ -514,9 +514,28 @@ const scFilter = { region: "all", school: "all", term: "all", pillar: "all", pro
 const HPF_TERMS = ["Term 1", "Term 2", "Term 3"];
 let scTheme = "dark"; // "dark" | "light"
 
+/* Scorecard regions and schools follow the schools table once it has loaded,
+   and fall back to the bundled REGIONS map until then (or if the fetch fails)
+   so the filters are never empty. A school added in a county outside the four
+   seeded HPF regions still shows up — hence the union rather than REGIONS
+   alone, which would silently hide it from every filter. */
+function scRegions() {
+  const counties = getSchools().map((s) => s.county).filter(Boolean);
+  return [...new Set([...Object.keys(REGIONS), ...counties])];
+}
+
+function schoolsInRegion(name) {
+  const live = getSchools();
+  return live.length
+    ? live.filter((s) => s.county === name).map((s) => s.name)
+    : REGIONS[name] || [];
+}
+
 /* schools available under the current region filter */
 function filterSchools() {
-  return scFilter.region === "all" ? SCHOOLS : REGIONS[scFilter.region] || [];
+  const live = getSchools();
+  if (scFilter.region !== "all") return schoolsInRegion(scFilter.region);
+  return live.length ? live.map((s) => s.name) : SCHOOLS;
 }
 
 const ROLE_COLOR = {
@@ -1399,7 +1418,7 @@ function adminScorecard(s) {
   if (scFilter.school !== "all" && !schoolNames.includes(scFilter.school)) scFilter.school = "all";
   const q = (scFilter.q || "").toLowerCase();
   const regionOpts = [`<option value="all">All regions</option>`]
-    .concat(Object.keys(REGIONS).map((n) => `<option value="${esc(n)}" ${scFilter.region === n ? "selected" : ""}>${esc(n)}</option>`))
+    .concat(scRegions().map((n) => `<option value="${esc(n)}" ${scFilter.region === n ? "selected" : ""}>${esc(n)}</option>`))
     .join("");
   const programmeOpts = [`<option value="all">All HPF programmes</option>`]
     .concat(PROJECTS.map((p) => `<option value="${esc(p)}" ${scFilter.programme === p ? "selected" : ""}>${esc(p)}</option>`))
@@ -1466,8 +1485,8 @@ function adminScorecard(s) {
     .join("");
 
   // ---------- region map ----------
-  const regionRows = Object.keys(REGIONS).map((name) => {
-    const rSchools = REGIONS[name];
+  const regionRows = scRegions().map((name) => {
+    const rSchools = schoolsInRegion(name);
     const reports = s.reports.filter((r) => rSchools.includes(r.school));
     const h = [...name].reduce((a, c) => a + c.charCodeAt(0), 0);
     const synced = reports.length ? Math.round((reports.filter((x) => x.status === "synced").length / reports.length) * 100) : 0;
@@ -1518,7 +1537,7 @@ function adminScorecard(s) {
         ? `<button class="btn btn-outline btn-xs" data-sc-clear>Clear filters</button>` : ""}
     </div>
     <div class="scd-chips">
-      ${Object.keys(REGIONS)
+      ${scRegions()
         .map((r) => `<button class="kchip ${scFilter.region === r ? "active" : ""}" data-sc-region-pick="${esc(r)}">${icon("mapPin")} ${esc(r)}</button>`)
         .join("")}
       ${scFilter.region !== "all" ? `<button class="kchip kchip-add" data-sc-region-pick="all">${icon("refresh")} All regions</button>` : ""}

@@ -40,6 +40,10 @@ const toUiUser = (row, fallbackEmail = "") => ({
   school: row.school || "",
   orgType: row.org_type || "",
   county: row.county || "",
+  // locally-created accounts carry `region`; Supabase stores the same value in
+  // `county`. Expose both so the admin table reads one field for either kind.
+  region: row.county || "",
+  project: row.project || "",
   createdAt: row.created_at ? Date.parse(row.created_at) : Date.now(),
 });
 
@@ -119,8 +123,11 @@ const Auth = {
           username: data.username || null,
           role: data.role,
           school: data.school || null,
-          county: data.county || null,
+          // the form's "County / region" select lists counties, so it feeds
+          // profiles.county — see supabase/patch-03-profile-fields.sql
+          county: data.region || data.county || null,
           org_type: data.orgType || null,
+          project: data.project || null,
         },
       },
     });

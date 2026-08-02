@@ -18,6 +18,7 @@ frontend static (it still deploys on GitHub Pages).
    | 1 | [`schema.sql`](schema.sql) | Every table, plus the baseline security rules |
    | 2 | [`patch-01-security.sql`](patch-01-security.sql) | Stops signups granting themselves `admin`, hides quiz answer keys |
    | 3 | [`patch-02-schools.sql`](patch-02-schools.sql) | `schools` table (name, county, GPS, story) + seed data |
+   | 4 | [`patch-03-profile-fields.sql`](patch-03-profile-fields.sql) | `profiles.project`; stops signup dropping county & project |
 
    The patches are safe to re-run, so it does no harm to apply one twice. Run
    them in order though — each builds on the last.
