@@ -781,35 +781,103 @@ const saveStories = (s) => write(K_STORIES, s);
 let mapSchool = null;   // school currently open on the map
 let mapEditing = false; // story editor open?
 
+/* ---------------------------------------------------------- editable schools
+   Seeded from SCHOOL_COORDS, then fully admin-managed (add / edit / delete). */
+const K_SCHOOLS = "hpf_schools";
+function getSchools() {
+  let list = read(K_SCHOOLS, null);
+  if (!list || !list.length) {
+    list = Object.entries(SCHOOL_COORDS).map(([name, c]) => ({
+      id: uid(), name, county: c.county, lat: c.lat, lng: c.lng,
+    }));
+    write(K_SCHOOLS, list);
+  }
+  return list;
+}
+const saveSchools = (l) => write(K_SCHOOLS, l);
+const schoolNames = () => getSchools().map((s) => s.name);
+const schoolCounties = () => [...new Set(getSchools().map((s) => s.county).filter(Boolean))];
+const schoolsInCounty = (c) => getSchools().filter((s) => s.county === c).map((s) => s.name);
+let editSchoolId = null;   // school open in the admin editor
+let schoolFormOpen = false;
+let schoolManageOpen = false; // show edit/delete controls on the map pins
+
+/* ---------------------------------------------------------- editable chart titles */
+const K_TITLES = "hpf_chart_titles";
+const getTitles = () => read(K_TITLES, {});
+const chartTitle = (id, fallback) => getTitles()[id] || fallback;
+let editTitleId = null;    // chart whose title is being renamed
+
+/* ---------------------------------------------------------- custom activity charts
+   [{ id, title, type: bar|hbar|pie|line, activityIds: [] }] */
+const K_CHARTS = "hpf_custom_charts";
+const getCustomCharts = () => read(K_CHARTS, []);
+const saveCustomCharts = (c) => write(K_CHARTS, c);
+let chartFormOpen = false;
+
+function schoolForm(existing) {
+  const countyOpts = COUNTIES.map(
+    (c) => `<option value="${esc(c)}" ${existing?.county === c ? "selected" : ""}>${esc(c)}</option>`
+  ).join("");
+  return `<form id="schoolForm" class="add-user-form" data-id="${existing ? esc(existing.id) : ""}">
+    <div class="form-row">
+      <div class="field"><label>School name</label>
+        <input class="input" name="name" type="text" required placeholder="e.g. Meru Primary School" value="${existing ? esc(existing.name) : ""}"></div>
+      <div class="field"><label>County</label>
+        <select class="select" name="county" required>
+          <option value="">Select county</option>${countyOpts}
+        </select></div>
+    </div>
+    <div class="form-row">
+      <div class="field"><label>Latitude</label>
+        <input class="input" name="lat" type="number" step="any" required placeholder="e.g. 0.0463" value="${existing ? existing.lat : ""}"></div>
+      <div class="field"><label>Longitude</label>
+        <input class="input" name="lng" type="number" step="any" required placeholder="e.g. 37.6559" value="${existing ? existing.lng : ""}"></div>
+    </div>
+    <div class="add-user-actions">
+      <button class="btn btn-primary btn-xs" type="submit">${icon("check")} ${existing ? "Save changes" : "Add school"}</button>
+      <button class="btn btn-outline btn-xs" type="button" data-school-form-cancel>Cancel</button>
+    </div>
+  </form>`;
+}
+
 function schoolMapPanel(s) {
   const stories = getStories();
+  const schools = getSchools();
   const byCounty = {};
-  Object.entries(SCHOOL_COORDS).forEach(([name, c]) => {
-    (byCounty[c.county] = byCounty[c.county] || []).push(name);
+  schools.forEach((sc) => {
+    (byCounty[sc.county] = byCounty[sc.county] || []).push(sc);
   });
-  const active = mapSchool && SCHOOL_COORDS[mapSchool] ? mapSchool : null;
+  const active = mapSchool && schools.some((sc) => sc.name === mapSchool) ? mapSchool : null;
+  const editing = editSchoolId ? schools.find((sc) => sc.id === editSchoolId) : null;
 
-  const pins = Object.keys(byCounty)
+  const pins = Object.keys(byCounty).sort()
     .map(
       (county) => `<div class="smap-county">
         <div class="smap-county-h">${icon("mapPin")} ${esc(county)} <span class="smap-n">${byCounty[county].length}</span></div>
         <div class="smap-pins">${byCounty[county]
-          .map((name) => {
-            const reports = s.reports.filter((r) => r.school === name).length;
-            return `<button class="smap-pin ${name === active ? "active" : ""}" data-map-school="${esc(name)}">
-              ${icon("school")} <span>${esc(name.replace(/ (Primary )?School$/i, ""))}</span>
-              ${stories[name] ? `<i class="smap-dot" title="Has a story"></i>` : ""}
-              <b>${reports}</b>
-            </button>`;
+          .map((sc) => {
+            const reports = s.reports.filter((r) => r.school === sc.name).length;
+            return `<div class="smap-pin-row">
+              <button class="smap-pin ${sc.name === active ? "active" : ""}" data-map-school="${esc(sc.name)}">
+                ${icon("school")} <span>${esc(sc.name.replace(/ (Primary )?School$/i, ""))}</span>
+                ${stories[sc.name] ? `<i class="smap-dot" title="Has a story"></i>` : ""}
+                <b>${reports}</b>
+              </button>
+              ${schoolManageOpen
+                ? `<button class="icon-btn" data-school-edit="${esc(sc.id)}" title="Edit school">${icon("pen")}</button>
+                   <button class="icon-btn danger" data-school-delete="${esc(sc.id)}" title="Delete school">${icon("trash")}</button>`
+                : ""}
+            </div>`;
           })
           .join("")}</div>
       </div>`
     )
-    .join("");
+    .join("") || `<div class="empty-state">No schools yet. Click <strong>Add school</strong> to create one.</div>`;
 
   let detail = `<div class="empty-state">Pick a school on the left to open its satellite view and story.</div>`;
   if (active) {
-    const c = SCHOOL_COORDS[active];
+    const c = schools.find((sc) => sc.name === active);
     // keyless Google Maps embed, satellite basemap
     const src = `https://maps.google.com/maps?q=${c.lat},${c.lng}&t=k&z=17&hl=en&output=embed`;
     const story = stories[active] || "";
@@ -847,9 +915,16 @@ function schoolMapPanel(s) {
       </div>`;
   }
 
-  return `<div class="smap">
-    <div class="smap-side">${pins}</div>
-    <div class="smap-main">${detail}</div>
+  return `<div class="smap-wrap">
+    <div class="smap-toolbar">
+      <button class="btn btn-outline btn-xs" data-school-manage-toggle>${icon("pen")} ${schoolManageOpen ? "Done managing" : "Manage schools"}</button>
+      ${schoolManageOpen ? `<button class="btn btn-primary btn-xs" data-school-add>${icon("plus")} Add school</button>` : ""}
+    </div>
+    ${schoolFormOpen ? schoolForm(editing) : ""}
+    <div class="smap">
+      <div class="smap-side">${pins}</div>
+      <div class="smap-main">${detail}</div>
+    </div>
   </div>`;
 }
 
@@ -3557,6 +3632,82 @@ export function wireMyDashboard(user, events) {
         saveStories(stories);
         mapEditing = false;
         toast(text ? "Story saved" : "Story cleared", `${school} updated.`, "success");
+        renderAnalytics();
+      });
+
+      // --- admin-managed schools (add / edit / delete) ---
+      body.querySelector("[data-school-manage-toggle]")?.addEventListener("click", () => {
+        schoolManageOpen = !schoolManageOpen;
+        schoolFormOpen = false;
+        editSchoolId = null;
+        renderAnalytics();
+      });
+      body.querySelector("[data-school-add]")?.addEventListener("click", () => {
+        editSchoolId = null;
+        schoolFormOpen = true;
+        renderAnalytics();
+      });
+      body.querySelectorAll("[data-school-edit]").forEach((btn) =>
+        btn.addEventListener("click", () => {
+          editSchoolId = btn.dataset.schoolEdit;
+          schoolFormOpen = true;
+          renderAnalytics();
+        })
+      );
+      body.querySelectorAll("[data-school-delete]").forEach((btn) =>
+        btn.addEventListener("click", () => {
+          const id = btn.dataset.schoolDelete;
+          const schools = getSchools();
+          const sc = schools.find((x) => x.id === id);
+          if (!sc) return;
+          saveSchools(schools.filter((x) => x.id !== id));
+          if (mapSchool === sc.name) mapSchool = null;
+          const stories = getStories();
+          if (stories[sc.name]) { delete stories[sc.name]; saveStories(stories); }
+          if (editSchoolId === id) { editSchoolId = null; schoolFormOpen = false; }
+          toast("School removed", `${sc.name} deleted.`, "success");
+          renderAnalytics();
+        })
+      );
+      body.querySelector("[data-school-form-cancel]")?.addEventListener("click", () => {
+        schoolFormOpen = false;
+        editSchoolId = null;
+        renderAnalytics();
+      });
+      body.querySelector("#schoolForm")?.addEventListener("submit", (e) => {
+        e.preventDefault();
+        const form = e.currentTarget;
+        const data = Object.fromEntries(new FormData(form).entries());
+        const name = (data.name || "").trim();
+        const county = (data.county || "").trim();
+        const lat = parseFloat(data.lat);
+        const lng = parseFloat(data.lng);
+        if (!name) return toast("Name required", "", "error");
+        if (!county) return toast("County required", "", "error");
+        if (!Number.isFinite(lat) || !Number.isFinite(lng)) return toast("Invalid coordinates", "Enter numeric latitude & longitude.", "error");
+
+        const schools = getSchools();
+        const id = form.dataset.id;
+        if (schools.some((x) => x.name.toLowerCase() === name.toLowerCase() && x.id !== id))
+          return toast("Duplicate school", "A school with that name already exists.", "error");
+
+        if (id) {
+          const sc = schools.find((x) => x.id === id);
+          if (!sc) return;
+          const oldName = sc.name;
+          Object.assign(sc, { name, county, lat, lng });
+          if (oldName !== name) {
+            const stories = getStories();
+            if (stories[oldName]) { stories[name] = stories[oldName]; delete stories[oldName]; saveStories(stories); }
+            if (mapSchool === oldName) mapSchool = name;
+          }
+        } else {
+          schools.push({ id: uid(), name, county, lat, lng });
+        }
+        saveSchools(schools);
+        schoolFormOpen = false;
+        editSchoolId = null;
+        toast(id ? "School updated" : "School added", name, "success");
         renderAnalytics();
       });
 
