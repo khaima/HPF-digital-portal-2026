@@ -80,5 +80,13 @@ insert into schools (name, county, lat, lng) values
   ('Aitong School',             'Narok',   -1.1667, 35.2500),
   ('Naboisho School',           'Narok',   -1.3167, 35.3167),
   ('Ololomei School',           'Narok',   -1.2500, 35.2000),
-  ('Olkimitare School',         'Narok',   -1.4000, 35.1500)
+  ('Olkimitare School',         'Narok',   -1.4000, 35.1500),
+  -- Added later, GPS not yet recorded. Left null rather than guessed: an
+  -- invented coordinate drops the satellite pin on the wrong patch of ground
+  -- and looks authoritative doing it. The map handles null and prompts for a
+  -- reading; add it via the dashboard's "Manage schools".
+  ('Mbinin School',             'Narok',   null, null),
+  ('Pardamat School',           'Narok',   null, null),
+  ('Ositeti School',            'Narok',   null, null),
+  ('Ilmonchin School',          'Narok',   null, null)
 on conflict do nothing;

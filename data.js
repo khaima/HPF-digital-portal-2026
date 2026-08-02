@@ -228,7 +228,8 @@ export const REGIONS = {
   Meru: ["Meru Primary School", "Kithoka Primary School", "Nkubu Primary School"],
   Isiolo: ["Isiolo Central Primary", "Garbatulla Primary School", "Kinna Primary School"],
   Laikipia: ["Nanyuki Primary School", "Rumuruti Primary School", "Doldol Primary School"],
-  Narok: ["Aitong School", "Naboisho School", "Ololomei School", "Olkimitare School"],
+  Narok: ["Aitong School", "Naboisho School", "Ololomei School", "Olkimitare School",
+          "Mbinin School", "Pardamat School", "Ositeti School", "Ilmonchin School"],
 };
 
 /* School names and GPS now live in Postgres — see supabase/patch-02-schools.sql,
