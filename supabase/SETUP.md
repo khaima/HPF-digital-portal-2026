@@ -20,8 +20,16 @@ frontend static (it still deploys on GitHub Pages).
    | 3 | [`patch-02-schools.sql`](patch-02-schools.sql) | `schools` table (name, county, GPS, story) + seed data |
    | 4 | [`patch-03-profile-fields.sql`](patch-03-profile-fields.sql) | `profiles.project`; stops signup dropping county & project |
 
-   The patches are safe to re-run, so it does no harm to apply one twice. Run
-   them in order though — each builds on the last.
+   **All four are safe to re-run**, so if you are unsure what state the
+   database is in, just run all four in order — that is the reliable way to
+   reach a known-good state.
+
+   `schema.sql` is deliberately create-only rather than create-or-replace. It
+   defines the *original* `handle_new_user()`, which trusts the client's role
+   and hands admin to anyone who posts `{"role":"admin"}` at signup — patch-01
+   closes that. If re-running `schema.sql` replaced existing objects it would
+   silently reopen the hole, so it skips anything that already exists and
+   leaves your patched versions alone.
 
 3. **Create your admin login** — dashboard → **Authentication → Users → Add
    user**. Enter an email + password and tick **Auto Confirm User**. Then in the
