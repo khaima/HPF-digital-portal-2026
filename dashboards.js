@@ -1050,21 +1050,26 @@ function rankedBars(map, color, topN = 6) {
 /* ---------------------------------------------------------- analytics tabs */
 function adminAnalytics() {
   const s = computeAdminStats();
+  // Four categories, not five: Learners and Teachers were two halves of the
+  // same question — how are the people doing — and splitting them made an
+  // admin toggle back and forth to compare a class against its results.
   const tabs = [
-    { id: "scorecard", label: "Scorecard" },
-    { id: "overview", label: "Overview" },
-    { id: "learners", label: "Learners" },
-    { id: "teachers", label: "Teachers" },
-    { id: "field", label: "Field Officers" },
+    { id: "scorecard", label: "Scorecard", icon: "chartColumn" },
+    { id: "overview",  label: "Overview",  icon: "activity" },
+    { id: "people",    label: "People",    icon: "users" },
+    { id: "field",     label: "Field",     icon: "mapPin" },
   ];
   const tabBar = `<div class="ksubtabs">${tabs
-    .map((t) => `<button class="ksubtab ${t.id === adminView ? "active" : ""}" data-admin-tab="${t.id}">${t.label}</button>`)
+    .map((t) => `<button class="ksubtab ${t.id === adminView ? "active" : ""}" data-admin-tab="${t.id}">
+      ${icon(t.icon)} <span>${t.label}</span>
+    </button>`)
     .join("")}</div>`;
 
   let body;
   if (adminView === "overview") body = adminOverview(s);
-  else if (adminView === "learners") body = adminLearners(s);
-  else if (adminView === "teachers") body = adminTeachers(s);
+  // "learners" and "teachers" are the pre-merge ids; keep honouring them so a
+  // stale value lands on the view that absorbed them rather than the default.
+  else if (adminView === "people" || adminView === "learners" || adminView === "teachers") body = adminPeople(s);
   else if (adminView === "field") body = adminField(s);
   else body = adminScorecard(s);
 
@@ -1114,6 +1119,17 @@ function adminOverview(s) {
       <p class="panel-sub">Registered users per county</p>
       ${rankedBars(s.county, "var(--primary)")}
     </div>`;
+}
+
+/* The merged People view. Teachers first: class activity is the cause, learner
+   results are the effect, so reading them in that order tells a story. Each
+   half keeps its own function so the sections stay independently editable. */
+function adminPeople(s) {
+  return `
+    <h3 class="dash-section">${icon("users")} Teachers &amp; classes</h3>
+    ${adminTeachers(s)}
+    <h3 class="dash-section">${icon("graduation")} Learner performance</h3>
+    ${adminLearners(s)}`;
 }
 
 function adminLearners(s) {

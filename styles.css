@@ -1812,6 +1812,9 @@ textarea.input:focus {
 }
 
 .ksubtab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
   border: 1px solid transparent;
   background: transparent;
   padding: 0.5rem 1rem;
@@ -1833,6 +1836,24 @@ textarea.input:focus {
   background: var(--accent);
   border-color: oklch(52% 0.14 148 / 0.25);
 }
+
+/* Icons inherit the tab's colour, so they follow hover and active for free. */
+.ksubtab svg { width: 15px; height: 15px; flex: none; }
+
+/* Section heading inside a merged tab, separating the halves of "People". */
+.dash-section {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin: 1.75rem 0 0.85rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--sd-dim, var(--muted-foreground));
+}
+.dash-section:first-child { margin-top: 0; }
+.dash-section svg { width: 15px; height: 15px; color: var(--primary); flex: none; }
 
 /* Kolibri: content cards */
 .kcard-grid {
