@@ -66,6 +66,34 @@ async function refreshProfile(session) {
    accounts and session stay in localStorage exactly as before. */
 const isLearnerRole = (role) => role === "learner";
 
+/* ------------------------------------------------------------ legacy accounts
+   Staff accounts created before the Supabase migration exist only in this
+   browser's localStorage; Postgres has never heard of them. Without this path
+   the migration locks those people out of the site on the day it ships.
+
+   Supabase stays authoritative — the caller only reaches here once Supabase has
+   rejected the credentials — so anyone whose account has been recreated
+   properly always gets the real one, never this stale copy.
+
+   The catch, and why the session is flagged: a legacy sign-in produces no JWT,
+   and every RLS policy in schema.sql is granted `to authenticated`. So Postgres
+   returns nothing to these users. The localStorage-backed parts of the app work
+   as they always did; anything served from the database stays empty. `legacy`
+   lets the UI say that plainly instead of leaving someone staring at blank
+   panels wondering what broke. */
+function legacyLogin(id, password) {
+  const user = Auth.users().find(
+    (u) => !isLearnerRole(u.role) &&
+      ((u.email || "").toLowerCase() === id || (u.username || "").toLowerCase() === id)
+  );
+  if (!user || user.password !== password) return null;
+  const { password: _p, ...safe } = user;
+  safe.legacy = true;
+  write(K_SESSION, safe);
+  Repo.recordLocal(safe, "login");
+  return safe;
+}
+
 /* ------------------------------------------------------------ login repository
    Every login / signup is recorded for the admin inbox: in login_events for
    real accounts, in localStorage for learners. */
@@ -179,15 +207,31 @@ const Auth = {
       return safe;
     }
 
+    // No email means this cannot be a Supabase sign-in, but it may still be a
+    // staff account created here before the migration.
     if (!id.includes("@")) {
+      const legacy = legacyLogin(id, password);
+      if (legacy) return legacy;
       throw new Error("Staff sign in with their email address. Learners use their username.");
     }
+
     const { data: res, error } = await supabase.auth.signInWithPassword({ email: id, password });
-    if (error) throw new Error(authMessage(error));
-    const user = await refreshProfile(res.session);
-    if (!user) throw new Error("Signed in, but no profile row exists for this account.");
-    await Repo.record(user, "login");
-    return user;
+    if (!error) {
+      const user = await refreshProfile(res.session);
+      if (!user) throw new Error("Signed in, but no profile row exists for this account.");
+      await Repo.record(user, "login");
+      return user;
+    }
+
+    // Fall back only when Supabase specifically rejects the credentials, which
+    // is what it says for an account it has never seen. A network failure or a
+    // rate limit must surface as itself — silently treating those as "try the
+    // old account" would hand someone a degraded session during an outage.
+    if ((error.message || "").toLowerCase().includes("invalid login credentials")) {
+      const legacy = legacyLogin(id, password);
+      if (legacy) return legacy;
+    }
+    throw new Error(authMessage(error));
   },
 
   async logout() {
@@ -916,7 +960,17 @@ function wireAuth() {
     if (submit) { submit.disabled = true; submit.textContent = "Signing in…"; }
     try {
       const user = await Auth.login(fd.get("identifier"), fd.get("password"));
-      toast("Welcome back", `Signed in as ${user.fullName || user.username}.`, "success");
+      if (user.legacy) {
+        // Don't let this pass as a normal sign-in: nothing served from the
+        // database will load, and the cause is not guessable from the UI.
+        toast(
+          "Signed in on your old account",
+          "This account predates the move to the HPF database, so it only works in this browser and shared data will not load. Ask an administrator to recreate it.",
+          "error"
+        );
+      } else {
+        toast("Welcome back", `Signed in as ${user.fullName || user.username}.`, "success");
+      }
       await navigate(gotoAfterLogin(user));
     } catch (err) {
       toast("Sign in failed", err.message, "error");
