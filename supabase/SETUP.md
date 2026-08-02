@@ -20,6 +20,8 @@ frontend static (it still deploys on GitHub Pages).
    | 3 | [`patch-02-schools.sql`](patch-02-schools.sql) | `schools` table (name, county, GPS, story) + seed data |
    | 4 | [`patch-03-profile-fields.sql`](patch-03-profile-fields.sql) | `profiles.project`; stops signup dropping county & project |
    | 5 | [`patch-04-revoke-trigger-fn-execute.sql`](patch-04-revoke-trigger-fn-execute.sql) | Stops the trigger functions being callable over the REST API |
+   | 6 | [`patch-05-fk-indexes.sql`](patch-05-fk-indexes.sql) | Covering indexes on all nine foreign keys |
+   | 7 | [`patch-06-rls-initplan.sql`](patch-06-rls-initplan.sql) | Stops RLS policies re-running `auth.uid()` per row |
 
    **All four are safe to re-run**, so if you are unsure what state the
    database is in, just run all four in order — that is the reliable way to
