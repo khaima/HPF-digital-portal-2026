@@ -525,6 +525,64 @@ let adminView = "scorecard";         // which analytics tab is open
 let scPillar = "education";           // which scorecard pillar is drilled into
 /* ELOG-style scorecard filters + board theme */
 const scFilter = { region: "all", school: "all", term: "all", pillar: "all", programme: "all", q: "" };
+
+/* ---------------------------------------------------------- dashboard filter bar
+   Sits above the whole admin dashboard and drives every widget below it.
+
+   Two copies of the state on purpose. `dashFilter` is what the widgets read;
+   `dashDraft` is what the selects write to. Nothing recomputes until Apply
+   copies draft over committed, which is the point of having an Apply button —
+   an admin can line up county + school + date range and see the dashboard move
+   once, rather than watching it rebuild four times on the way there.
+
+   Internet status reads the field reports' sync state: a report is `synced`
+   when the officer had a connection to upload it and `pending` when they did
+   not, so it doubles as the connectivity filter. */
+const DASH_FILTER_DEFAULTS = {
+  county: "all", school: "all", range: "all", programme: "all", net: "all",
+};
+const DATE_RANGES = [
+  { id: "all", label: "All time", days: null },
+  { id: "7d",  label: "Last 7 days", days: 7 },
+  { id: "30d", label: "Last 30 days", days: 30 },
+  { id: "90d", label: "This term (90 days)", days: 90 },
+  { id: "365d", label: "This year", days: 365 },
+];
+const NET_STATUSES = [
+  { id: "all", label: "Any connection" },
+  { id: "synced", label: "Online · synced" },
+  { id: "pending", label: "Offline · pending sync" },
+];
+let dashFilter = { ...DASH_FILTER_DEFAULTS };
+let dashDraft = { ...DASH_FILTER_DEFAULTS };
+
+const dashFilterActive = () =>
+  Object.keys(DASH_FILTER_DEFAULTS).some((k) => dashFilter[k] !== DASH_FILTER_DEFAULTS[k]);
+const dashDraftDirty = () =>
+  Object.keys(DASH_FILTER_DEFAULTS).some((k) => dashDraft[k] !== dashFilter[k]);
+
+/* Cutoff timestamp for the active range, or null for "all time". */
+function dashRangeStart() {
+  const r = DATE_RANGES.find((x) => x.id === dashFilter.range);
+  return r && r.days ? Date.now() - r.days * 864e5 : null;
+}
+
+/* The single place a field report is tested against the bar. Everything that
+   counts reports — KPIs, the sync donut, county ranking, the school map —
+   goes through here so one widget can never disagree with another. */
+function reportPassesFilter(r) {
+  if (dashFilter.county !== "all" && r.county !== dashFilter.county) return false;
+  if (dashFilter.school !== "all" && r.school !== dashFilter.school) return false;
+  if (dashFilter.net !== "all" && (r.status || "pending") !== dashFilter.net) return false;
+  const from = dashRangeStart();
+  if (from) {
+    const at = r.at || r.createdAt;
+    // A report with no timestamp cannot be shown to fall inside a window;
+    // excluding it is the honest reading of "last 7 days".
+    if (!at || at < from) return false;
+  }
+  return true;
+}
 const HPF_TERMS = ["Term 1", "Term 2", "Term 3"];
 let scTheme = "dark"; // "dark" | "light"
 
@@ -587,7 +645,10 @@ function computeAdminStats() {
   seedFieldReports();
   const users = read(K_USERS, []);
   const classes = read(K_CLASSES, []);
-  const reports = read(K_SUBS, []);
+  // Filtered once, here. Every widget that counts reports — KPIs, sync donut,
+  // county ranking, the school map — reads this array, so the filter bar can
+  // never leave two widgets disagreeing about the same number.
+  const reports = read(K_SUBS, []).filter(reportPassesFilter);
   const events = read(K_EVENTS, []);
   const now = Date.now(), day = 864e5;
 
@@ -1168,6 +1229,92 @@ function kpiCard(k) {
       ? `<a class="kpi-action" href="${esc(k.href)}" data-link>${esc(k.actionLabel)} ${icon("arrowRight")}</a>`
       : `<button class="kpi-action" data-kpi-action="${esc(k.action || "")}">${esc(k.actionLabel)} ${icon("arrowRight")}</button>`}
   </article>`;
+}
+
+/* The filter bar above the dashboard. Built from the same .panel / .select /
+   .btn vocabulary as everything else, so it reads as part of the page rather
+   than a control strip bolted on top. */
+function dashFilterBar() {
+  const counties = scRegions();
+  // School cascades from the *draft* county, not the committed one — picking
+  // "Narok" should narrow the school list straight away, before Apply.
+  // The bar paints before loadSchools() resolves, so fall back to the bundled
+  // list the same way the scorecard does — otherwise the school select is
+  // empty on first render and looks broken.
+  const live = getSchools();
+  const schools = dashDraft.county === "all"
+    ? (live.length ? live.map((s) => s.name) : SCHOOLS.slice()).sort()
+    : schoolsInRegion(dashDraft.county);
+  // A school left selected that the new county does not contain would silently
+  // filter everything to nothing, so drop it.
+  if (dashDraft.school !== "all" && !schools.includes(dashDraft.school)) dashDraft.school = "all";
+
+  const opts = (items, selected, allLabel) =>
+    [`<option value="all">${esc(allLabel)}</option>`]
+      .concat(items.map((i) => {
+        const [v, l] = Array.isArray(i) ? i : [i, i];
+        return `<option value="${esc(v)}" ${selected === v ? "selected" : ""}>${esc(l)}</option>`;
+      }))
+      .join("");
+
+  const field = (label, attr, inner) => `
+    <div class="dfb-field">
+      <label class="dfb-label" for="dfb-${attr}">${esc(label)}</label>
+      ${inner}
+    </div>`;
+
+  const dirty = dashDraftDirty();
+  const active = dashFilterActive();
+
+  return `
+    <section class="panel dash-filter-bar" data-dash-filters aria-label="Dashboard filters">
+      <div class="dfb-head">
+        <h2>${icon("list")} Filters</h2>
+        ${active
+          ? `<span class="dfb-count">${dashSummary()}</span>`
+          : `<span class="dfb-count dim">Showing everything</span>`}
+      </div>
+
+      <div class="dfb-grid">
+        ${field("County", "county",
+          `<select class="select" id="dfb-county" data-dfb="county">${opts(counties, dashDraft.county, "All counties")}</select>`)}
+        ${field("School", "school",
+          `<select class="select" id="dfb-school" data-dfb="school">${opts(schools, dashDraft.school, dashDraft.county === "all" ? "All schools" : "All in " + dashDraft.county)}</select>`)}
+        ${field("Date range", "range",
+          `<select class="select" id="dfb-range" data-dfb="range">${
+             DATE_RANGES.map((r) => `<option value="${r.id}" ${dashDraft.range === r.id ? "selected" : ""}>${esc(r.label)}</option>`).join("")
+           }</select>`)}
+        ${field("Programme", "programme",
+          `<select class="select" id="dfb-programme" data-dfb="programme">${opts(PROJECTS, dashDraft.programme, "All programmes")}</select>`)}
+        ${field("Internet status", "net",
+          `<select class="select" id="dfb-net" data-dfb="net">${
+             NET_STATUSES.map((n) => `<option value="${n.id}" ${dashDraft.net === n.id ? "selected" : ""}>${esc(n.label)}</option>`).join("")
+           }</select>`)}
+      </div>
+
+      <div class="dfb-actions">
+        <button class="btn btn-primary btn-xs" data-dfb-apply ${dirty ? "" : "disabled"}>
+          ${icon("check")} ${dirty ? "Apply" : "Applied"}
+        </button>
+        <button class="btn btn-outline btn-xs" data-dfb-reset ${active || dirty ? "" : "disabled"}>
+          ${icon("refresh")} Reset
+        </button>
+        ${dirty ? `<span class="dfb-hint">Unapplied changes</span>` : ""}
+      </div>
+    </section>`;
+}
+
+/* Plain-language summary of what is currently committed. */
+function dashSummary() {
+  const bits = [];
+  if (dashFilter.county !== "all") bits.push(dashFilter.county);
+  if (dashFilter.school !== "all") bits.push(dashFilter.school);
+  if (dashFilter.range !== "all")
+    bits.push((DATE_RANGES.find((r) => r.id === dashFilter.range) || {}).label);
+  if (dashFilter.programme !== "all") bits.push(dashFilter.programme);
+  if (dashFilter.net !== "all")
+    bits.push((NET_STATUSES.find((n) => n.id === dashFilter.net) || {}).label);
+  return bits.join(" · ");
 }
 
 function adminKpis(s) {
@@ -1791,6 +1938,7 @@ function adminBody(ctx) {
   ]);
 
   return `
+    ${dashFilterBar()}
     ${statTiles(d.stats)}
     ${smart}
     ${adminAnalytics()}
@@ -3730,6 +3878,49 @@ export function wireMyDashboard(user, events) {
       }
     });
 
+    /* --- dashboard filter bar ---
+       Selects only touch the draft, so nothing recomputes until Apply. The
+       county select is the exception: it re-renders immediately so the school
+       list can narrow, but it still commits nothing. */
+    body.addEventListener("change", (e) => {
+      const sel = e.target.closest("[data-dfb]");
+      if (!sel || !body.contains(sel)) return;
+      dashDraft[sel.dataset.dfb] = sel.value;
+      // Re-render the bar so the Apply/Reset enabled state and the cascading
+      // school list stay truthful. Only the bar — the widgets below are still
+      // showing committed data and must not move yet.
+      renderFilterBar();
+    });
+
+    body.addEventListener("click", (e) => {
+      const apply = e.target.closest("[data-dfb-apply]");
+      const reset = e.target.closest("[data-dfb-reset]");
+      if (!apply && !reset) return;
+      if (!body.contains(apply || reset)) return;
+
+      if (reset) {
+        dashDraft = { ...DASH_FILTER_DEFAULTS };
+        dashFilter = { ...DASH_FILTER_DEFAULTS };
+      } else {
+        dashFilter = { ...dashDraft };
+      }
+
+      /* Keep the scorecard's own filters in step. It predates this bar and has
+         its own state; leaving them independent would let the page show a
+         county-filtered map above a scorecard still reporting everything. */
+      scFilter.region = dashFilter.county;
+      scFilter.school = dashFilter.school;
+      scFilter.programme = dashFilter.programme;
+
+      renderRole("admin");
+      toast(
+        reset ? "Filters reset" : "Filters applied",
+        reset ? "Showing all counties, schools and dates."
+              : (dashSummary() || "Showing everything"),
+        "success"
+      );
+    });
+
     // --- live analytics: sub-tabs, refresh, and cross-tab updates ---
     function wireAnalytics() {
       body.querySelectorAll("[data-admin-tab]").forEach((t) =>
@@ -3985,6 +4176,18 @@ export function wireMyDashboard(user, events) {
         })
       );
     }
+    /* Repaint just the filter bar. Used while staging a draft, so the widgets
+       below keep showing committed data until Apply. */
+    function renderFilterBar() {
+      const bar = body.querySelector("[data-dash-filters]");
+      if (!bar) return;
+      const focused = document.activeElement?.dataset?.dfb;
+      bar.outerHTML = dashFilterBar();
+      // outerHTML replaced the node the select lived on, so restore focus by
+      // key rather than by reference.
+      if (focused) body.querySelector(`[data-dfb="${focused}"]`)?.focus();
+    }
+
     function renderAnalytics() {
       const holder = body.querySelector("[data-admin-panel]");
       if (!holder) return;

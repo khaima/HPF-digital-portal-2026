@@ -1201,6 +1201,40 @@ textarea.input:focus {
   margin-bottom: 1.75rem;
 }
 
+/* ---------------------------------------------------------- dashboard filter bar
+   Deliberately plain: it is a .panel like everything else, with the same
+   .select controls and .btn actions, so it reads as part of the dashboard
+   rather than a toolbar stuck on top. */
+.dash-filter-bar { margin-bottom: 1.25rem; }
+
+.dfb-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 0.75rem; flex-wrap: wrap; margin-bottom: 0.9rem;
+}
+.dfb-head h2 { display: flex; align-items: center; gap: 0.45rem; font-size: 1.05rem; }
+.dfb-head h2 svg { width: 17px; height: 17px; color: var(--primary); }
+.dfb-count { font-size: 0.78rem; font-weight: 600; color: var(--primary); }
+.dfb-count.dim { color: var(--muted-foreground); font-weight: 500; }
+
+.dfb-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 0.75rem;
+}
+.dfb-field { display: flex; flex-direction: column; gap: 0.3rem; min-width: 0; }
+.dfb-label {
+  font-size: 0.7rem; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--muted-foreground);
+}
+.dfb-field .select { width: 100%; }
+
+.dfb-actions {
+  display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
+  margin-top: 0.9rem; padding-top: 0.9rem; border-top: 1px solid var(--border);
+}
+.dfb-hint { font-size: 0.72rem; color: oklch(58% 0.16 75); font-weight: 600; }
+.dfb-actions .btn:disabled { opacity: 0.5; cursor: default; }
+
 /* ---------------------------------------------------------- executive KPI card
    Sits in the existing .stat-row grid, so the page layout is unchanged. Kept as
    its own class rather than restyling .stat-tile, which a dozen other panels
