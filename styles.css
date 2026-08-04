@@ -4381,3 +4381,23 @@ textarea.input:focus {
 .ret-rev-list li { font-size: 0.8rem; }
 .ret-from { color: oklch(52% 0.24 27); text-decoration: line-through; }
 .ret-to { color: oklch(45% 0.14 148); font-weight: 700; }
+
+/* ---------------------------------------------------------- enrolment by grade */
+.grade-grid { display: grid; gap: 0.3rem; margin-bottom: 1rem; }
+.grade-row {
+  display: grid; grid-template-columns: 1.4fr 1fr 1fr 0.7fr;
+  gap: 0.5rem; align-items: center;
+}
+.grade-row .input { padding: 0.35rem 0.5rem; font-size: 0.85rem; }
+.grade-name { font-size: 0.85rem; font-weight: 600; }
+.grade-head, .grade-foot {
+  font-size: 0.7rem; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.05em; color: var(--muted-foreground);
+}
+.grade-foot { border-top: 1px solid var(--border); padding-top: 0.5rem; margin-top: 0.25rem; color: var(--foreground); }
+.grade-total { font-size: 0.85rem; font-variant-numeric: tabular-nums; text-align: right; }
+.grade-foot [data-grade-sum] { font-variant-numeric: tabular-nums; }
+@media (max-width: 560px) {
+  .grade-row { grid-template-columns: 1fr 1fr 1fr 0.6fr; gap: 0.3rem; }
+  .grade-name { font-size: 0.75rem; }
+}

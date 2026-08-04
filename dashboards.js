@@ -610,6 +610,34 @@ const WATER_SOURCES = ["Piped", "Borehole", "Rainwater harvesting", "River / str
 const POWER_OPTIONS = ["Grid", "Solar", "Generator", "None"];
 const NET_OPTIONS  = ["Stable", "Intermittent", "None"];
 
+/* CBC grade ladder. `position` keeps PP1 < PP2 < Grade 1... in the database,
+   since alphabetical would put "Grade 10" between 1 and 2. */
+const GRADES = [
+  "PP1", "PP2", "Grade 1", "Grade 2", "Grade 3", "Grade 4",
+  "Grade 5", "Grade 6", "Grade 7", "Grade 8", "Grade 9",
+];
+let gradesCache = [];
+async function loadGrades() {
+  const { data, error } = await supabase
+    .from("school_return_grades").select("*").order("position");
+  if (!error) gradesCache = data || [];
+  return gradesCache;
+}
+const gradesFor = (returnId) =>
+  gradesCache.filter((g) => g.return_id === returnId)
+             .sort((a, b) => a.position - b.position);
+
+/* Enrolment by grade across a set of returns, boys and girls kept apart. */
+function gradeBreakdown(rows) {
+  const ids = new Set(rows.map((r) => r.id));
+  const out = GRADES.map((g) => ({ grade: g, boys: 0, girls: 0 }));
+  gradesCache.filter((g) => ids.has(g.return_id)).forEach((g) => {
+    const slot = out.find((o) => o.grade === g.grade);
+    if (slot) { slot.boys += +g.boys || 0; slot.girls += +g.girls || 0; }
+  });
+  return out.filter((o) => o.boys || o.girls);
+}
+
 async function loadReturns() {
   const { data, error } = await supabase
     .from("school_returns")
@@ -3925,10 +3953,26 @@ function schoolReturnForm(existing, school, county) {
         <select class="select" name="year" required>${sel("year", years, v("year", y))}</select></div>
     </div>
 
-    <h4 class="dash-section">${icon("graduation")} Enrolment</h4>
-    <div class="form-row">
-      ${num("boys", "Boys enrolled", v("boys", 0), "required")}
-      ${num("girls", "Girls enrolled", v("girls", 0), "required")}
+    <h4 class="dash-section">${icon("graduation")} Enrolment by grade</h4>
+    <p class="hint" style="margin:-.4rem 0 .6rem">Boys and girls on the register in each grade.
+      Leave a grade blank if the school does not run it — the totals add themselves up.</p>
+    <div class="grade-grid">
+      <div class="grade-row grade-head"><span>Grade</span><span>Boys</span><span>Girls</span><span>Total</span></div>
+      ${GRADES.map((g) => {
+        const ex = existing ? gradesFor(existing.id).find((x) => x.grade === g) : null;
+        return `<div class="grade-row">
+          <span class="grade-name">${esc(g)}</span>
+          <input class="input" type="number" min="0" name="g_boys_${esc(g)}" value="${ex && ex.boys ? ex.boys : ""}" placeholder="0">
+          <input class="input" type="number" min="0" name="g_girls_${esc(g)}" value="${ex && ex.girls ? ex.girls : ""}" placeholder="0">
+          <span class="grade-total" data-grade-total>${ex ? (+ex.boys || 0) + (+ex.girls || 0) || "" : ""}</span>
+        </div>`;
+      }).join("")}
+      <div class="grade-row grade-foot">
+        <span>All grades</span>
+        <span data-grade-sum="boys">0</span>
+        <span data-grade-sum="girls">0</span>
+        <span data-grade-sum="all">0</span>
+      </div>
     </div>
     <div class="form-row">
       ${num("learners_with_disability", "Learners with a disability", v("learners_with_disability", 0))}
@@ -4085,6 +4129,21 @@ function schoolReturnsPanel(school, county) {
       ${tile("Dropouts", agg.dropouts, `${agg.dropoutRate}% of enrolment`)}
       ${tile("Learners per teacher", agg.learnersPerTeacher, agg.learnersPerClassroom ? `${agg.learnersPerClassroom} per classroom` : "")}
     </div>
+    ${(() => {
+      const gb = gradeBreakdown(shown);
+      if (!gb.length) return "";
+      const segs = [
+        { label: "Boys", value: gb.reduce((a, g) => a + g.boys, 0), color: "oklch(52% 0.14 148)" },
+        { label: "Girls", value: gb.reduce((a, g) => a + g.girls, 0), color: "oklch(78% 0.15 75)" },
+      ];
+      return `<div class="panel" style="margin-bottom:1rem">
+        <h2 style="font-size:1rem">Enrolment by grade</h2>
+        <p class="panel-sub">${gb.length} grade${gb.length === 1 ? "" : "s"} on the register</p>
+        ${groupedBars(gb.map((g) => g.grade), ["Boys", "Girls"],
+          gb.map((g) => [g.boys, g.girls]), ["oklch(52% 0.14 148)", "oklch(78% 0.15 75)"])}
+        <div class="donut-wrap" style="margin-top:.75rem">${chartLegend(segs)}</div>
+      </div>`;
+    })()}
     ${agg.reasons.length ? `<div class="panel" style="margin-bottom:1rem">
       <h2 style="font-size:1rem">Why learners left</h2>
       <p class="panel-sub">${agg.dropouts} dropout${agg.dropouts === 1 ? "" : "s"} across ${shown.length} return${shown.length === 1 ? "" : "s"}</p>
@@ -4643,7 +4702,7 @@ export function wireMyDashboard(user, events) {
     // (with a retry), so nothing to catch here.
     // Schools and the heads' returns both feed panels in here. One re-render
     // once both land, rather than the dashboard twitching twice.
-    Promise.allSettled([loadSchools(), loadReturns(), loadRevisions()]).then(() => {
+    Promise.allSettled([loadSchools(), loadReturns(), loadRevisions(), loadGrades()]).then(() => {
       if (body.querySelector("[data-admin-panel]")) renderAnalytics();
     });
     // update automatically when data changes in another tab (keep just one listener)
@@ -5818,11 +5877,11 @@ export function wireMyDashboard(user, events) {
   /* Termly returns: the head files them, the scorecard reads them. */
   function wireSchoolReturns(role) {
     const rerender = () => renderRole(role);
-    const refresh = async () => { await Promise.allSettled([loadReturns(), loadRevisions()]); rerender(); };
+    const refresh = async () => { await Promise.allSettled([loadReturns(), loadRevisions(), loadGrades()]); rerender(); };
 
     // Guard on the panel wrapper, not the Add button — that button only exists
     // once loaded, so waiting for it would leave the panel stuck on "Loading".
-    if (!returnsLoaded) Promise.allSettled([loadReturns(), loadRevisions()]).then(() => { if (body.querySelector("[data-returns-panel]")) rerender(); });
+    if (!returnsLoaded) Promise.allSettled([loadReturns(), loadRevisions(), loadGrades()]).then(() => { if (body.querySelector("[data-returns-panel]")) rerender(); });
 
     body.querySelector("[data-returns-retry]")?.addEventListener("click", refresh);
 
@@ -5832,6 +5891,31 @@ export function wireMyDashboard(user, events) {
     body.querySelector("[data-return-add]")?.addEventListener("click", () => {
       returnEditId = null; returnFormOpen = true; rerender();
     });
+    // Live totals as the head types, so the roll adds up in front of them
+    // rather than only after saving.
+    const form = body.querySelector("#returnForm");
+    if (form) {
+      const recount = () => {
+        let tb = 0, tg = 0;
+        form.querySelectorAll(".grade-row").forEach((row) => {
+          const b = +(row.querySelector('[name^="g_boys_"]')?.value || 0);
+          const g = +(row.querySelector('[name^="g_girls_"]')?.value || 0);
+          const cell = row.querySelector("[data-grade-total]");
+          if (cell) cell.textContent = b + g || "";
+          tb += b; tg += g;
+        });
+        const put = (k, v) => {
+          const el = form.querySelector(`[data-grade-sum="${k}"]`);
+          if (el) el.textContent = v;
+        };
+        put("boys", tb); put("girls", tg); put("all", tb + tg);
+      };
+      form.addEventListener("input", (e) => {
+        if (e.target.name && e.target.name.startsWith("g_")) recount();
+      });
+      recount();
+    }
+
     body.querySelectorAll("[data-return-history]").forEach((b) =>
       b.addEventListener("click", () => {
         const id = b.dataset.returnHistory;
@@ -5870,8 +5954,16 @@ export function wireMyDashboard(user, events) {
       const dec = (k) => (fd[k] === "" || fd[k] === undefined ? null : parseFloat(fd[k]));
       const txt = (k) => ((fd[k] || "").trim() || null);
 
-      const boys = int("boys") || 0, girls = int("girls") || 0;
-      if (boys + girls <= 0) return toast("Enrolment required", "Enter the number of boys and girls on the register.", "error");
+      // Enrolment now comes from the per-grade inputs; the totals are derived
+      // here for validation and recomputed in Postgres by a trigger.
+      const gradeRows = GRADES.map((g, i) => ({
+        grade: g, position: i + 1,
+        boys: parseInt(fd[`g_boys_${g}`], 10) || 0,
+        girls: parseInt(fd[`g_girls_${g}`], 10) || 0,
+      })).filter((g) => g.boys || g.girls);
+      const boys = gradeRows.reduce((a, g) => a + g.boys, 0);
+      const girls = gradeRows.reduce((a, g) => a + g.girls, 0);
+      if (boys + girls <= 0) return toast("Enrolment required", "Enter the roll for at least one grade.", "error");
       const dropouts = int("dropouts") || 0;
       if (dropouts > boys + girls)
         return toast("Check the figures", "Dropouts cannot exceed the number enrolled.", "error");
@@ -5918,6 +6010,20 @@ export function wireMyDashboard(user, events) {
           return toast("Already filed", `${row.term} ${row.year} exists — open it from the list to update it.`, "error");
         return toast("Could not save return", authMessage(error), "error");
       }
+      // The grade rows are the source of truth for enrolment, so rewrite them
+      // wholesale: a grade the head cleared has to disappear, not linger.
+      const savedId = id || (await supabase.from("school_returns")
+        .select("id").eq("school", row.school).eq("year", row.year).eq("term", row.term)
+        .maybeSingle()).data?.id;
+      if (savedId) {
+        await supabase.from("school_return_grades").delete().eq("return_id", savedId);
+        if (gradeRows.length) {
+          const { error: gErr } = await supabase.from("school_return_grades")
+            .insert(gradeRows.map((g) => ({ ...g, return_id: savedId })));
+          if (gErr) toast("Saved, but grades failed", authMessage(gErr), "error");
+        }
+      }
+
       returnFormOpen = false; returnEditId = null;
       toast(id ? "Return updated" : "Return filed", `${row.term} ${row.year} · ${esc(row.school)}`, "success");
       await refresh();

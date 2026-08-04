@@ -24,6 +24,7 @@ frontend static (it still deploys on GitHub Pages).
    | 7 | [`patch-06-rls-initplan.sql`](patch-06-rls-initplan.sql) | Stops RLS policies re-running `auth.uid()` per row |
    | 8 | [`patch-07-school-returns.sql`](patch-07-school-returns.sql) | Termly returns filed by heads of institution |
    | 9 | [`patch-08-return-corrections.sql`](patch-08-return-corrections.sql) | Audit trail for corrections to a filed return |
+   | 10 | [`patch-09-enrolment-by-grade.sql`](patch-09-enrolment-by-grade.sql) | Enrolment split per grade and gender |
 
    **All of them are safe to re-run**, so if you are unsure what state the
    database is in, just run them all in order — that is the reliable way to
