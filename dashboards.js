@@ -599,6 +599,7 @@ let returnsError = null;
 let returnEditId = null;     // return open in the form
 let returnFormOpen = false;
 let returnTermView = "all";  // which term the leader is looking at
+let returnHistoryOpen = null; // return whose correction trail is expanded
 
 const DROPOUT_REASONS = [
   "Fees / poverty", "Early marriage", "Teenage pregnancy", "Child labour",
@@ -621,6 +622,38 @@ async function loadReturns() {
   return returnsCache;
 }
 const getReturns = () => returnsCache;
+
+/* Corrections to already-filed returns. Written by a database trigger, never
+   by the client, so the trail holds even if a figure is changed outside the
+   app. Read-only here. */
+let revisionsCache = [];
+async function loadRevisions() {
+  const { data, error } = await supabase
+    .from("school_return_revisions")
+    .select("*")
+    .order("corrected_at", { ascending: false });
+  if (!error) revisionsCache = data || [];
+  return revisionsCache;
+}
+const revisionsFor = (id) => revisionsCache.filter((r) => r.return_id === id);
+
+/* Field name -> the label the head saw on the form, so history reads in the
+   same words as the form rather than in column names. */
+const RETURN_LABELS = {
+  boys: "Boys enrolled", girls: "Girls enrolled",
+  learners_with_disability: "Learners with a disability",
+  attendance_rate: "Attendance rate", tsc_teachers: "TSC teachers",
+  non_tsc_teachers: "Non-TSC teachers", support_staff: "Support staff",
+  teachers_trained_term: "Teachers trained", dropouts: "Dropouts",
+  dropout_reason: "Dropout reason", dropout_reason_other: "Dropout reason (other)",
+  transfers_in: "Transfers in", transfers_out: "Transfers out",
+  mean_score: "Mean exam score", classrooms: "Classrooms", desks: "Desks",
+  toilets: "Latrines", water_source: "Water source", electricity: "Power supply",
+  computers: "Computers", internet_status: "Internet", feeding_programme: "Feeding programme",
+  income_projects: "Income projects", notes: "Notes", term: "Term", year: "Year",
+};
+const returnLabel = (k) => RETURN_LABELS[k] || k;
+const showVal = (v) => (v === null || v === undefined || v === "" ? "—" : String(v));
 const returnsForSchool = (school) => returnsCache.filter((r) => r.school === school);
 const enrolTotal = (r) => (+r.boys || 0) + (+r.girls || 0);
 
@@ -3973,11 +4006,50 @@ function schoolReturnForm(existing, school, county) {
         <textarea class="input" name="notes" rows="3" placeholder="Challenges, requests, anything the numbers do not show">${esc(v("notes"))}</textarea></div>
     </div>
 
+    ${existing ? `
+      <h4 class="dash-section">${icon("pen")} Correction</h4>
+      <div class="form-row">
+        <div class="field" style="grid-column:1/-1">
+          <label>Why is this being corrected?</label>
+          <input class="input" name="correction_reason" required
+                 placeholder="e.g. register recount after the end-of-term audit">
+          <p class="hint">This return already feeds the HPF scorecard, so the change is recorded against your name.</p>
+        </div>
+      </div>` : ""}
+
     <div class="add-user-actions">
-      <button class="btn btn-primary btn-xs" type="submit">${icon("check")} ${existing ? "Update return" : "Submit return"}</button>
+      <button class="btn btn-primary btn-xs" type="submit">${icon("check")} ${existing ? "Save correction" : "Submit return"}</button>
       <button class="btn btn-outline btn-xs" type="button" data-return-cancel>Cancel</button>
     </div>
   </form>`;
+}
+
+/* Correction trail for one return. Shows only what moved, in the form's own
+   wording, so a reader can see exactly which figure was amended and why. */
+function returnHistory(r) {
+  const revs = revisionsFor(r.id);
+  if (!revs.length) return "";
+  const open = returnHistoryOpen === r.id;
+  return `<div class="utx-row ret-history-row">
+    <div class="utx-cell" style="grid-column:1/-1">
+      <button class="btn btn-outline btn-xs" data-return-history="${esc(r.id)}">
+        ${icon("clock")} ${revs.length} correction${revs.length === 1 ? "" : "s"} ${open ? "▲" : "▼"}
+      </button>
+      ${open ? `<div class="ret-history">${revs.map((v) => `
+        <div class="ret-rev">
+          <div class="ret-rev-head">
+            ${esc(timeAgo(Date.parse(v.corrected_at)))}
+            ${v.reason ? ` · <em>${esc(v.reason)}</em>` : ` · <span class="dim">no reason given</span>`}
+          </div>
+          <ul class="ret-rev-list">
+            ${Object.entries(v.changed || {}).map(([k, d]) =>
+              `<li><strong>${esc(returnLabel(k))}</strong>
+                 <span class="ret-from">${esc(showVal(d.from))}</span> →
+                 <span class="ret-to">${esc(showVal(d.to))}</span></li>`).join("")}
+          </ul>
+        </div>`).join("")}</div>` : ""}
+    </div>
+  </div>`;
 }
 
 /* Termly returns panel: term switcher, the aggregate for whatever is selected,
@@ -4027,10 +4099,11 @@ function schoolReturnsPanel(school, county) {
         <div class="utx-cell">${r.dropouts || 0}<div class="utx-email">${esc(r.dropout_reason || "—")}</div></div>
         <div class="utx-cell">${r.attendance_rate === null || r.attendance_rate === undefined ? "—" : r.attendance_rate + "%"}</div>
         <div class="utx-cell utx-actions">
-          <button class="icon-btn" data-return-edit="${esc(r.id)}" title="Edit this return">${icon("pen")}</button>
+          <button class="icon-btn" data-return-edit="${esc(r.id)}" title="Correct this return">${icon("pen")}</button>
           <button class="icon-btn danger" data-return-delete="${esc(r.id)}" title="Delete">${icon("trash")}</button>
         </div>
-      </div>`).join("")
+      </div>
+      ${returnHistory(r)}`).join("")
     : `<div class="empty-state">No return filed${returnTermView === "all" ? "" : " for " + esc(returnTermView)} yet.
          Click <strong>File a return</strong> to add one.</div>`;
 
@@ -4570,7 +4643,7 @@ export function wireMyDashboard(user, events) {
     // (with a retry), so nothing to catch here.
     // Schools and the heads' returns both feed panels in here. One re-render
     // once both land, rather than the dashboard twitching twice.
-    Promise.allSettled([loadSchools(), loadReturns()]).then(() => {
+    Promise.allSettled([loadSchools(), loadReturns(), loadRevisions()]).then(() => {
       if (body.querySelector("[data-admin-panel]")) renderAnalytics();
     });
     // update automatically when data changes in another tab (keep just one listener)
@@ -5745,11 +5818,11 @@ export function wireMyDashboard(user, events) {
   /* Termly returns: the head files them, the scorecard reads them. */
   function wireSchoolReturns(role) {
     const rerender = () => renderRole(role);
-    const refresh = async () => { await loadReturns(); rerender(); };
+    const refresh = async () => { await Promise.allSettled([loadReturns(), loadRevisions()]); rerender(); };
 
     // Guard on the panel wrapper, not the Add button — that button only exists
     // once loaded, so waiting for it would leave the panel stuck on "Loading".
-    if (!returnsLoaded) loadReturns().then(() => { if (body.querySelector("[data-returns-panel]")) rerender(); });
+    if (!returnsLoaded) Promise.allSettled([loadReturns(), loadRevisions()]).then(() => { if (body.querySelector("[data-returns-panel]")) rerender(); });
 
     body.querySelector("[data-returns-retry]")?.addEventListener("click", refresh);
 
@@ -5759,6 +5832,13 @@ export function wireMyDashboard(user, events) {
     body.querySelector("[data-return-add]")?.addEventListener("click", () => {
       returnEditId = null; returnFormOpen = true; rerender();
     });
+    body.querySelectorAll("[data-return-history]").forEach((b) =>
+      b.addEventListener("click", () => {
+        const id = b.dataset.returnHistory;
+        returnHistoryOpen = returnHistoryOpen === id ? null : id;
+        rerender();
+      })
+    );
     body.querySelectorAll("[data-return-edit]").forEach((b) =>
       b.addEventListener("click", () => { returnEditId = b.dataset.returnEdit; returnFormOpen = true; rerender(); })
     );
@@ -5821,6 +5901,9 @@ export function wireMyDashboard(user, events) {
         income_projects: txt("income_projects"), notes: txt("notes"),
         submitted_by: leaderUser().id || null,
       };
+      // Only meaningful on an update; the trigger consumes it into the audit
+      // trail and clears it, so it never lingers on the live row.
+      if (id) row.correction_reason = txt("correction_reason");
 
       const btn = form.querySelector("[type=submit]");
       if (btn) btn.disabled = true;

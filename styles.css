@@ -4365,3 +4365,19 @@ textarea.input:focus {
   }
 }
 
+
+/* ---------------------------------------------------------- return corrections
+   The audit trail under a filed return. Deliberately quiet — it should be
+   findable when someone questions a figure, not competing with the figure. */
+.ret-history-row { background: var(--muted); }
+.ret-history { margin-top: 0.6rem; display: grid; gap: 0.6rem; }
+.ret-rev {
+  border-left: 2px solid var(--primary);
+  padding: 0.1rem 0 0.1rem 0.7rem;
+}
+.ret-rev-head { font-size: 0.75rem; color: var(--muted-foreground); }
+.ret-rev-head .dim { opacity: 0.7; }
+.ret-rev-list { list-style: none; margin: 0.35rem 0 0; padding: 0; display: grid; gap: 0.2rem; }
+.ret-rev-list li { font-size: 0.8rem; }
+.ret-from { color: oklch(52% 0.24 27); text-decoration: line-through; }
+.ret-to { color: oklch(45% 0.14 148); font-weight: 700; }
