@@ -584,6 +584,88 @@ function reportPassesFilter(r) {
   return true;
 }
 const HPF_TERMS = ["Term 1", "Term 2", "Term 3"];
+
+/* ---------------------------------------------------------- school returns
+   The termly return a head of institution files: enrolment, staffing,
+   retention, and the infrastructure/ICT facts HPF's pillars are scored on.
+   One row per school per term (supabase/patch-07-school-returns.sql), so
+   "all terms" is an aggregate over history rather than a different record.
+
+   Same shape as the schools cache: the dashboard renders synchronously, so
+   reads come from a module-level cache and writes refresh it. */
+let returnsCache = [];
+let returnsLoaded = false;
+let returnsError = null;
+let returnEditId = null;     // return open in the form
+let returnFormOpen = false;
+let returnTermView = "all";  // which term the leader is looking at
+
+const DROPOUT_REASONS = [
+  "Fees / poverty", "Early marriage", "Teenage pregnancy", "Child labour",
+  "Distance to school", "Illness or disability", "Family relocation",
+  "Insecurity / drought", "Lack of interest", "Other",
+];
+const WATER_SOURCES = ["Piped", "Borehole", "Rainwater harvesting", "River / stream", "Water vendor", "None"];
+const POWER_OPTIONS = ["Grid", "Solar", "Generator", "None"];
+const NET_OPTIONS  = ["Stable", "Intermittent", "None"];
+
+async function loadReturns() {
+  const { data, error } = await supabase
+    .from("school_returns")
+    .select("*")
+    .order("year", { ascending: false })
+    .order("term");
+  returnsLoaded = true;
+  returnsError = error ? authMessage(error) : null;
+  if (!error) returnsCache = data || [];
+  return returnsCache;
+}
+const getReturns = () => returnsCache;
+const returnsForSchool = (school) => returnsCache.filter((r) => r.school === school);
+const enrolTotal = (r) => (+r.boys || 0) + (+r.girls || 0);
+
+/* Sum a set of returns into one shape the scorecard and the "all terms" view
+   both read. Counts add up; rates are averaged, weighted by enrolment so a
+   30-learner school cannot swing the mean as hard as a 600-learner one. */
+function aggregateReturns(rows) {
+  const sum = (k) => rows.reduce((a, r) => a + (+r[k] || 0), 0);
+  const enrolled = rows.reduce((a, r) => a + enrolTotal(r), 0);
+  const weighted = (k) => {
+    const withVal = rows.filter((r) => r[k] !== null && r[k] !== undefined && r[k] !== "");
+    const w = withVal.reduce((a, r) => a + (enrolTotal(r) || 1), 0);
+    if (!w) return null;
+    return Math.round(withVal.reduce((a, r) => a + (+r[k] || 0) * (enrolTotal(r) || 1), 0) / w);
+  };
+  const dropouts = sum("dropouts");
+  const reasons = {};
+  rows.forEach((r) => {
+    if (!r.dropouts) return;
+    const key = r.dropout_reason === "Other" && r.dropout_reason_other
+      ? r.dropout_reason_other : r.dropout_reason;
+    if (key) reasons[key] = (reasons[key] || 0) + (+r.dropouts || 0);
+  });
+  return {
+    returns: rows.length,
+    boys: sum("boys"), girls: sum("girls"), enrolled,
+    disability: sum("learners_with_disability"),
+    tsc: sum("tsc_teachers"), nonTsc: sum("non_tsc_teachers"),
+    support: sum("support_staff"), trained: sum("teachers_trained_term"),
+    dropouts,
+    // Dropout rate is per-term leavers over enrolment for those same terms.
+    dropoutRate: enrolled ? +((dropouts / enrolled) * 100).toFixed(1) : 0,
+    reasons: Object.entries(reasons).sort((a, b) => b[1] - a[1]),
+    attendance: weighted("attendance_rate"),
+    mean: weighted("mean_score"),
+    classrooms: sum("classrooms"), desks: sum("desks"), toilets: sum("toilets"),
+    computers: sum("computers"),
+    // Ratios are what a head is actually asked about in a review.
+    learnersPerTeacher: (sum("tsc_teachers") + sum("non_tsc_teachers"))
+      ? Math.round(enrolled / (sum("tsc_teachers") + sum("non_tsc_teachers"))) : null,
+    learnersPerClassroom: sum("classrooms") ? Math.round(enrolled / sum("classrooms")) : null,
+    learnersPerDesk: sum("desks") ? +(enrolled / sum("desks")).toFixed(1) : null,
+    learnersPerComputer: sum("computers") ? Math.round(enrolled / sum("computers")) : null,
+  };
+}
 let scTheme = "dark"; // "dark" | "light"
 
 /* Scorecard regions and schools follow the schools table once it has loaded,
@@ -1582,6 +1664,84 @@ function cellScore(pillar, county, s) {
   return Math.max(38, Math.min(97, v));
 }
 
+/* Heads' termly returns, rolled up for the scorecard. Obeys the dashboard
+   filter bar so this panel agrees with everything above it, and reports what it
+   is built from — an average across three schools is a very different claim
+   from one across thirty, and the reader should be able to tell. */
+function returnsScorecardPanel() {
+  if (!returnsLoaded) {
+    return chartPanel("School Returns — Heads of Institution",
+      `<div class="empty-state">Loading returns…</div>`, "returns");
+  }
+
+  let rows = getReturns();
+  if (dashFilter.county !== "all") rows = rows.filter((r) => r.county === dashFilter.county);
+  if (dashFilter.school !== "all") rows = rows.filter((r) => r.school === dashFilter.school);
+  if (scFilter.term !== "all") rows = rows.filter((r) => r.term === scFilter.term);
+
+  if (!rows.length) {
+    return chartPanel("School Returns — Heads of Institution",
+      `<div class="empty-state">No termly returns filed yet${
+        dashFilter.county !== "all" || dashFilter.school !== "all" ? " for this selection" : ""
+      }. Heads file them from their own dashboard.</div>`, "returns",
+      "Enrolment, staffing and retention as reported by heads of institution.");
+  }
+
+  const a = aggregateReturns(rows);
+  const schools = new Set(rows.map((r) => r.school)).size;
+
+  // Per-term trend: enrolment and dropouts side by side tells the retention
+  // story better than either alone.
+  const byTerm = HPF_TERMS.map((t) => aggregateReturns(rows.filter((r) => r.term === t)));
+  const enrolSeries = byTerm.map((x) => x.enrolled);
+  const dropSeries = byTerm.map((x) => x.dropouts);
+
+  const tile = (label, val, note) => `
+    <div class="scd-kpi">
+      <div class="scd-k-label">${esc(label)}</div>
+      <div class="scd-k-big">${val === null || val === undefined ? "—" : esc(String(val))}</div>
+      ${note ? `<div class="scd-k-note">${esc(note)}</div>` : ""}
+    </div>`;
+
+  const staffSegs = [
+    { label: "TSC", value: a.tsc, color: "oklch(52% 0.14 148)" },
+    { label: "Non-TSC (BOM/PTA)", value: a.nonTsc, color: "oklch(78% 0.15 75)" },
+  ];
+
+  return chartPanel(
+    "School Returns — Heads of Institution",
+    `<div class="scd-kpis" style="margin-bottom:1rem">
+       ${tile("Learners enrolled", a.enrolled.toLocaleString(), `${a.boys} boys · ${a.girls} girls`)}
+       ${tile("Dropout rate", a.dropoutRate + "%", `${a.dropouts} learner${a.dropouts === 1 ? "" : "s"} left`)}
+     </div>
+
+     <div class="scd-grid">
+       ${chartPanel("Enrolment by term", axisChart(enrolSeries, HPF_TERMS, { label: "Learners on register" }), "ret-enrol")}
+       ${chartPanel("Dropouts by term", axisChart(dropSeries, HPF_TERMS, { label: "Learners who left" }), "ret-drop")}
+     </div>
+
+     <div class="scd-grid" style="margin-top:1rem">
+       ${chartPanel("Teaching staff — TSC vs non-TSC",
+         `<div class="donut-wrap">${pieChart(staffSegs, 150)}${chartLegend(staffSegs)}</div>`, "ret-staff")}
+       ${chartPanel("Why learners left",
+         a.reasons.length
+           ? rankedBars(Object.fromEntries(a.reasons), "oklch(62% 0.24 27)")
+           : `<div class="empty-state">No dropouts reported.</div>`, "ret-reasons")}
+     </div>
+
+     <div class="scd-kpis" style="margin-top:1rem">
+       ${tile("Learners per teacher", a.learnersPerTeacher, `${a.tsc + a.nonTsc} teachers`)}
+       ${tile("Learners per classroom", a.learnersPerClassroom, a.classrooms ? `${a.classrooms} classrooms` : "not reported")}
+       ${tile("Attendance", a.attendance === null ? null : a.attendance + "%", "enrolment-weighted")}
+       ${tile("Learners per computer", a.learnersPerComputer, a.computers ? `${a.computers} devices` : "none reported")}
+     </div>`,
+    "returns",
+    `Filed by heads of institution: <strong>${rows.length}</strong> return${rows.length === 1 ? "" : "s"} from
+     <strong>${schools}</strong> school${schools === 1 ? "" : "s"}${scFilter.term !== "all" ? ` · ${esc(scFilter.term)}` : " · all terms"}.
+     Rates are averaged by enrolment, so larger schools weigh more.`
+  );
+}
+
 function adminScorecard(s) {
   const sc = computeScorecard(s);
   const active = sc.pillars.find((p) => p.id === scPillar) || sc.pillars[0];
@@ -1836,6 +1996,8 @@ function adminScorecard(s) {
     ${chartPanel("Regional Impact Map",
       regionMap(regionRows, scFilter.region === "all" ? null : scFilter.region), "regionmap",
       "Composite score by HPF region — click a region to focus the whole dashboard.")}
+
+    ${returnsScorecardPanel()}
 
     ${chartPanel("HPF Schools — Satellite Map &amp; Stories",
       schoolMapPanel(s), "schoolmap",
@@ -3703,6 +3865,212 @@ function fieldOfficerBody() {
     </div>`;
 }
 
+/* The termly return form. Grouped the way a head of institution actually holds
+   the information — register, staff list, retention, then the physical plant —
+   rather than in table-column order. */
+function schoolReturnForm(existing, school, county) {
+  const y = new Date().getFullYear();
+  const years = [y + 1, y, y - 1, y - 2];
+  const v = (k, d = "") => (existing && existing[k] !== null && existing[k] !== undefined ? existing[k] : d);
+  const sel = (k, list, cur) => list
+    .map((o) => `<option value="${esc(o)}" ${String(cur) === String(o) ? "selected" : ""}>${esc(o)}</option>`).join("");
+  const num = (name, label, val, extra = "") => `
+    <div class="field"><label>${esc(label)}</label>
+      <input class="input" type="number" min="0" name="${name}" value="${val === "" ? "" : esc(String(val))}" ${extra}></div>`;
+
+  return `<form id="returnForm" class="add-user-form" data-id="${existing ? esc(existing.id) : ""}">
+    <p class="panel-sub" style="margin-top:0">
+      ${icon("school")} <strong>${esc(school)}</strong>${county ? " · " + esc(county) + " County" : ""}
+      — figures for the selected term only. Filing the same term again updates it.
+    </p>
+
+    <h4 class="dash-section">${icon("clipboard")} Reporting period</h4>
+    <div class="form-row">
+      <div class="field"><label>Term</label>
+        <select class="select" name="term" required>${sel("term", HPF_TERMS, v("term", HPF_TERMS[0]))}</select></div>
+      <div class="field"><label>Year</label>
+        <select class="select" name="year" required>${sel("year", years, v("year", y))}</select></div>
+    </div>
+
+    <h4 class="dash-section">${icon("graduation")} Enrolment</h4>
+    <div class="form-row">
+      ${num("boys", "Boys enrolled", v("boys", 0), "required")}
+      ${num("girls", "Girls enrolled", v("girls", 0), "required")}
+    </div>
+    <div class="form-row">
+      ${num("learners_with_disability", "Learners with a disability", v("learners_with_disability", 0))}
+      ${num("attendance_rate", "Average attendance rate (%)", v("attendance_rate", ""), "max=100")}
+    </div>
+
+    <h4 class="dash-section">${icon("users")} Teaching staff</h4>
+    <div class="form-row">
+      ${num("tsc_teachers", "TSC teachers", v("tsc_teachers", 0), "required")}
+      ${num("non_tsc_teachers", "Non-TSC teachers (BOM / PTA)", v("non_tsc_teachers", 0), "required")}
+    </div>
+    <div class="form-row">
+      ${num("support_staff", "Support staff", v("support_staff", 0))}
+      ${num("teachers_trained_term", "Teachers trained this term", v("teachers_trained_term", 0))}
+    </div>
+
+    <h4 class="dash-section">${icon("trendingDown")} Retention</h4>
+    <div class="form-row">
+      ${num("dropouts", "Learners who dropped out", v("dropouts", 0))}
+      <div class="field"><label>Main reason for dropout</label>
+        <select class="select" name="dropout_reason">
+          <option value="">— not applicable —</option>${sel("dropout_reason", DROPOUT_REASONS, v("dropout_reason"))}
+        </select></div>
+    </div>
+    <div class="form-row">
+      <div class="field"><label>If “Other”, specify</label>
+        <input class="input" name="dropout_reason_other" value="${esc(v("dropout_reason_other"))}" placeholder="Describe the reason"></div>
+      ${num("mean_score", "Mean exam score (%)", v("mean_score", ""), "max=100 step=0.01")}
+    </div>
+    <div class="form-row">
+      ${num("transfers_in", "Transfers in", v("transfers_in", 0))}
+      ${num("transfers_out", "Transfers out", v("transfers_out", 0))}
+    </div>
+
+    <h4 class="dash-section">${icon("school")} Facilities</h4>
+    <div class="form-row">
+      ${num("classrooms", "Usable classrooms", v("classrooms", ""))}
+      ${num("desks", "Desks available", v("desks", ""))}
+    </div>
+    <div class="form-row">
+      ${num("toilets", "Latrines / toilets", v("toilets", ""))}
+      <div class="field"><label>Main water source</label>
+        <select class="select" name="water_source">
+          <option value="">— select —</option>${sel("water_source", WATER_SOURCES, v("water_source"))}
+        </select></div>
+    </div>
+    <div class="form-row">
+      <div class="field"><label>Power supply</label>
+        <select class="select" name="electricity">
+          <option value="">— select —</option>${sel("electricity", POWER_OPTIONS, v("electricity"))}
+        </select></div>
+      <div class="field"><label>Feeding programme</label>
+        <select class="select" name="feeding_programme">
+          <option value="false" ${v("feeding_programme") ? "" : "selected"}>No</option>
+          <option value="true" ${v("feeding_programme") ? "selected" : ""}>Yes</option>
+        </select></div>
+    </div>
+
+    <h4 class="dash-section">${icon("laptop")} ICT</h4>
+    <div class="form-row">
+      ${num("computers", "Working computers / tablets", v("computers", ""))}
+      <div class="field"><label>Internet connection</label>
+        <select class="select" name="internet_status">
+          <option value="">— select —</option>${sel("internet_status", NET_OPTIONS, v("internet_status"))}
+        </select></div>
+    </div>
+
+    <h4 class="dash-section">${icon("lightbulb")} Anything else</h4>
+    <div class="form-row">
+      <div class="field" style="grid-column:1/-1"><label>Income-generating projects</label>
+        <input class="input" name="income_projects" value="${esc(v("income_projects"))}" placeholder="e.g. school garden, poultry, water kiosk"></div>
+    </div>
+    <div class="form-row">
+      <div class="field" style="grid-column:1/-1"><label>Notes for HPF</label>
+        <textarea class="input" name="notes" rows="3" placeholder="Challenges, requests, anything the numbers do not show">${esc(v("notes"))}</textarea></div>
+    </div>
+
+    <div class="add-user-actions">
+      <button class="btn btn-primary btn-xs" type="submit">${icon("check")} ${existing ? "Update return" : "Submit return"}</button>
+      <button class="btn btn-outline btn-xs" type="button" data-return-cancel>Cancel</button>
+    </div>
+  </form>`;
+}
+
+/* Termly returns panel: term switcher, the aggregate for whatever is selected,
+   and the filed returns themselves. */
+function schoolReturnsPanel(school, county) {
+  if (!returnsLoaded) return `<div class="panel" data-returns-panel><div class="empty-state">Loading school returns…</div></div>`;
+  if (returnsError) {
+    return `<div class="panel" data-returns-panel><div class="empty-state">Could not load returns — ${esc(returnsError)}
+      <div style="margin-top:.6rem"><button class="btn btn-outline btn-xs" data-returns-retry>${icon("refresh")} Try again</button></div>
+    </div></div>`;
+  }
+
+  const mine = returnsForSchool(school);
+  const shown = returnTermView === "all" ? mine : mine.filter((r) => r.term === returnTermView);
+  const agg = aggregateReturns(shown);
+  const editing = returnEditId ? mine.find((r) => r.id === returnEditId) : null;
+
+  const tabs = ["all", ...HPF_TERMS]
+    .map((t) => `<button class="ksubtab ${returnTermView === t ? "active" : ""}" data-return-term="${esc(t)}">
+      ${t === "all" ? "All terms" : esc(t)}
+      <span class="dfb-count">${t === "all" ? mine.length : mine.filter((r) => r.term === t).length}</span>
+    </button>`).join("");
+
+  const tile = (label, val, note = "") => `
+    <div class="stat-tile"><div class="st-label">${esc(label)}</div>
+      <div class="st-num">${val === null || val === undefined || val === "" ? "—" : esc(String(val))}</div>
+      ${note ? `<div class="kpi-target">${esc(note)}</div>` : ""}</div>`;
+
+  const summary = shown.length ? `
+    <div class="stat-row" style="margin-bottom:1rem">
+      ${tile("Enrolment", agg.enrolled.toLocaleString(), `${agg.boys} boys · ${agg.girls} girls`)}
+      ${tile("Teachers", agg.tsc + agg.nonTsc, `${agg.tsc} TSC · ${agg.nonTsc} non-TSC`)}
+      ${tile("Dropouts", agg.dropouts, `${agg.dropoutRate}% of enrolment`)}
+      ${tile("Learners per teacher", agg.learnersPerTeacher, agg.learnersPerClassroom ? `${agg.learnersPerClassroom} per classroom` : "")}
+    </div>
+    ${agg.reasons.length ? `<div class="panel" style="margin-bottom:1rem">
+      <h2 style="font-size:1rem">Why learners left</h2>
+      <p class="panel-sub">${agg.dropouts} dropout${agg.dropouts === 1 ? "" : "s"} across ${shown.length} return${shown.length === 1 ? "" : "s"}</p>
+      ${rankedBars(Object.fromEntries(agg.reasons), "oklch(62% 0.24 27)")}
+    </div>` : ""}` : "";
+
+  const rows = shown.length
+    ? shown.map((r) => `<div class="utx-row">
+        <div class="utx-cell"><strong>${esc(r.term)} ${r.year}</strong></div>
+        <div class="utx-cell">${enrolTotal(r).toLocaleString()}<div class="utx-email">${r.boys}b · ${r.girls}g</div></div>
+        <div class="utx-cell">${(+r.tsc_teachers || 0) + (+r.non_tsc_teachers || 0)}<div class="utx-email">${r.tsc_teachers} TSC</div></div>
+        <div class="utx-cell">${r.dropouts || 0}<div class="utx-email">${esc(r.dropout_reason || "—")}</div></div>
+        <div class="utx-cell">${r.attendance_rate === null || r.attendance_rate === undefined ? "—" : r.attendance_rate + "%"}</div>
+        <div class="utx-cell utx-actions">
+          <button class="icon-btn" data-return-edit="${esc(r.id)}" title="Edit this return">${icon("pen")}</button>
+          <button class="icon-btn danger" data-return-delete="${esc(r.id)}" title="Delete">${icon("trash")}</button>
+        </div>
+      </div>`).join("")
+    : `<div class="empty-state">No return filed${returnTermView === "all" ? "" : " for " + esc(returnTermView)} yet.
+         Click <strong>File a return</strong> to add one.</div>`;
+
+  return `
+    <div class="panel" data-returns-panel style="margin-top:1.5rem">
+      <div class="panel-head-row">
+        <div>
+          <h2>${icon("clipboard")} Termly school return</h2>
+          <p class="panel-sub" style="margin-bottom:0">Enrolment, staffing and retention for ${esc(school)} — feeds the HPF scorecard</p>
+        </div>
+        <button class="btn btn-primary" data-return-add>${icon("plus")} File a return</button>
+      </div>
+
+      <div class="ksubtabs">${tabs}</div>
+      ${returnFormOpen ? schoolReturnForm(editing, school, county) : ""}
+      ${summary}
+
+      <div class="utx-scroll"><div class="utx-table">
+        <div class="utx-row utx-head">
+          <div class="utx-cell">Period</div><div class="utx-cell">Enrolment</div>
+          <div class="utx-cell">Teachers</div><div class="utx-cell">Dropouts</div>
+          <div class="utx-cell">Attendance</div><div class="utx-cell"></div>
+        </div>
+        ${rows}
+      </div></div>
+    </div>`;
+}
+
+/* Which school this head runs. Supabase profiles store it on `school`; locally
+   created accounts use the same key, so one lookup covers both. */
+const leaderUser = () => read(K_SESSION, null) || {};
+function leaderSchool() {
+  return leaderUser().school || SCHOOLS[0];
+}
+function leaderCounty() {
+  const u = leaderUser();
+  const s = getSchools().find((x) => x.name === leaderSchool());
+  return (s && s.county) || u.county || u.region || "";
+}
+
 function schoolLeaderBody() {
   const d = DASH.school_leader;
 
@@ -3737,6 +4105,7 @@ function schoolLeaderBody() {
     </div>
     ${statTiles(d.stats)}
     ${smart}
+    ${schoolReturnsPanel(leaderSchool(), leaderCounty())}
     <div class="dash-grid">
       <div class="panel">
         <h2>Performance by grade</h2>
@@ -4199,7 +4568,9 @@ export function wireMyDashboard(user, events) {
     // schools come from Postgres — fetch once on mount, then re-render so the
     // map swaps out of its loading state. Failures surface in the panel itself
     // (with a retry), so nothing to catch here.
-    loadSchools().then(() => {
+    // Schools and the heads' returns both feed panels in here. One re-render
+    // once both land, rather than the dashboard twitching twice.
+    Promise.allSettled([loadSchools(), loadReturns()]).then(() => {
       if (body.querySelector("[data-admin-panel]")) renderAnalytics();
     });
     // update automatically when data changes in another tab (keep just one listener)
@@ -5371,10 +5742,110 @@ export function wireMyDashboard(user, events) {
     );
   }
 
+  /* Termly returns: the head files them, the scorecard reads them. */
+  function wireSchoolReturns(role) {
+    const rerender = () => renderRole(role);
+    const refresh = async () => { await loadReturns(); rerender(); };
+
+    // Guard on the panel wrapper, not the Add button — that button only exists
+    // once loaded, so waiting for it would leave the panel stuck on "Loading".
+    if (!returnsLoaded) loadReturns().then(() => { if (body.querySelector("[data-returns-panel]")) rerender(); });
+
+    body.querySelector("[data-returns-retry]")?.addEventListener("click", refresh);
+
+    body.querySelectorAll("[data-return-term]").forEach((b) =>
+      b.addEventListener("click", () => { returnTermView = b.dataset.returnTerm; rerender(); })
+    );
+    body.querySelector("[data-return-add]")?.addEventListener("click", () => {
+      returnEditId = null; returnFormOpen = true; rerender();
+    });
+    body.querySelectorAll("[data-return-edit]").forEach((b) =>
+      b.addEventListener("click", () => { returnEditId = b.dataset.returnEdit; returnFormOpen = true; rerender(); })
+    );
+    body.querySelector("[data-return-cancel]")?.addEventListener("click", () => {
+      returnFormOpen = false; returnEditId = null; rerender();
+    });
+
+    body.querySelectorAll("[data-return-delete]").forEach((b) =>
+      b.addEventListener("click", async () => {
+        const id = b.dataset.returnDelete;
+        b.disabled = true;
+        const { error } = await supabase.from("school_returns").delete().eq("id", id);
+        if (error) { b.disabled = false; return toast("Could not delete", authMessage(error), "error"); }
+        if (returnEditId === id) { returnEditId = null; returnFormOpen = false; }
+        toast("Return deleted", "", "success");
+        await refresh();
+      })
+    );
+
+    body.querySelector("#returnForm")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const form = e.currentTarget;
+      const fd = Object.fromEntries(new FormData(form).entries());
+      const id = form.dataset.id;
+
+      // Blank number inputs mean "not collected", which is different from zero —
+      // send null so the aggregate skips them instead of averaging in a 0.
+      const int = (k) => (fd[k] === "" || fd[k] === undefined ? null : parseInt(fd[k], 10));
+      const dec = (k) => (fd[k] === "" || fd[k] === undefined ? null : parseFloat(fd[k]));
+      const txt = (k) => ((fd[k] || "").trim() || null);
+
+      const boys = int("boys") || 0, girls = int("girls") || 0;
+      if (boys + girls <= 0) return toast("Enrolment required", "Enter the number of boys and girls on the register.", "error");
+      const dropouts = int("dropouts") || 0;
+      if (dropouts > boys + girls)
+        return toast("Check the figures", "Dropouts cannot exceed the number enrolled.", "error");
+      if (dropouts > 0 && !txt("dropout_reason"))
+        return toast("Reason required", "Select the main reason learners left.", "error");
+
+      const row = {
+        school: leaderSchool(), county: leaderCounty() || null,
+        year: int("year"), term: fd.term,
+        boys, girls,
+        learners_with_disability: int("learners_with_disability") || 0,
+        tsc_teachers: int("tsc_teachers") || 0,
+        non_tsc_teachers: int("non_tsc_teachers") || 0,
+        support_staff: int("support_staff") || 0,
+        teachers_trained_term: int("teachers_trained_term") || 0,
+        dropouts,
+        dropout_reason: txt("dropout_reason"),
+        dropout_reason_other: txt("dropout_reason_other"),
+        transfers_in: int("transfers_in") || 0,
+        transfers_out: int("transfers_out") || 0,
+        attendance_rate: int("attendance_rate"),
+        mean_score: dec("mean_score"),
+        classrooms: int("classrooms"), desks: int("desks"), toilets: int("toilets"),
+        water_source: txt("water_source"), electricity: txt("electricity"),
+        computers: int("computers"), internet_status: txt("internet_status"),
+        feeding_programme: fd.feeding_programme === "true",
+        income_projects: txt("income_projects"), notes: txt("notes"),
+        submitted_by: leaderUser().id || null,
+      };
+
+      const btn = form.querySelector("[type=submit]");
+      if (btn) btn.disabled = true;
+      const { error } = id
+        ? await supabase.from("school_returns").update(row).eq("id", id)
+        : await supabase.from("school_returns").insert(row);
+
+      if (error) {
+        if (btn) btn.disabled = false;
+        // The unique index is what stops a school filing the same term twice.
+        if (error.code === "23505")
+          return toast("Already filed", `${row.term} ${row.year} exists — open it from the list to update it.`, "error");
+        return toast("Could not save return", authMessage(error), "error");
+      }
+      returnFormOpen = false; returnEditId = null;
+      toast(id ? "Return updated" : "Return filed", `${row.term} ${row.year} · ${esc(row.school)}`, "success");
+      await refresh();
+    });
+  }
+
   function wireBody(role) {
     wireTasks();
     wireRoleActions();
     if (role === "admin") wireAdmin();
+    if (role === "school_leader") wireSchoolReturns(role);
     // "Enter account" buttons live inside the body (admin table, coach learners)
     body.querySelectorAll("[data-enter-account]").forEach((btn) =>
       btn.addEventListener("click", (e) => {

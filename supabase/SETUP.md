@@ -22,9 +22,10 @@ frontend static (it still deploys on GitHub Pages).
    | 5 | [`patch-04-revoke-trigger-fn-execute.sql`](patch-04-revoke-trigger-fn-execute.sql) | Stops the trigger functions being callable over the REST API |
    | 6 | [`patch-05-fk-indexes.sql`](patch-05-fk-indexes.sql) | Covering indexes on all nine foreign keys |
    | 7 | [`patch-06-rls-initplan.sql`](patch-06-rls-initplan.sql) | Stops RLS policies re-running `auth.uid()` per row |
+   | 8 | [`patch-07-school-returns.sql`](patch-07-school-returns.sql) | Termly returns filed by heads of institution |
 
-   **All four are safe to re-run**, so if you are unsure what state the
-   database is in, just run all four in order — that is the reliable way to
+   **All of them are safe to re-run**, so if you are unsure what state the
+   database is in, just run them all in order — that is the reliable way to
    reach a known-good state.
 
    `schema.sql` is deliberately create-only rather than create-or-replace. It
