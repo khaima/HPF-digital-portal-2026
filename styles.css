@@ -4401,3 +4401,13 @@ textarea.input:focus {
   .grade-row { grid-template-columns: 1fr 1fr 1fr 0.6fr; gap: 0.3rem; }
   .grade-name { font-size: 0.75rem; }
 }
+
+/* ---------------------------------------------------------- leader identity bar */
+.leader-id {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 1rem; flex-wrap: wrap; margin-top: 1.5rem;
+}
+.leader-id-hello { display: flex; align-items: center; gap: 0.6rem; font-size: 0.92rem; }
+.leader-id-hello svg { width: 26px; height: 26px; padding: 5px; box-sizing: border-box;
+  background: var(--accent); color: var(--primary); border-radius: 8px; flex: none; }
+.leader-id-pick { display: flex; align-items: center; gap: 0.45rem; flex-wrap: wrap; }

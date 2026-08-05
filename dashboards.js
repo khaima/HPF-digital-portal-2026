@@ -4068,6 +4068,42 @@ function schoolReturnForm(existing, school, county) {
   </form>`;
 }
 
+/* Who the head is and which school they are filing for. Filing against the
+   wrong school is the one mistake that quietly corrupts every county figure
+   downstream, so the school is stated up front and changeable, not buried in a
+   profile page. Changing it writes back to the profile, which is also what the
+   RLS policy checks — so picking your school here is what makes saving work. */
+function leaderIdentityBar(school, county) {
+  const u = leaderUser();
+  const first = (u.fullName || u.username || "there").split(" ")[0];
+  const counties = scRegions();
+  const schools = county && county !== "" ? schoolsInRegion(county) : (getSchools().map((s) => s.name).sort());
+  const opt = (list, cur) => list.map((i) =>
+    `<option value="${esc(i)}" ${cur === i ? "selected" : ""}>${esc(i)}</option>`).join("");
+
+  return `
+    <div class="panel leader-id" data-leader-id>
+      <div class="leader-id-hello">
+        ${icon("school")}
+        <div>
+          <strong>Welcome ${esc(first)}</strong> — ${esc(school || "no school set")}${county ? `, ${esc(county)} region` : ""}
+          ${u.legacy ? `<div class="hint" style="color:oklch(58% 0.16 75)">Signed in on an old browser-only account. Returns cannot be saved to the HPF database until an administrator creates your account.</div>` : ""}
+        </div>
+      </div>
+      <div class="leader-id-pick">
+        <select class="select select-sm" data-leader-county aria-label="Region">
+          <option value="">Region…</option>${opt(counties, county)}
+        </select>
+        <select class="select select-sm" data-leader-school aria-label="School">
+          <option value="">School…</option>${opt(schools, school)}
+        </select>
+        <button class="btn btn-outline btn-xs" data-leader-save>${icon("check")} Set school</button>
+      </div>
+    </div>
+
+`;
+}
+
 /* Correction trail for one return. Shows only what moved, in the form's own
    wording, so a reader can see exactly which figure was amended and why. */
 function returnHistory(r) {
@@ -4106,6 +4142,13 @@ function schoolReturnsPanel(school, county) {
     </div></div>`;
   }
 
+  if (!school) {
+    return `${leaderIdentityBar("", leaderCounty())}
+      <div class="panel" data-returns-panel style="margin-top:1.5rem">
+        <div class="empty-state">Choose your region and school above before filing a return.
+          Returns are stored against the school you select, so this has to be right.</div>
+      </div>`;
+  }
   const mine = returnsForSchool(school);
   const shown = returnTermView === "all" ? mine : mine.filter((r) => r.term === returnTermView);
   const agg = aggregateReturns(shown);
@@ -4167,6 +4210,7 @@ function schoolReturnsPanel(school, county) {
          Click <strong>File a return</strong> to add one.</div>`;
 
   return `
+    ${leaderIdentityBar(school, county)}
     <div class="panel" data-returns-panel style="margin-top:1.5rem">
       <div class="panel-head-row">
         <div>
@@ -4194,8 +4238,11 @@ function schoolReturnsPanel(school, county) {
 /* Which school this head runs. Supabase profiles store it on `school`; locally
    created accounts use the same key, so one lookup covers both. */
 const leaderUser = () => read(K_SESSION, null) || {};
+/* Deliberately no fallback to the first school in the list. Defaulting here is
+   how a return ends up filed against a school nobody chose, which quietly
+   corrupts every county figure downstream. Unset means unset. */
 function leaderSchool() {
-  return leaderUser().school || SCHOOLS[0];
+  return (leaderUser().school || "").trim();
 }
 function leaderCounty() {
   const u = leaderUser();
@@ -5885,6 +5932,38 @@ export function wireMyDashboard(user, events) {
 
     body.querySelector("[data-returns-retry]")?.addEventListener("click", refresh);
 
+    /* Region -> school cascade, then write the choice back to the profile.
+       The RLS policy compares the return's school against profiles.school, so
+       this is not cosmetic: setting it correctly is what lets a save succeed. */
+    body.querySelector("[data-leader-county]")?.addEventListener("change", (e) => {
+      const sess = read(K_SESSION, null) || {};
+      sess.county = e.target.value; sess.region = e.target.value;
+      sess.school = "";              // old school may not be in the new region
+      write(K_SESSION, sess);
+      rerender();
+    });
+    body.querySelector("[data-leader-save]")?.addEventListener("click", async () => {
+      const wrap = body.querySelector("[data-leader-id]");
+      const county = wrap.querySelector("[data-leader-county]").value;
+      const school = wrap.querySelector("[data-leader-school]").value;
+      if (!school) return toast("Pick a school", "Choose the school you are filing for.", "error");
+
+      const sess = read(K_SESSION, null) || {};
+      Object.assign(sess, { county, region: county, school });
+      write(K_SESSION, sess);
+
+      // Mirror it onto the Supabase profile when there is a real session; that
+      // row is what RLS reads. A local-only account has none to update.
+      const { data: auth } = await supabase.auth.getUser();
+      if (auth?.user) {
+        const { error } = await supabase.from("profiles")
+          .update({ school, county }).eq("id", auth.user.id);
+        if (error) return toast("Saved locally only", authMessage(error), "error");
+      }
+      toast("School set", `${school}${county ? ", " + county : ""}`, "success");
+      rerender();
+    });
+
     body.querySelectorAll("[data-return-term]").forEach((b) =>
       b.addEventListener("click", () => { returnTermView = b.dataset.returnTerm; rerender(); })
     );
@@ -6008,6 +6087,17 @@ export function wireMyDashboard(user, events) {
         // The unique index is what stops a school filing the same term twice.
         if (error.code === "23505")
           return toast("Already filed", `${row.term} ${row.year} exists — open it from the list to update it.`, "error");
+        // 42501 is Postgres refusing the row under RLS. On this app that almost
+        // always means the session has no JWT (a pre-migration account signing
+        // in through the local fallback) or the profile's school does not match
+        // the one being filed for. The raw message says none of that.
+        if (error.code === "42501" || /row-level security/i.test(error.message || ""))
+          return toast(
+            "Cannot save to the HPF database",
+            leaderUser().legacy
+              ? "You are signed in on an old browser-only account, which cannot write to the database. Ask an HPF administrator to create your account under Authentication → Users."
+              : `Your profile is not registered against ${row.school}. Set your region and school below, or ask an administrator to correct it.`,
+            "error");
         return toast("Could not save return", authMessage(error), "error");
       }
       // The grade rows are the source of truth for enrolment, so rewrite them
