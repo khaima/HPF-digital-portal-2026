@@ -609,6 +609,8 @@ const DROPOUT_REASONS = [
 const WATER_SOURCES = ["Piped", "Borehole", "Rainwater harvesting", "River / stream", "Water vendor", "None"];
 const POWER_OPTIONS = ["Grid", "Solar", "Generator", "None"];
 const NET_OPTIONS  = ["Stable", "Intermittent", "None"];
+const HEAD_TITLES  = ["Mr", "Mrs", "Miss", "Ms", "Dr", "Prof", "Rev", "Sr"];
+const K_RETURN_DRAFT = "hpf_return_draft";
 
 /* CBC grade ladder. `position` keeps PP1 < PP2 < Grade 1... in the database,
    since alphabetical would put "Grade 10" between 1 and 2. */
@@ -3953,6 +3955,22 @@ function schoolReturnForm(existing, school, county) {
         <select class="select" name="year" required>${sel("year", years, v("year", y))}</select></div>
     </div>
 
+    <h4 class="dash-section">${icon("userCheck")} Head of institution</h4>
+    <div class="form-row">
+      <div class="field" style="max-width:120px"><label>Title</label>
+        <select class="select" name="head_title">
+          ${HEAD_TITLES.map((t) => `<option ${v("head_title", leaderUser().head_title || "") === t ? "selected" : ""}>${esc(t)}</option>`).join("")}
+        </select></div>
+      <div class="field"><label>Full name</label>
+        <input class="input" name="head_name" required value="${esc(v("head_name", leaderUser().fullName || ""))}" placeholder="e.g. Kuyuni Sailepu"></div>
+    </div>
+    <div class="form-row">
+      <div class="field"><label>Phone</label>
+        <input class="input" name="head_phone" type="tel" value="${esc(v("head_phone", leaderUser().phone || ""))}" placeholder="07xx xxx xxx"></div>
+      <div class="field"><label>Email</label>
+        <input class="input" name="head_email" type="email" value="${esc(v("head_email", leaderUser().email || ""))}" placeholder="name@example.org"></div>
+    </div>
+
     <h4 class="dash-section">${icon("graduation")} Enrolment by grade</h4>
     <p class="hint" style="margin:-.4rem 0 .6rem">Boys and girls on the register in each grade.
       Leave a grade blank if the school does not run it — the totals add themselves up.</p>
@@ -4061,8 +4079,11 @@ function schoolReturnForm(existing, school, county) {
         </div>
       </div>` : ""}
 
+    <div class="live-return" data-live-return aria-live="polite"></div>
+
     <div class="add-user-actions">
       <button class="btn btn-primary btn-xs" type="submit">${icon("check")} ${existing ? "Save correction" : "Submit return"}</button>
+      <span class="draft-state" data-draft-state></span>
       <button class="btn btn-outline btn-xs" type="button" data-return-cancel>Cancel</button>
     </div>
   </form>`;
@@ -5974,13 +5995,18 @@ export function wireMyDashboard(user, events) {
     // rather than only after saving.
     const form = body.querySelector("#returnForm");
     if (form) {
+      const val = (n) => +(form.querySelector(`[name="${n}"]`)?.value || 0);
+
       const recount = () => {
         let tb = 0, tg = 0;
+        const perGrade = [];
         form.querySelectorAll(".grade-row").forEach((row) => {
           const b = +(row.querySelector('[name^="g_boys_"]')?.value || 0);
           const g = +(row.querySelector('[name^="g_girls_"]')?.value || 0);
           const cell = row.querySelector("[data-grade-total]");
           if (cell) cell.textContent = b + g || "";
+          const nm = row.querySelector(".grade-name")?.textContent;
+          if (nm && (b || g)) perGrade.push({ grade: nm, boys: b, girls: g });
           tb += b; tg += g;
         });
         const put = (k, v) => {
@@ -5988,10 +6014,97 @@ export function wireMyDashboard(user, events) {
           if (el) el.textContent = v;
         };
         put("boys", tb); put("girls", tg); put("all", tb + tg);
+        renderLive(tb, tg, perGrade);
       };
-      form.addEventListener("input", (e) => {
-        if (e.target.name && e.target.name.startsWith("g_")) recount();
+
+      /* The live panel. Everything is computed from what is in the form right
+         now, not from what has been saved — the head sees the ratios move as
+         they type, which is when a mistyped roll is easiest to catch. */
+      const renderLive = (boys, girls, perGrade) => {
+        const host = form.querySelector("[data-live-return]");
+        if (!host) return;
+        const total = boys + girls;
+        if (!total) { host.innerHTML = ""; return; }
+
+        const teachers = val("tsc_teachers") + val("non_tsc_teachers");
+        const drop = val("dropouts");
+        const classrooms = val("classrooms"), desks = val("desks"), computers = val("computers");
+        const pct = (n) => Math.round((n / total) * 100);
+        const ratio = (n) => (n ? Math.round(total / n) : null);
+        const show = (n) => (n === null ? "—" : n);
+
+        const genderSegs = [
+          { label: `Boys ${pct(boys)}%`, value: boys, color: "oklch(52% 0.14 148)" },
+          { label: `Girls ${pct(girls)}%`, value: girls, color: "oklch(78% 0.15 75)" },
+        ];
+        const tile = (l, v2, note) =>
+          `<div class="lr-tile"><div class="lr-l">${esc(l)}</div><div class="lr-v">${esc(String(v2))}</div>${
+            note ? `<div class="lr-n">${esc(note)}</div>` : ""}</div>`;
+
+        host.innerHTML = `
+          <div class="lr-head">${icon("activity")} Live summary
+            <span class="lr-hint">updates as you type &middot; nothing saved yet</span></div>
+          <div class="lr-grid">
+            ${tile("On the register", total.toLocaleString(), `${boys} boys / ${girls} girls`)}
+            ${tile("Gender balance", `${pct(girls)}% girls`, Math.abs(pct(girls) - 50) > 10 ? "skewed" : "broadly even")}
+            ${tile("Learners per teacher", show(ratio(teachers)), teachers ? `${teachers} teachers` : "no staff entered")}
+            ${tile("Dropout rate", ((drop / total) * 100).toFixed(1) + "%", `${drop} leaver${drop === 1 ? "" : "s"}`)}
+            ${tile("Per classroom", show(ratio(classrooms)), classrooms ? `${classrooms} rooms` : "not entered")}
+            ${tile("Per desk", desks ? (total / desks).toFixed(1) : "—", desks ? `${desks} desks` : "not entered")}
+            ${tile("Per computer", show(ratio(computers)), computers ? `${computers} devices` : "none")}
+            ${tile("Grades running", perGrade.length, "")}
+          </div>
+          <div class="lr-charts">
+            <div class="lr-chart">
+              <div class="lr-l">Boys and girls by grade</div>
+              ${perGrade.length
+                ? groupedBars(perGrade.map((g) => g.grade), ["Boys", "Girls"],
+                    perGrade.map((g) => [g.boys, g.girls]),
+                    ["oklch(52% 0.14 148)", "oklch(78% 0.15 75)"])
+                : `<div class="empty-state">Enter a grade to see the split.</div>`}
+            </div>
+            <div class="lr-chart">
+              <div class="lr-l">Overall gender split</div>
+              <div class="donut-wrap">${pieChart(genderSegs, 130)}${chartLegend(genderSegs)}</div>
+            </div>
+          </div>`;
+      };
+
+      /* Draft autosave, deliberately local rather than to Postgres: a half-typed
+         roll is not a return, and writing partial figures to a table the
+         scorecard reads would publish numbers nobody has checked. This only
+         means a closed tab does not cost the head their afternoon. */
+      let draftTimer = null;
+      const markDraft = (t) => {
+        const el = form.querySelector("[data-draft-state]");
+        if (el) el.textContent = t;
+      };
+      const saveDraft = () => {
+        const fd = Object.fromEntries(new FormData(form).entries());
+        write(K_RETURN_DRAFT, { school: leaderSchool(), at: Date.now(), fields: fd });
+        markDraft("Draft saved " + new Date().toLocaleTimeString());
+      };
+      form.addEventListener("input", () => {
+        recount();
+        markDraft("Saving...");
+        clearTimeout(draftTimer);
+        draftTimer = setTimeout(saveDraft, 800);
       });
+
+      // Restore an unsubmitted draft for this school.
+      const draft = read(K_RETURN_DRAFT, null);
+      if (draft && draft.school === leaderSchool() && !form.dataset.id) {
+        Object.entries(draft.fields || {}).forEach(([k, v2]) => {
+          // Overwrite, do not fill blanks: numeric fields render with a 0
+          // default, so a "skip if it has a value" restore would silently drop
+          // every number the head had typed. This branch only runs for a new
+          // return, never an edit, so there is nothing of the server's to lose.
+          const el = form.querySelector(`[name="${CSS.escape(k)}"]`);
+          if (el) el.value = v2;
+        });
+        markDraft("Draft restored from " + timeAgo(draft.at));
+      }
+
       recount();
     }
 
@@ -6075,6 +6188,11 @@ export function wireMyDashboard(user, events) {
       // Only meaningful on an update; the trigger consumes it into the audit
       // trail and clears it, so it never lingers on the live row.
       if (id) row.correction_reason = txt("correction_reason");
+      Object.assign(row, {
+        head_title: txt("head_title"), head_name: txt("head_name"),
+        head_phone: txt("head_phone"), head_email: txt("head_email"),
+      });
+      if (!row.head_name) return toast("Name required", "Enter the head of institution's name.", "error");
 
       const btn = form.querySelector("[type=submit]");
       if (btn) btn.disabled = true;
@@ -6114,6 +6232,7 @@ export function wireMyDashboard(user, events) {
         }
       }
 
+      localStorage.removeItem(K_RETURN_DRAFT);   // committed; the draft is spent
       returnFormOpen = false; returnEditId = null;
       toast(id ? "Return updated" : "Return filed", `${row.term} ${row.year} · ${esc(row.school)}`, "success");
       await refresh();

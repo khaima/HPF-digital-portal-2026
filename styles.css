@@ -4411,3 +4411,24 @@ textarea.input:focus {
 .leader-id-hello svg { width: 26px; height: 26px; padding: 5px; box-sizing: border-box;
   background: var(--accent); color: var(--primary); border-radius: 8px; flex: none; }
 .leader-id-pick { display: flex; align-items: center; gap: 0.45rem; flex-wrap: wrap; }
+
+/* ---------------------------------------------------------- live return summary
+   Computed from the form as it is typed, so a mistyped roll shows up while the
+   head is still looking at it. Sits inside the form, styled as a readout rather
+   than another panel competing with the inputs. */
+.live-return:not(:empty) {
+  margin: 1.25rem 0 0.5rem; padding: 1rem;
+  border: 1px solid var(--border); border-radius: 1rem; background: var(--muted);
+}
+.lr-head { display: flex; align-items: center; gap: 0.45rem; font-weight: 700; font-size: 0.9rem; margin-bottom: 0.8rem; }
+.lr-head svg { width: 16px; height: 16px; color: var(--primary); }
+.lr-hint { margin-left: auto; font-weight: 500; font-size: 0.72rem; color: var(--muted-foreground); }
+.lr-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 0.6rem; }
+.lr-tile { background: var(--card); border: 1px solid var(--border); border-radius: 0.7rem; padding: 0.6rem 0.7rem; }
+.lr-l { font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted-foreground); }
+.lr-v { font-size: 1.25rem; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+.lr-n { font-size: 0.68rem; color: var(--muted-foreground); }
+.lr-charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem; margin-top: 1rem; }
+.lr-chart { background: var(--card); border: 1px solid var(--border); border-radius: 0.7rem; padding: 0.8rem; }
+.lr-chart .lr-l { margin-bottom: 0.5rem; }
+.draft-state { font-size: 0.72rem; color: var(--muted-foreground); margin-left: 0.5rem; }
