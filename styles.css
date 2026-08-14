@@ -716,10 +716,14 @@ button.portal-card {
   gap: 1.5rem;
 }
 
+/* Solid brand blue with white type. The number, suffix and label all inherit
+   rather than keeping their own colours, otherwise the muted grey label would
+   sit at roughly 2:1 on this background and be the one unreadable thing. */
 .impact-card {
-  background: var(--card);
+  background: var(--primary);
+  color: var(--primary-foreground);
   border-radius: 24px;
-  box-shadow: 0 0 0 1px var(--border);
+  box-shadow: 0 0 0 1px oklch(35% 0.09 250 / 0.4);
   padding: 1.5rem;
   transition: all 0.18s ease;
 }
@@ -730,17 +734,16 @@ button.portal-card {
     0 10px 15px -3px oklch(0% 0 0 / 0.1), 0 4px 6px -4px oklch(0% 0 0 / 0.1);
 }
 
-/* Filled with the brand blue, glyph knocked out in white. Was a near-black
-   --secondary disc with a blue glyph, which read as a leftover from the green
-   theme once everything around it turned navy. */
+/* Inverted against the blue card: a white disc with a blue glyph. Filling it
+   with --primary now would put blue on blue and the icon would disappear. */
 .impact-card .ic-icon {
   display: grid;
   place-items: center;
   width: 48px;
   height: 48px;
   border-radius: 20px;
-  background: var(--primary);
-  color: var(--primary-foreground);
+  background: var(--primary-foreground);
+  color: var(--primary);
   transition: transform 0.18s ease;
 }
 
@@ -759,15 +762,20 @@ button.portal-card {
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   margin-top: 1.25rem;
-  color: var(--foreground);
+  color: var(--primary-foreground);
 }
 
+/* On the blue card the suffix cannot stay --primary and the label cannot stay
+   --muted-foreground; both would land near-invisible. White throughout, with
+   the label eased back so the number still leads. */
 .impact-card .num .suffix {
-  color: var(--primary);
+  color: var(--primary-foreground);
+  opacity: 0.75;
 }
 
 .impact-card .label {
-  color: var(--muted-foreground);
+  color: var(--primary-foreground);
+  opacity: 0.85;
   font-size: 0.875rem;
   line-height: 1.25rem;
   margin-top: 0.25rem;
