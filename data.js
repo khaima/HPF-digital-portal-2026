@@ -135,41 +135,41 @@ export const KPI_TARGETS = {
 
 /* HPF's Child Empowerment Model. Three pillars, each with the groups that sit
    under it, read across starting at Fundamentals — the same order as the
-   programme diagram. The cem* icons are traced from the diagram's artwork into
-   the site's own stroke family — the deck's images are raster and the CSP on
-   the deployed page blocks remote files, so they are drawn, not embedded. */
+   programme diagram. Icons are the nearest match from icons.js: the site draws
+   one inline SVG family and the deployed page's CSP blocks remote images, so
+   the deck's artwork cannot be dropped in as-is. */
 export const EMPOWERMENT_MODEL = [
   {
     pillar: "School Infrastructure",
-    icon: "cemSchool",
+    icon: "school",
     groups: [
-      { title: "Fundamentals", icon: "cemSchool",
+      { title: "Fundamentals", icon: "home",
         items: ["Classrooms", "Dormitories", "Administration blocks", "Teachers' houses", "Dining halls & kitchens"] },
-      { title: "Education facilities", icon: "cemBooks",
+      { title: "Education facilities", icon: "library",
         items: ["Libraries", "Playgrounds", "Solar systems", "Fences"] },
-      { title: "Water & Sanitation Facilities", icon: "cemWater",
+      { title: "Water & Sanitation Facilities", icon: "cloud",
         items: ["Toilets", "Water systems"] },
     ],
   },
   {
     pillar: "Learning",
-    icon: "cemBook",
+    icon: "bookOpen",
     groups: [
-      { title: "Teachers", icon: "cemTeacher",
+      { title: "Teachers", icon: "userCheck",
         items: ["Teacher Professional Development (TPD)"] },
-      { title: "Learners", icon: "cemCap",
+      { title: "Learners", icon: "graduation",
         items: ["Foundational skills (Literacy & Numeracy)", "Socio-emotional learning (SEL)", "Transitions"] },
-      { title: "Leadership", icon: "cemLeadership",
+      { title: "Leadership", icon: "users",
         items: ["Leadership training", "Excellence program"] },
     ],
   },
   {
     pillar: "Economic Empowerment",
-    icon: "cemTelescope",
+    icon: "trendingUp",
     groups: [
-      { title: "Vocational Training", icon: "cemLaptop",
+      { title: "Vocational Training", icon: "laptop",
         items: ["IT Academy"] },
-      { title: "Micro-Enterprise", icon: "cemMoney",
+      { title: "Micro-Enterprise", icon: "calculator",
         items: ["Village Savings and Loans Associations", "Entrepreneurship", "Seed funding", "Income generating activities"] },
     ],
   },
