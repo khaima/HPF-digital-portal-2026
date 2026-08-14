@@ -133,6 +133,48 @@ export const KPI_TARGETS = {
   liveSessions: 10,    // lessons or quizzes running at once
 };
 
+/* HPF's Child Empowerment Model. Three pillars, each with the groups that sit
+   under it, read across starting at Fundamentals — the same order as the
+   programme diagram. Icons are the nearest match from icons.js: the site draws
+   one inline SVG family and the deployed page's CSP blocks remote images, so
+   the deck's artwork cannot be dropped in as-is. */
+export const EMPOWERMENT_MODEL = [
+  {
+    pillar: "School Infrastructure",
+    icon: "school",
+    groups: [
+      { title: "Fundamentals", icon: "home",
+        items: ["Classrooms", "Dormitories", "Administration blocks", "Teachers' houses", "Dining halls & kitchens"] },
+      { title: "Education facilities", icon: "library",
+        items: ["Libraries", "Playgrounds", "Solar systems", "Fences"] },
+      { title: "Water & Sanitation Facilities", icon: "cloud",
+        items: ["Toilets", "Water systems"] },
+    ],
+  },
+  {
+    pillar: "Learning",
+    icon: "bookOpen",
+    groups: [
+      { title: "Teachers", icon: "userCheck",
+        items: ["Teacher Professional Development (TPD)"] },
+      { title: "Learners", icon: "graduation",
+        items: ["Foundational skills (Literacy & Numeracy)", "Socio-emotional learning (SEL)", "Transitions"] },
+      { title: "Leadership", icon: "users",
+        items: ["Leadership training", "Excellence program"] },
+    ],
+  },
+  {
+    pillar: "Economic Empowerment",
+    icon: "trendingUp",
+    groups: [
+      { title: "Vocational Training", icon: "laptop",
+        items: ["IT Academy"] },
+      { title: "Micro-Enterprise", icon: "calculator",
+        items: ["Village Savings and Loans Associations", "Entrepreneurship", "Seed funding", "Income generating activities"] },
+    ],
+  },
+];
+
 export const ABOUT_POINTS = [
   "Strengthening schools with practical, sustainable systems",
   "Empowering teachers through hands-on professional development",

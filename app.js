@@ -7,7 +7,7 @@ import { icon } from "./icons.js";
 import {
   PORTAL_CARDS, CURRICULUM, RESOURCES, ASSESSMENT, IMPACT,
   ROLES, ORG_TYPES, COUNTIES, VISIT_TYPES, HERO_SLIDES, HERO_QUOTES,
-  REGIONS, PROJECTS,
+  REGIONS, PROJECTS, EMPOWERMENT_MODEL,
 } from "./data.js";
 import {
   $, $$, read, write, esc, initials, uid,
@@ -404,6 +404,32 @@ function pageHome() {
             </div>
           </div>
           <div class="hero-float" data-hero-float>${heroBadge(HERO_SLIDES[0])}</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section cem-section" id="model">
+      <div class="container">
+        <div class="section-head">
+          <span class="eyebrow">OUR APPROACH</span>
+          <h2>Child Empowerment Model</h2>
+          <p>Three pillars, and what HPF builds under each.</p>
+        </div>
+        <div class="cem">
+          ${EMPOWERMENT_MODEL.map((p) => `
+            <div class="cem-row">
+              <div class="cem-pillar">
+                <span class="cem-pillar-ic">${icon(p.icon)}</span>
+                <span class="cem-pillar-name">${esc(p.pillar)}</span>
+              </div>
+              <div class="cem-groups">
+                ${p.groups.map((g) => `
+                  <div class="cem-group">
+                    <h3>${esc(g.title)} <span class="cem-ic">${icon(g.icon)}</span></h3>
+                    <ul>${g.items.map((i) => `<li>${esc(i)}</li>`).join("")}</ul>
+                  </div>`).join("")}
+              </div>
+            </div>`).join("")}
         </div>
       </div>
     </section>
