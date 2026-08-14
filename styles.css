@@ -6,20 +6,20 @@
 :root {
   --background: oklch(100% 0 0);
   --foreground: oklch(18% 0.04 265);
-  --primary: oklch(52% 0.14 148);
-  --primary-hover: oklch(52% 0.14 148 / 0.9);
+  --primary: oklch(35% 0.09 250);
+  --primary-hover: oklch(35% 0.09 250 / 0.9);
   --primary-foreground: oklch(99% 0 0);
   --secondary: oklch(22% 0.03 150);
   --secondary-foreground: oklch(98% 0 0);
-  --accent: oklch(96% 0.02 150);
-  --accent-foreground: oklch(22% 0.05 150);
+  --accent: oklch(96% 0.02 250);
+  --accent-foreground: oklch(22% 0.05 250);
   --muted: oklch(97% 0.01 150);
   --muted-foreground: oklch(50% 0.02 150);
   --border: oklch(93% 0.01 150);
   --input: oklch(93% 0.01 150);
   --card: oklch(100% 0 0);
   --card-foreground: oklch(18% 0.04 265);
-  --ring: oklch(52% 0.14 148);
+  --ring: oklch(35% 0.09 250);
   --radius: 1rem;
 
   --success: oklch(68% 0.17 155);
@@ -27,7 +27,7 @@
 
   --shadow-sm: 0 1px 2px oklch(20% 0.04 150 / 0.06);
   --shadow-md: 0 6px 24px oklch(20% 0.04 150 / 0.08);
-  --shadow-lg: 0 24px 60px oklch(20% 0.04 150 / 0.12);
+  --shadow-lg: 0 24px 60px oklch(20% 0.04 250 / 0.12);
 
   --font-sans: ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji",
     "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
@@ -170,7 +170,7 @@ svg {
 .btn-outline {
   background: var(--background);
   color: var(--primary);
-  border-color: oklch(52% 0.14 148 / 0.3);
+  border-color: oklch(35% 0.09 250 / 0.3);
 }
 
 .btn-outline:hover {
@@ -198,8 +198,8 @@ svg {
 }
 
 .btn-lg.btn-primary {
-  box-shadow: 0 4px 6px -1px oklch(52% 0.14 148 / 0.2),
-    0 2px 4px -2px oklch(52% 0.14 148 / 0.2);
+  box-shadow: 0 4px 6px -1px oklch(35% 0.09 250 / 0.2),
+    0 2px 4px -2px oklch(35% 0.09 250 / 0.2);
 }
 
 .btn-lg.btn-primary:hover {
@@ -418,8 +418,8 @@ form .btn,
   aspect-ratio: 1 / 1;
   overflow: hidden;
   border-radius: 28px;
-  box-shadow: 0 20px 25px -5px oklch(52% 0.14 148 / 0.1),
-    0 8px 10px -6px oklch(52% 0.14 148 / 0.1);
+  box-shadow: 0 20px 25px -5px oklch(35% 0.09 250 / 0.1),
+    0 8px 10px -6px oklch(35% 0.09 250 / 0.1);
 }
 
 .hero-media img {
@@ -604,7 +604,7 @@ button.portal-card {
 
 .portal-card:hover {
   transform: translateY(-4px);
-  box-shadow: 0 0 0 1px oklch(52% 0.14 148 / 0.4);
+  box-shadow: 0 0 0 1px oklch(35% 0.09 250 / 0.4);
 }
 
 .card-icon {
@@ -669,14 +669,14 @@ button.portal-card {
   background: var(--primary);
   color: var(--primary-foreground);
   box-shadow: 0 0 0 1px var(--primary),
-    0 10px 15px -3px oklch(52% 0.14 148 / 0.2),
-    0 4px 6px -4px oklch(52% 0.14 148 / 0.2);
+    0 10px 15px -3px oklch(35% 0.09 250 / 0.2),
+    0 4px 6px -4px oklch(35% 0.09 250 / 0.2);
 }
 
 .portal-card.primary:hover {
   box-shadow: 0 0 0 1px var(--primary),
-    0 10px 15px -3px oklch(52% 0.14 148 / 0.2),
-    0 4px 6px -4px oklch(52% 0.14 148 / 0.2);
+    0 10px 15px -3px oklch(35% 0.09 250 / 0.2),
+    0 4px 6px -4px oklch(35% 0.09 250 / 0.2);
 }
 
 .portal-card.primary .card-icon {
@@ -726,7 +726,7 @@ button.portal-card {
 
 .impact-card:hover {
   transform: translateY(-4px);
-  box-shadow: 0 0 0 1px oklch(52% 0.14 148 / 0.4),
+  box-shadow: 0 0 0 1px oklch(35% 0.09 250 / 0.4),
     0 10px 15px -3px oklch(0% 0 0 / 0.1), 0 4px 6px -4px oklch(0% 0 0 / 0.1);
 }
 
@@ -877,7 +877,7 @@ button.portal-card {
 }
 
 .contact-item:hover .ci-icon {
-  box-shadow: 0 0 0 1px oklch(52% 0.14 148 / 0.4);
+  box-shadow: 0 0 0 1px oklch(35% 0.09 250 / 0.4);
 }
 
 .contact-item .ci-icon svg {
@@ -909,7 +909,7 @@ button.portal-card {
   transform: translateY(-2px);
   background: var(--primary);
   color: var(--primary-foreground);
-  box-shadow: 0 0 0 1px oklch(52% 0.14 148 / 0.5);
+  box-shadow: 0 0 0 1px oklch(35% 0.09 250 / 0.5);
 }
 
 .contact-socials svg {
@@ -1247,7 +1247,7 @@ textarea.input:focus {
   border-radius: 1rem;
   padding: 1.1rem 1.25rem 1rem;
   background: var(--card);
-  box-shadow: 0 1px 2px oklch(20% 0.04 150 / 0.05);
+  box-shadow: 0 1px 2px oklch(20% 0.04 250 / 0.05);
   position: relative;
   overflow: hidden;
   transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
@@ -1266,8 +1266,8 @@ textarea.input:focus {
 }
 .kpi-card:hover {
   transform: translateY(-2px);
-  box-shadow: 0 8px 20px -6px oklch(20% 0.04 150 / 0.12);
-  border-color: oklch(84% 0.05 150);
+  box-shadow: 0 8px 20px -6px oklch(20% 0.04 250 / 0.12);
+  border-color: oklch(84% 0.05 250);
 }
 .kpi-card:hover::before { transform: scaleY(1); }
 
@@ -1287,7 +1287,7 @@ textarea.input:focus {
   padding: 0.15rem 0.45rem; border-radius: 999px;
 }
 .kpi-trend svg { width: 12px; height: 12px; }
-.kpi-up   { color: oklch(45% 0.14 148); background: oklch(52% 0.14 148 / 0.12); }
+.kpi-up   { color: oklch(32% 0.09 250); background: oklch(35% 0.09 250 / 0.12); }
 .kpi-down { color: oklch(52% 0.24 27);  background: oklch(62% 0.24 27 / 0.12); }
 .kpi-flat,
 .kpi-none { color: var(--muted-foreground); background: var(--muted); }
@@ -1322,7 +1322,7 @@ textarea.input:focus {
   transition: background 0.16s ease, border-color 0.16s ease, gap 0.16s ease;
 }
 .kpi-action svg { width: 13px; height: 13px; }
-.kpi-action:hover { background: var(--accent); border-color: oklch(52% 0.14 148 / 0.3); gap: 0.5rem; }
+.kpi-action:hover { background: var(--accent); border-color: oklch(35% 0.09 250 / 0.3); gap: 0.5rem; }
 .kpi-action:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1334,14 +1334,14 @@ textarea.input:focus {
   border-radius: 1rem;
   padding: 1.1rem 1.25rem;
   background: var(--card);
-  box-shadow: 0 1px 2px oklch(20% 0.04 150 / 0.05);
+  box-shadow: 0 1px 2px oklch(20% 0.04 250 / 0.05);
   transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
 }
 
 .stat-tile:hover {
   transform: translateY(-2px);
-  box-shadow: 0 8px 20px -6px oklch(20% 0.04 150 / 0.12);
-  border-color: oklch(84% 0.05 150);
+  box-shadow: 0 8px 20px -6px oklch(20% 0.04 250 / 0.12);
+  border-color: oklch(84% 0.05 250);
 }
 
 .stat-tile .st-label {
@@ -1478,7 +1478,7 @@ textarea.input:focus {
   border-radius: 1.1rem;
   background: var(--card);
   padding: 1.5rem;
-  box-shadow: 0 1px 2px oklch(20% 0.04 150 / 0.05);
+  box-shadow: 0 1px 2px oklch(20% 0.04 250 / 0.05);
 }
 
 .panel h2 {
@@ -1799,7 +1799,7 @@ textarea.input:focus {
   border-radius: 0.85rem;
   padding: 0.35rem;
   margin-bottom: 1.75rem;
-  box-shadow: 0 1px 2px oklch(20% 0.04 150 / 0.05);
+  box-shadow: 0 1px 2px oklch(20% 0.04 250 / 0.05);
 }
 
 .role-tab {
@@ -1823,7 +1823,7 @@ textarea.input:focus {
 .role-tab.active {
   background: var(--primary);
   color: var(--primary-foreground);
-  box-shadow: 0 2px 6px -1px oklch(52% 0.14 148 / 0.35);
+  box-shadow: 0 2px 6px -1px oklch(35% 0.09 250 / 0.35);
 }
 
 .role-tab.active:hover {
@@ -1842,7 +1842,7 @@ textarea.input:focus {
   border-radius: 1.1rem;
   padding: 1.15rem 1.35rem;
   margin-bottom: 1.5rem;
-  box-shadow: 0 1px 2px oklch(20% 0.04 150 / 0.05);
+  box-shadow: 0 1px 2px oklch(20% 0.04 250 / 0.05);
 }
 
 .rb-icon {
@@ -1962,7 +1962,7 @@ textarea.input:focus {
 .ksubtab.active {
   color: var(--primary);
   background: var(--accent);
-  border-color: oklch(52% 0.14 148 / 0.25);
+  border-color: oklch(35% 0.09 250 / 0.25);
 }
 
 /* Icons inherit the tab's colour, so they follow hover and active for free. */
@@ -3726,7 +3726,7 @@ textarea.input:focus {
 .lc-lab { font-size: 9px; fill: var(--muted-foreground); }
 
 /* pie chart */
-.pie { flex: none; filter: drop-shadow(0 2px 6px oklch(20% 0.04 150 / 0.12)); }
+.pie { flex: none; filter: drop-shadow(0 2px 6px oklch(20% 0.04 250 / 0.12)); }
 .pie path { transition: transform 0.15s ease; transform-origin: 60px 60px; }
 .pie path:hover { transform: scale(1.04); }
 
@@ -4380,7 +4380,7 @@ textarea.input:focus {
 .ret-rev-list { list-style: none; margin: 0.35rem 0 0; padding: 0; display: grid; gap: 0.2rem; }
 .ret-rev-list li { font-size: 0.8rem; }
 .ret-from { color: oklch(52% 0.24 27); text-decoration: line-through; }
-.ret-to { color: oklch(45% 0.14 148); font-weight: 700; }
+.ret-to { color: oklch(32% 0.09 250); font-weight: 700; }
 
 /* ---------------------------------------------------------- enrolment by grade */
 .grade-grid { display: grid; gap: 0.3rem; margin-bottom: 1rem; }

@@ -494,6 +494,9 @@ function pageHome() {
             <a class="contact-item" href="tel:+254700000000">
               <span class="ci-icon">${icon("phone")}</span>
               +254 700 000 000</a>
+            <a class="contact-item" href="https://www.humanpractice.org/" target="_blank" rel="noopener noreferrer">
+              <span class="ci-icon">${icon("link")}</span>
+              www.humanpractice.org</a>
             <div class="contact-socials">
               <a href="https://www.facebook.com/humanpracticefoundation" target="_blank" rel="noopener noreferrer" aria-label="Facebook">${icon("facebook")}</a>
               <a href="https://www.linkedin.com/company/human-practice-foundation" target="_blank" rel="noopener noreferrer" aria-label="LinkedIn">${icon("linkedin")}</a>
