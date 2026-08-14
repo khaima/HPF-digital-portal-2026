@@ -413,15 +413,17 @@ function pageHome() {
         <div class="section-head">
           <span class="eyebrow">OUR APPROACH</span>
           <h2>Child Empowerment Model</h2>
-          <p>Three pillars, and what HPF builds under each.</p>
+          <p>Three pillars — select one to see the programmes under it.</p>
         </div>
         <div class="cem">
           ${EMPOWERMENT_MODEL.map((p) => `
-            <div class="cem-row">
-              <div class="cem-pillar">
+            <details class="cem-row">
+              <summary class="cem-pillar">
                 <span class="cem-pillar-ic">${icon(p.icon)}</span>
                 <span class="cem-pillar-name">${esc(p.pillar)}</span>
-              </div>
+                <span class="cem-count">${p.groups.reduce((n, g) => n + g.items.length, 0)}</span>
+                <span class="cem-chev">${icon("arrowRight")}</span>
+              </summary>
               <div class="cem-groups">
                 ${p.groups.map((g) => `
                   <div class="cem-group">
@@ -429,7 +431,7 @@ function pageHome() {
                     <ul>${g.items.map((i) => `<li>${esc(i)}</li>`).join("")}</ul>
                   </div>`).join("")}
               </div>
-            </div>`).join("")}
+            </details>`).join("")}
         </div>
       </div>
     </section>
