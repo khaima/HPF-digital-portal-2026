@@ -67,6 +67,22 @@ export const ICONS = {
   upload: `<svg viewBox="0 0 24 24" ${P}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>`,
   externalLink: `<svg viewBox="0 0 24 24" ${P}><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>`,
   laptop: `<svg viewBox="0 0 24 24" ${P}><rect width="18" height="12" x="3" y="4" rx="2" ry="2"/><line x1="2" x2="22" y1="20" y2="20"/></svg>`,
+  /* ---------------------------------------------------------- Child Empowerment Model
+     Traced from the programme diagram into the site's own stroke family. The
+     deck's artwork is raster and the deployed page's CSP blocks remote images,
+     so these are drawn at the same weight and cap style as every other icon
+     rather than embedded as pictures that would sit oddly beside them. */
+
+  cemSchool: `<svg viewBox="0 0 24 24" ${P}><path d="M12 2v3"/><path d="M12 2h3v2h-3"/><path d="m3 10 9-5 9 5"/><path d="M5 10v11"/><path d="M19 10v11"/><path d="M3 21h18"/><path d="M9 21v-5a3 3 0 0 1 6 0v5"/><path d="M8 13h.01"/><path d="M16 13h.01"/></svg>`,
+  cemBook: `<svg viewBox="0 0 24 24" ${P}><path d="M12 6v14"/><path d="M12 6C10.5 4.5 8 4 5 4H3v14h2c3 0 5.5.5 7 2"/><path d="M12 6c1.5-1.5 4-2 7-2h2v14h-2c-3 0-5.5.5-7 2"/></svg>`,
+  cemTelescope: `<svg viewBox="0 0 24 24" ${P}><path d="m4 11 12-6 2 4-12 6z"/><path d="m6 12 2 4"/><path d="M12 15v3"/><path d="m9 22 3-4 3 4"/><path d="M18 5h3"/></svg>`,
+  cemBooks: `<svg viewBox="0 0 24 24" ${P}><path d="m3 8 9-4 9 4-9 4z"/><path d="m3 12 9 4 9-4"/><path d="m3 16 9 4 9-4"/></svg>`,
+  cemWater: `<svg viewBox="0 0 24 24" ${P}><path d="M4 6h6a4 4 0 0 1 4 4v2"/><path d="M4 4v4"/><path d="M14 12h4"/><path d="M3 19c1.5 0 1.5-1.5 3-1.5S7.5 19 9 19s1.5-1.5 3-1.5 1.5 1.5 3 1.5 1.5-1.5 3-1.5 1.5 1.5 3 1.5"/></svg>`,
+  cemTeacher: `<svg viewBox="0 0 24 24" ${P}><rect x="3" y="3" width="18" height="12" rx="1"/><path d="M7 7h6"/><path d="M7 11h4"/><circle cx="17" cy="18" r="2"/><path d="M14 22a3 3 0 0 1 6 0"/></svg>`,
+  cemCap: `<svg viewBox="0 0 24 24" ${P}><path d="m2 8 10-4 10 4-10 4z"/><path d="M6 10v5c0 1.5 2.7 3 6 3s6-1.5 6-3v-5"/><path d="M22 8v6"/></svg>`,
+  cemLeadership: `<svg viewBox="0 0 24 24" ${P}><circle cx="7" cy="5" r="2"/><path d="M4 21v-6a3 3 0 0 1 6 0v6"/><path d="M13 17V9"/><path d="M17 17V6"/><path d="M21 17V3"/><path d="M13 21h9"/></svg>`,
+  cemLaptop: `<svg viewBox="0 0 24 24" ${P}><rect x="4" y="5" width="16" height="10" rx="1"/><path d="M2 19h20"/><path d="m9 12 2-2-2-2"/><path d="M13 12h2"/></svg>`,
+  cemMoney: `<svg viewBox="0 0 24 24" ${P}><path d="M9 3h6l-1.5 3h-3z"/><path d="M13.5 6c3 1.5 5.5 4.6 5.5 8.5A5.5 5.5 0 0 1 13.5 20h-3A5.5 5.5 0 0 1 5 14.5C5 10.6 7.5 7.5 10.5 6"/><path d="M12 10v7"/><path d="M14 12h-3a1.5 1.5 0 0 0 0 3h2a1.5 1.5 0 0 1 0 3h-3"/></svg>`,
 };
 
 export function icon(name) {
