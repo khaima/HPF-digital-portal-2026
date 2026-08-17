@@ -261,6 +261,7 @@ const NAV = [
   { label: "Learning Resources", href: "/resources" },
   { label: "Assessment Tools", href: "/assessment" },
   { label: "Field Officer App", href: "/field-officer" },
+  { label: "Community Support", href: "/community-support" },
 ];
 
 /* shown only when signed in */
@@ -850,12 +851,75 @@ function pageFieldOfficer() {
 }
 
 /* ------------------------------------------------------------ router */
+/* ------------------------------------------------------------ community support
+   Greeting, the four areas HPF supports on, and a chat surface.
+
+   The assistant is not wired to a model yet, and deliberately so: answering
+   from the browser would mean shipping an API key to every visitor. The reply
+   path belongs in a Supabase Edge Function where the key stays server-side —
+   see supabase/COMMUNITY-SUPPORT.md. Until that exists the composer stays
+   disabled and says why, rather than looking live and silently doing nothing. */
+const SUPPORT_AREAS = [
+  { id: "mara", icon: "mapPin", title: "Maasai Mara",
+    desc: "People, culture, traditions and the land itself.",
+    prompt: "Tell me about the Maasai people and their culture." },
+  { id: "education", icon: "graduation", title: "Education",
+    desc: "Schools, learning, teacher training and staying in school.",
+    prompt: "I have a question about education and schools." },
+  { id: "health", icon: "shield", title: "Health care",
+    desc: "Clinics, maternal health, nutrition and where to get help.",
+    prompt: "I have a health care question." },
+  { id: "maa", icon: "mail", title: "Translate to Maa",
+    desc: "Translate from any language into the Maa language.",
+    prompt: "Please translate this into Maa: " },
+];
+
+function pageCommunitySupport() {
+  // Every page returns shell(path, main); returning bare markup drops the
+  // header and nav entirely, which is how this first shipped.
+  const main = `
+    <section class="section cs-section">
+      <div class="container">
+        <div class="section-head">
+          <span class="eyebrow">Community support</span>
+          <h2 class="cs-greeting">Jambo! How can I support you today?</h2>
+          <p>Choose an area below, or type your question. Answers come from an HPF assistant.</p>
+        </div>
+
+        <div class="cs-areas">
+          ${SUPPORT_AREAS.map((a) => `
+            <button class="cs-area" data-cs-area="${a.id}" data-cs-prompt="${esc(a.prompt)}">
+              <span class="cs-area-ic">${icon(a.icon)}</span>
+              <span class="cs-area-t">${esc(a.title)}</span>
+              <span class="cs-area-d">${esc(a.desc)}</span>
+            </button>`).join("")}
+        </div>
+
+        <div class="cs-chat" data-cs-chat>
+          <div class="cs-log" data-cs-log aria-live="polite">
+            <div class="cs-msg cs-bot">
+              <span class="cs-avatar">${icon("sparkles")}</span>
+              <div class="cs-bubble">Jambo! Pick an area above or ask me anything about HPF's work.</div>
+            </div>
+          </div>
+          <form class="cs-composer" data-cs-form>
+            <input class="input" data-cs-input placeholder="Type your question…" autocomplete="off" disabled>
+            <button class="btn btn-primary" type="submit" disabled>${icon("send")} Send</button>
+          </form>
+          <p class="cs-note">${icon("info")} The assistant is not connected yet — the reply service still needs deploying. Your question will not be answered here.</p>
+        </div>
+      </div>
+    </section>`;
+  return shell("/community-support", main);
+}
+
 const ROUTES = {
   "/": pageHome,
   "/curriculum": pageCurriculum,
   "/resources": pageResources,
   "/assessment": pageAssessment,
   "/field-officer": pageFieldOfficer,
+  "/community-support": pageCommunitySupport,
   "/dashboard": pageDashboard,
   "/auth": () => pageAuth("login"),
 };
@@ -867,6 +931,7 @@ function titleFor(path) {
     "/resources": "Digital Learning Resources — Human Practice Foundation",
     "/assessment": "Assessment Tools — Human Practice Foundation",
     "/field-officer": "Field Officer Portal — Human Practice Foundation",
+    "/community-support": "Community Support — Human Practice Foundation",
     "/dashboard": "My Dashboard — Human Practice Foundation",
     "/auth": "Human Practice Foundation — Digital Portal",
   };
