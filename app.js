@@ -880,15 +880,17 @@ function pageCommunityResources() {
   const main = `
     <section class="section cs-section">
       <div class="container">
-        <div class="section-head">
-          <span class="eyebrow">Community resources</span>
-          <h2 class="cs-greeting">Jambo, How may I support you today?</h2>
-          <p>Choose an area below, or type your question. Answers come from an HPF assistant.</p>
+        <div class="cs-hero">
+          <div class="section-head">
+            <span class="eyebrow">Community resources</span>
+            <h2 class="cs-greeting">Jambo, How may I support you today?</h2>
+            <p>Choose an area below, or type your own question — the assistant covers Maasai community &amp; culture, education, healthcare, and Maa translation.</p>
+          </div>
         </div>
 
         <div class="cs-areas">
           ${SUPPORT_AREAS.map((a) => `
-            <button class="cs-area" data-cs-area="${a.id}" data-cs-prompt="${esc(a.prompt)}">
+            <button class="cs-area cs-area--${a.id}" data-cs-area="${a.id}" data-cs-prompt="${esc(a.prompt)}">
               <span class="cs-area-ic">${icon(a.icon)}</span>
               <span class="cs-area-t">${esc(a.title)}</span>
               <span class="cs-area-d">${esc(a.desc)}</span>
@@ -896,6 +898,13 @@ function pageCommunityResources() {
         </div>
 
         <div class="cs-chat" data-cs-chat>
+          <div class="cs-chat-head">
+            <span class="cs-chat-avatar">${icon("sparkles")}</span>
+            <div>
+              <div class="cs-chat-name">HPF Assistant</div>
+              <div class="cs-chat-status" data-cs-status><span class="cs-dot"></span>Ready to help</div>
+            </div>
+          </div>
           <div class="cs-log" data-cs-log aria-live="polite">
             <div class="cs-msg cs-bot">
               <span class="cs-avatar">${icon("sparkles")}</span>
@@ -1258,9 +1267,20 @@ function wireCommunityResources() {
   const form = $("[data-cs-form]");
   const input = $("[data-cs-input]");
   const log = $("[data-cs-log]");
+  const status = $("[data-cs-status]");
   const areaBtns = $$("[data-cs-area]");
   if (!form || !input || !log) return;
   let activeArea = null;
+  let statusResetTimer = null;
+
+  function setStatus(mode, label) {
+    if (!status) return;
+    status.classList.toggle("is-busy", mode === "busy");
+    status.classList.toggle("is-error", mode === "error");
+    status.lastChild.textContent = label;
+    clearTimeout(statusResetTimer);
+    if (mode === "error") statusResetTimer = setTimeout(() => setStatus("ready", "Ready to help"), 5000);
+  }
 
   function addMsg(who, text) {
     const row = document.createElement("div");
@@ -1268,6 +1288,17 @@ function wireCommunityResources() {
     row.innerHTML = `
       <span class="cs-avatar">${icon(who === "me" ? "users" : "sparkles")}</span>
       <div class="cs-bubble">${esc(text)}</div>`;
+    log.appendChild(row);
+    log.scrollTop = log.scrollHeight;
+    return row;
+  }
+
+  function addTyping() {
+    const row = document.createElement("div");
+    row.className = "cs-msg cs-bot";
+    row.innerHTML = `
+      <span class="cs-avatar">${icon("sparkles")}</span>
+      <div class="cs-bubble"><span class="cs-typing"><span></span><span></span><span></span></span></div>`;
     log.appendChild(row);
     log.scrollTop = log.scrollHeight;
     return row;
@@ -1291,7 +1322,8 @@ function wireCommunityResources() {
     input.value = "";
     input.disabled = true;
     sendBtn.disabled = true;
-    const typing = addMsg("bot", "…");
+    setStatus("busy", "Thinking…");
+    const typing = addTyping();
     try {
       const { data, error } = await supabase.functions.invoke("community-resources-chat", {
         body: { message: text, area: activeArea },
@@ -1299,11 +1331,13 @@ function wireCommunityResources() {
       if (error) throw error;
       typing.querySelector(".cs-bubble").textContent =
         data?.reply || "Sorry, I don't have an answer for that right now.";
+      setStatus("ready", "Ready to help");
     } catch {
       // The edge function may not be deployed yet, or the request failed —
-      // either way the visitor gets a clear reason, not a stuck "…".
+      // either way the visitor gets a clear reason, not a stuck typing dot.
       typing.querySelector(".cs-bubble").textContent =
         "I couldn't reach the assistant just now. Please try again in a moment.";
+      setStatus("error", "Having trouble connecting");
     } finally {
       input.disabled = false;
       sendBtn.disabled = false;
