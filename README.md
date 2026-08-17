@@ -20,7 +20,9 @@ the original portal's structure, copy, and design tokens:
 - **Field Officer App** — login-gated portal to record monitoring & evaluation visits
 - **My Dashboard** — interactive, role-based dashboards with simulated data
 - **Auth** — login / sign up with role-aware validation (Teacher, School Leader,
-  Field Officer, Learner, HPF Admin), Kenyan counties & organization types
+  Field Officer, Learner, HPF Admin), Kenyan counties & organization types, plus
+  self-service recovery for a forgotten password or username (emailed reset link
+  or 6-digit code — see [`supabase/AUTH-RECOVERY.md`](supabase/AUTH-RECOVERY.md))
 
 Authentication and field reports are stored client-side in `localStorage`, so the
 whole experience works offline with no backend to configure.
@@ -40,7 +42,7 @@ whole experience works offline with no backend to configure.
 
   | Role | See | Do |
   |------|-----|----|
-  | **Admin** | Platform totals, login-request inbox, users-by-role, weekly logins, activity | **Manage users** — add accounts, change roles inline, remove users |
+  | **Admin** | Platform totals, login-request inbox, users-by-role, weekly logins, activity | **Manage users** — add accounts, change roles inline, remove users · **HPF administrators** — create or promote another admin in the database |
   | **Learner** | Kolibri-style **Learn** view: *Home / Library / Bookmarks*, your classes, "Continue learning" and content cards (video, exercise, reading, audio, interactive) with progress | Browse & **search the library**, filter by channel, click a resource to **resume** (progress advances) |
   | **Teacher** | Kolibri-style **Coach** view with three tabs — **Overview** (cumulative results: class status distribution, completion & average score per assignment), **Assignments**, and **Learners** | **Assign** a lesson / exercise / quiz to the whole class or selected learners, **track each learner's progress** per assignment (tap a learner for their detail), and watch **cumulative class results** update live |
   | **Field Officer** | Assigned schools & health, field tasks, visits logged | Complete tasks, open the field data-collection tool |
@@ -106,6 +108,9 @@ icons.js                Inline SVG icon set
 util.js                 Helpers + global count-up controller (5s loop)
 dashboards.js           Role-based "My Dashboard" views & interactions
 app.js                  SPA router, auth + login repository, views
+recovery.js             Forgotten password / username flows (reset link + OTP)
+supabase.js             Supabase client + friendly auth error messages
+config.js               Supabase project URL & publishable key
 assets/hero-classroom.jpg   Hero image (the original portal's photo)
 favicon.ico             Original favicon
 server.py               Static server with SPA route fallback

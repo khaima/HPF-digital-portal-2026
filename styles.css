@@ -1152,6 +1152,8 @@ textarea.input:focus {
 
 .auth-foot {
   margin-top: 1rem;
+  display: grid;
+  gap: 0.6rem;
 }
 
 .link-btn {
@@ -1169,6 +1171,87 @@ textarea.input:focus {
 
 .link-btn:hover {
   text-decoration: underline;
+}
+
+/* ------------------------------------------------------------------ account recovery */
+.recover {
+  margin-top: 2rem;
+}
+
+/* the panel's notices are the first thing in the step, so they lead rather
+   than separate — tighter than the in-page .notice spacing */
+.recover .recover-note {
+  margin-bottom: 1.25rem;
+  border-radius: 0.6rem;
+}
+
+.recover .btn + .btn.recover-alt {
+  margin-top: 0.6rem;
+}
+
+/* .btn is nowrap by default, which clips these longer labels on a 320px
+   phone — the panel's buttons are full-width, so let them wrap instead */
+.recover .btn-block {
+  white-space: normal;
+  height: auto;
+  min-height: 2.5rem;
+}
+
+.recover .recover-hint {
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+  margin-bottom: 1rem;
+  line-height: 1.5;
+}
+
+.recover .recover-actions {
+  margin-top: 1.25rem;
+  display: grid;
+  gap: 0.6rem;
+}
+
+/* one-time code: wide, evenly spaced digits so a 6-digit code is easy to
+   check against the email before submitting */
+.recover .code-input {
+  height: 3rem;
+  font-size: 1.35rem;
+  font-weight: 600;
+  letter-spacing: 0.5em;
+  text-indent: 0.5em;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.recover .recover-reveal {
+  border: 1px solid var(--input);
+  border-radius: 0.8rem;
+  background: var(--muted);
+  padding: 1.1rem 1.25rem;
+  text-align: center;
+  margin-bottom: 1rem;
+}
+
+.recover .rv-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+
+.recover .rv-value {
+  margin-top: 0.35rem;
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--foreground);
+  word-break: break-all;
+}
+
+.recover .rv-value.rv-empty {
+  font-size: 1.1rem;
+  font-weight: 500;
+  font-style: italic;
+  color: var(--muted-foreground);
 }
 
 /* ------------------------------------------------------------------ dashboard / field officer */

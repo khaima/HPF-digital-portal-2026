@@ -199,6 +199,173 @@ function taskList(tasks) {
     </div>`;
 }
 
+/* ---------------------------------------------------------- HPF administrators
+   Appointing a second admin from the portal, which until now needed SQL.
+
+   Picking "HPF Staff (Admin)" in the user table below cannot do it, for two
+   independent reasons: that table lives in this browser's localStorage, and
+   handle_new_user() in patch-01-security.sql clamps the role on every signup —
+   post {"role":"admin"} and you get a learner. Admin is only ever granted by an
+   update from a caller who is already an admin, which guard_profile_role()
+   permits. So that is what this panel does:
+
+     1. create the account on an isolated client, so signing the new user in
+        doesn't sign the acting admin out (see adminClient in supabase.js);
+     2. raise profiles.role to 'admin' over the acting admin's own session, then
+        read the row back — the guard trigger pins the role to its old value
+        *without raising an error*, so a write that "succeeded" proves nothing.
+
+   Everything here is real database state, unlike the user table below, so these
+   accounts work on every device. */
+let adminsCache = [];
+let adminsLoaded = false;
+let adminsError = null;
+let adminsAuthed = false;   // is this browser on a real Supabase session at all?
+let adminFormOpen = false;
+let adminPromoteOpen = false;
+
+async function loadAdmins() {
+  const { data: sess } = await supabase.auth.getSession();
+  adminsAuthed = !!sess?.session;
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("id, full_name, email, username, created_at")
+    .eq("role", "admin")
+    .order("created_at");
+  adminsLoaded = true;
+  adminsError = error ? authMessage(error) : null;
+  if (!error) adminsCache = data || [];
+  return adminsCache;
+}
+
+/* Raise one profile to admin. Reads the row back because a refused promotion is
+   silent: guard_profile_role() restores the old role and returns success. */
+async function promoteToAdmin(id) {
+  const { data, error } = await supabase
+    .from("profiles").update({ role: "admin" }).eq("id", id).select("role").maybeSingle();
+  if (error) throw new Error(authMessage(error));
+  if (data?.role !== "admin") {
+    throw new Error(
+      "The database refused the promotion — this session isn't recognised as an HPF admin. " +
+      "Sign in with an admin account that exists in the database, or run this in the " +
+      `Supabase SQL editor: update profiles set role = 'admin' where id = '${id}';`
+    );
+  }
+}
+
+async function createAdminAccount({ fullName, email, password }) {
+  // No role in the metadata on purpose: patch-01 clamps whatever is sent here to
+  // the self-serve roles, so the row always lands as a learner and step 2 is
+  // what actually appoints them. Sending "admin" would only look like it worked.
+  const { data: res, error } = await adminClient().auth.signUp({
+    email,
+    password,
+    options: {
+      data: {
+        full_name: fullName,
+        username: null, school: null, county: null, org_type: null, project: null,
+      },
+    },
+  });
+  if (error) throw new Error(authMessage(error));
+  const id = res.user?.id;
+  if (!id) throw new Error("Supabase reported no error but returned no account. Please try again.");
+
+  try {
+    await promoteToAdmin(id);
+  } catch (err) {
+    // The auth user exists from here on and the browser cannot delete it (that
+    // needs the service_role key), so don't pretend this failed cleanly.
+    throw new Error(`${email} was created but is still an ordinary account. ${err.message}`);
+  }
+  // With "Confirm email" on, signUp returns no session and the new admin has to
+  // click the emailed link before their first sign-in.
+  return { id, needsConfirm: !res.session };
+}
+
+function adminAccountsPanel(currentUser) {
+  const head = `
+    <div class="panel-head-row">
+      <div>
+        <h2>${icon("shield")} HPF administrators</h2>
+        <p class="panel-sub" style="margin-bottom:0">Accounts in the HPF database with full platform access · works on every device</p>
+      </div>
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+        <button class="btn btn-outline" data-admin-promote-toggle>${icon("userCheck")} Promote existing account</button>
+        <button class="btn btn-primary" data-admin-add-toggle>${icon("userPlus")} Add administrator</button>
+      </div>
+    </div>`;
+
+  const wrap = (inner) => `<div class="panel" style="margin-top:1.5rem" data-admins-panel>${head}${inner}</div>`;
+
+  if (!adminsLoaded) return wrap(`<div class="empty-state">Loading administrators…</div>`);
+
+  // A locally-created or legacy account has no JWT, so every read comes back
+  // empty rather than failing — which would read as "there are no admins".
+  if (!adminsAuthed) {
+    return wrap(`<div class="notice">${icon("info")}
+      <span>This browser is signed in on a <strong>local account</strong>, which the HPF
+      database has never seen. Sign in with an admin account that exists in the database
+      to see or appoint administrators.</span></div>`);
+  }
+  if (adminsError) {
+    return wrap(`<div class="empty-state">Could not load administrators — ${esc(adminsError)}
+      <div style="margin-top:.6rem"><button class="btn btn-outline btn-xs" data-admins-retry>${icon("refresh")} Try again</button></div>
+    </div>`);
+  }
+
+  const rows = adminsCache.length
+    ? adminsCache.map((a) => `
+        <div class="submission">
+          <span class="avatar-sm">${esc((a.full_name || a.email || "A").slice(0, 1).toUpperCase())}</span>
+          <div style="flex:1;min-width:0">
+            <div class="s-title">${esc(a.full_name || "—")}${
+              a.id === currentUser.id ? ' <span class="ut-you">you</span>' : ""
+            }</div>
+            <div class="s-meta">${esc(a.email || "—")}${a.username ? " · " + esc(a.username) : ""}
+              · added ${new Date(a.created_at).toLocaleDateString()}</div>
+          </div>
+          <span class="pill role-pill">Admin</span>
+        </div>`).join("")
+    : `<div class="empty-state">No administrator rows in the database yet.</div>`;
+
+  const addForm = adminFormOpen ? `
+    <form id="addAdminForm" class="add-user-form">
+      <div class="form-row">
+        <div class="field"><label>Full name</label>
+          <input class="input" name="fullName" type="text" required placeholder="e.g. Grace Achieng"></div>
+        <div class="field"><label>HPF email</label>
+          <input class="input" name="email" type="email" required placeholder="name@${ORG_DOMAIN}"></div>
+      </div>
+      <div class="form-row">
+        <div class="field"><label>Temporary password</label>
+          <input class="input" name="password" type="password" minlength="6" required placeholder="min. 6 characters"></div>
+        <div class="field"><label>Confirm password</label>
+          <input class="input" name="confirm" type="password" minlength="6" required></div>
+      </div>
+      <p class="hint">Must be an <strong>@${ORG_DOMAIN}</strong> address. Give them the password in
+        person — they can change it themselves with <strong>Forgot password?</strong> on the login page.</p>
+      <div class="add-user-actions">
+        <button class="btn btn-primary" type="submit">${icon("shield")} Create administrator</button>
+        <button class="btn btn-outline" type="button" data-admin-add-cancel>Cancel</button>
+      </div>
+    </form>` : "";
+
+  const promoteForm = adminPromoteOpen ? `
+    <form id="promoteAdminForm" class="add-user-form">
+      <div class="field"><label>Email of an existing HPF account</label>
+        <input class="input" name="email" type="email" required placeholder="name@${ORG_DOMAIN}"></div>
+      <p class="hint">The person already signed up (as a teacher, school leader or field officer)
+        and keeps their current password — only their role changes.</p>
+      <div class="add-user-actions">
+        <button class="btn btn-primary" type="submit">${icon("userCheck")} Make administrator</button>
+        <button class="btn btn-outline" type="button" data-admin-promote-cancel>Cancel</button>
+      </div>
+    </form>` : "";
+
+  return wrap(`${addForm}${promoteForm}${rows}`);
+}
+
 /* ---------------------------------------------------------- user management */
 function userManagementPanel(currentUser) {
   const users = read(K_USERS, []);
@@ -2193,6 +2360,7 @@ function adminBody(ctx) {
       <p class="panel-sub">Daily authenticated sessions</p>
       ${barChart(d.weekly, DAYS)}
     </div>
+    ${adminAccountsPanel(ctx.user)}
     ${userManagementPanel(ctx.user)}
     ${digitalLibraryPanel()}
     <div class="panel" style="margin-top:1.5rem">
@@ -3816,7 +3984,7 @@ function teacherBody() {
         <p class="panel-sub" style="margin:0">${icon("school")} ${esc(cls.school || "")} — create classes, enroll learners, run sessions, and track results</p>
       </div>
       <div style="display:flex;gap:.5rem;flex-wrap:wrap">
-        <button class="btn btn-outline" data-add-user-toggle>${icon("userPlus")} Add user</button>
+        <button class="btn btn-outline" data-coach-user-toggle>${icon("userPlus")} Add user</button>
         <button class="btn btn-primary" data-new-assign>${icon("plus")} Plan work</button>
       </div>
     </div>
@@ -3830,10 +3998,14 @@ function teacherBody() {
     </div>`;
 }
 
-/* add a user — pick Teacher or Learner, then role-specific fields + password */
+/* add a user — pick Teacher or Learner, then role-specific fields + password.
+   Hooks are coach-specific on purpose: the admin dashboard has its own Add user
+   button and form, and when both used `data-add-user-toggle` / `#addUserForm`
+   the coach's listeners — bound for every role by wireRoleActions — hijacked the
+   admin's button and threw the admin into this workspace instead. */
 function addUserForm(cls) {
   return `
-    <form id="addUserForm" class="add-user-form" ${coachState.openUserForm ? "" : "hidden"}>
+    <form id="coachAddUserForm" class="add-user-form" ${coachState.openUserForm ? "" : "hidden"}>
       <div class="form-row">
         <div class="field"><label>Role</label>
           <select class="select" name="role" data-adduser-role>
@@ -3860,7 +4032,7 @@ function addUserForm(cls) {
       </div>
       <div class="add-user-actions">
         <button class="btn btn-primary" type="submit">${icon("userPlus")} Add user</button>
-        <button class="btn btn-outline" type="button" data-add-user-cancel>Cancel</button>
+        <button class="btn btn-outline" type="button" data-coach-user-cancel>Cancel</button>
       </div>
     </form>`;
 }
@@ -4824,6 +4996,17 @@ export function wireMyDashboard(user, events) {
       }
       // anyone with an organisation email is an admin
       if ((data.email || "").trim().toLowerCase().endsWith("@" + ORG_DOMAIN)) data.role = "admin";
+      // This table is this browser's localStorage, so an admin created here could
+      // not sign in anywhere else. Hand admins to the panel that makes real ones.
+      if (data.role === "admin") {
+        adminFormOpen = true;
+        adminPromoteOpen = false;
+        toast(
+          "Admins are created in the database",
+          "An admin account has to work on every device, so it can't live in this table. Use the HPF administrators panel, just above."
+        );
+        return renderRole("admin");
+      }
       if ((data.password || "").length < 6) return toast("Weak password", "Min. 6 characters.", "error");
 
       const users = read(K_USERS, []);
@@ -4887,6 +5070,115 @@ export function wireMyDashboard(user, events) {
         renderRole("admin");
       })
     );
+
+    /* --- HPF administrators: create or promote a real database admin ---
+       Repaints only its own panel, so the form doesn't jump away from under the
+       person filling it in while the rest of the dashboard re-renders. */
+    function renderAdmins() {
+      const holder = body.querySelector("[data-admins-panel]");
+      if (!holder) return;
+      holder.outerHTML = adminAccountsPanel(ctx.user);
+      wireAdminAccounts();
+    }
+
+    function wireAdminAccounts() {
+      const panel = body.querySelector("[data-admins-panel]");
+      if (!panel) return;
+
+      panel.querySelector("[data-admin-add-toggle]")?.addEventListener("click", () => {
+        adminFormOpen = !adminFormOpen;
+        adminPromoteOpen = false;
+        renderAdmins();
+        body.querySelector("#addAdminForm [name=fullName]")?.focus();
+      });
+      panel.querySelector("[data-admin-add-cancel]")?.addEventListener("click", () => {
+        adminFormOpen = false;
+        renderAdmins();
+      });
+      panel.querySelector("[data-admin-promote-toggle]")?.addEventListener("click", () => {
+        adminPromoteOpen = !adminPromoteOpen;
+        adminFormOpen = false;
+        renderAdmins();
+        body.querySelector("#promoteAdminForm [name=email]")?.focus();
+      });
+      panel.querySelector("[data-admin-promote-cancel]")?.addEventListener("click", () => {
+        adminPromoteOpen = false;
+        renderAdmins();
+      });
+      panel.querySelector("[data-admins-retry]")?.addEventListener("click", async () => {
+        adminsLoaded = false;
+        renderAdmins();
+        await loadAdmins();
+        renderAdmins();
+      });
+
+      panel.querySelector("#addAdminForm")?.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const form = e.currentTarget;
+        const d = Object.fromEntries(new FormData(form).entries());
+        const fullName = (d.fullName || "").trim();
+        const email = (d.email || "").trim().toLowerCase();
+        if (!fullName) return toast("Name required", "Enter the person's full name.", "error");
+        if (!email.endsWith("@" + ORG_DOMAIN))
+          return toast("HPF email required", `An administrator must use an @${ORG_DOMAIN} address.`, "error");
+        if ((d.password || "").length < 6)
+          return toast("Weak password", "Password must be at least 6 characters.", "error");
+        if (d.password !== d.confirm)
+          return toast("Passwords don't match", "This is someone else's account — a typo would lock them out.", "error");
+
+        const submit = form.querySelector("[type=submit]");
+        if (submit) { submit.disabled = true; submit.textContent = "Creating…"; }
+        try {
+          const { needsConfirm } = await createAdminAccount({ fullName, email, password: d.password });
+          adminFormOpen = false;
+          await loadAdmins();
+          renderAdmins();
+          toast(
+            "Administrator added",
+            needsConfirm
+              ? `${fullName} is an HPF admin. They must click the confirmation link emailed to ${email} before their first sign-in.`
+              : `${fullName} can now sign in as an HPF admin.`,
+            "success"
+          );
+        } catch (err) {
+          toast("Could not add administrator", err.message, "error");
+          if (submit) { submit.disabled = false; submit.innerHTML = `${icon("shield")} Create administrator`; }
+        }
+      });
+
+      panel.querySelector("#promoteAdminForm")?.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const form = e.currentTarget;
+        const email = (new FormData(form).get("email") || "").trim().toLowerCase();
+        if (!email.includes("@")) return toast("Email required", "Enter the account's email address.", "error");
+
+        const submit = form.querySelector("[type=submit]");
+        if (submit) { submit.disabled = true; submit.textContent = "Promoting…"; }
+        try {
+          const { data: rows, error } = await supabase
+            .from("profiles").select("id, full_name, role").ilike("email", email).limit(2);
+          if (error) throw new Error(authMessage(error));
+          if (!rows?.length) {
+            throw new Error(`No account in the HPF database uses ${email}. They need to sign up first, or use "Add administrator" to create the account.`);
+          }
+          if (rows.length > 1) throw new Error(`More than one account uses ${email}. Sort that out in the Supabase dashboard first.`);
+          const target = rows[0];
+          if (target.role === "admin") throw new Error(`${target.full_name || email} is already an administrator.`);
+
+          await promoteToAdmin(target.id);
+          adminPromoteOpen = false;
+          await loadAdmins();
+          renderAdmins();
+          toast("Administrator added", `${target.full_name || email} now has full platform access.`, "success");
+        } catch (err) {
+          toast("Could not promote", err.message, "error");
+          if (submit) { submit.disabled = false; submit.innerHTML = `${icon("userCheck")} Make administrator`; }
+        }
+      });
+    }
+
+    wireAdminAccounts();
+    loadAdmins().then(renderAdmins);
 
     // --- edit a user's full credentials (incl. password) ---
     body.querySelectorAll("[data-edit-user]").forEach((btn) =>
@@ -5530,16 +5822,18 @@ export function wireMyDashboard(user, events) {
       })
     );
 
-    // coach: add a user — role dropdown toggles the email/username fields
-    body.querySelector("[data-add-user-toggle]")?.addEventListener("click", () => {
+    // coach: add a user — role dropdown toggles the email/username fields.
+    // wireRoleActions runs for every role, so these must only ever match the
+    // coach panel's own controls — never the admin dashboard's Add user button.
+    body.querySelector("[data-coach-user-toggle]")?.addEventListener("click", () => {
       coachState.openUserForm = !coachState.openUserForm;
       renderRole("teacher");
     });
-    body.querySelector("[data-add-user-cancel]")?.addEventListener("click", () => {
+    body.querySelector("[data-coach-user-cancel]")?.addEventListener("click", () => {
       coachState.openUserForm = false;
       renderRole("teacher");
     });
-    const addUserFormEl = body.querySelector("#addUserForm");
+    const addUserFormEl = body.querySelector("#coachAddUserForm");
     const roleSel = addUserFormEl?.querySelector("[data-adduser-role]");
     roleSel?.addEventListener("change", () => {
       const learner = roleSel.value === "learner";

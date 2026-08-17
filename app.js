@@ -10,16 +10,16 @@ import {
   REGIONS, PROJECTS, EMPOWERMENT_MODEL,
 } from "./data.js";
 import {
-  $, $$, read, write, esc, initials, uid,
+  $, $$, read, write, esc, initials, uid, BASE,
   startGlobalCounters, runCounters, toast,
 } from "./util.js";
 import { myDashboardMain, wireMyDashboard } from "./dashboards.js";
 import { supabase, adminClient, authMessage } from "./supabase.js";
-
-/* Base path of the deployment ("" on localhost / custom domains,
-   "/<repo>" on GitHub Pages project sites). Derived from this module's URL
-   so the same build runs anywhere. */
-const BASE = new URL(".", import.meta.url).pathname.replace(/\/$/, "");
+import {
+  isRecoveryOpen, openRecovery, closeRecovery, openPasswordReset, openEmailConfirm,
+  resumeUsernameRecovery, recoveryOwnsSession,
+  recoveryHtml, recoveryTitle, wireRecovery,
+} from "./recovery.js";
 
 /* ------------------------------------------------------------ storage keys */
 const K_USERS = "hpf_users";
@@ -47,7 +47,7 @@ const toUiUser = (row, fallbackEmail = "") => ({
   createdAt: row.created_at ? Date.parse(row.created_at) : Date.now(),
 });
 
-/* Profile of the signed-in Supabase user, refreshed by onAuthStateChange.
+/* Profile of the signed-in Supabase user, loaded on sign-in and at boot.
    Cached so Auth.current() can stay synchronous for the many views that call
    it inline while building HTML. */
 let supaUser = null;
@@ -146,6 +146,9 @@ const Auth = {
       // clamped server-side by patch-01-security.sql — admin is never granted
       // from here, whatever the client sends.
       options: {
+        // Where the confirmation link comes back to. Must be allow-listed under
+        // Authentication → URL Configuration, or Supabase uses the Site URL.
+        emailRedirectTo: `${location.origin}${BASE}/auth`,
         data: {
           full_name: data.fullName || "",
           username: data.username || null,
@@ -160,11 +163,12 @@ const Auth = {
       },
     });
     if (error) throw new Error(authMessage(error));
+    /* This project has "Confirm email" on, so a successful signUp() returns the
+       account but no session. That is not a failure — the person is registered.
+       Hand the address back so the caller can ask for the emailed link or code
+       instead of leaving someone registered and locked out at the same time. */
     if (!res.session) {
-      throw new Error(
-        "Account created, but it needs email confirmation before you can sign in. " +
-        "An HPF admin should switch off “Confirm email” in the Supabase dashboard."
-      );
+      return { needsConfirm: true, email: data.email, fullName: data.fullName || "" };
     }
     const user = await refreshProfile(res.session);
     if (!user) throw new Error("Account created, but the profile could not be loaded. Please sign in.");
@@ -230,6 +234,14 @@ const Auth = {
     if ((error.message || "").toLowerCase().includes("invalid login credentials")) {
       const legacy = legacyLogin(id, password);
       if (legacy) return legacy;
+    }
+    // The password was right; the address was never confirmed. Flag it so the UI
+    // can offer the confirmation email rather than treating it as a bad login.
+    if ((error.message || "").toLowerCase().includes("email not confirmed")) {
+      const err = new Error(authMessage(error));
+      err.needsConfirm = true;
+      err.email = id;
+      throw err;
     }
     throw new Error(authMessage(error));
   },
@@ -595,6 +607,18 @@ function pageNotFound() {
 
 /* ------------------------------------------------------------ auth page */
 function pageAuth(mode = "login") {
+  // Recovery takes over the whole card: someone who can't get in has no use for
+  // the login form until they've finished, and the panel drives its own steps.
+  if (isRecoveryOpen()) {
+    const { h1, sub } = recoveryTitle();
+    return authShell(`
+      <main class="auth-main">
+        <h1 data-recover-h1>${esc(h1)}</h1>
+        <p data-recover-sub>${esc(sub)}</p>
+        ${recoveryHtml()}
+      </main>`);
+  }
+
   const roleOptions =
     `<option value="" disabled selected>Select your role</option>` +
     ROLES.map((r) => `<option value="${r.value}">${r.label}</option>`).join("");
@@ -627,6 +651,7 @@ function pageAuth(mode = "login") {
           <button class="btn btn-primary btn-block" type="submit">Login</button>
           <div class="auth-foot">
             <button class="link-btn" type="button" data-forgot>Forgot password?</button>
+            <button class="link-btn" type="button" data-forgot-user>Forgot username?</button>
           </div>
         </form>
 
@@ -672,6 +697,10 @@ function pageAuth(mode = "login") {
         </form>
       </main>`;
 
+  return authShell(main);
+}
+
+function authShell(main) {
   return `
     <header class="auth-header">
       <div class="container">
@@ -853,6 +882,15 @@ async function render() {
     history.replaceState({}, "", BASE + "/auth");
     path = "/auth";
   }
+  /* And the reverse: someone who already has a session has no use for the login
+     page. This is also where a confirmation link lands — Supabase turns it into
+     a session before the first paint — so without this a freshly confirmed user
+     would arrive signed in and still be looking at a login form.
+     Recovery keeps /auth: those flows run on a session of their own. */
+  if (path === "/auth" && Auth.isAuthed() && !isRecoveryOpen()) {
+    path = gotoAfterLogin(Auth.current());
+    history.replaceState({}, "", BASE + path);
+  }
   const view = ROUTES[path] || pageNotFound;
   document.title = titleFor(path);
   const root = $("#app");
@@ -943,6 +981,8 @@ async function wireView(path) {
 
 /* ------------------------------------------------------------ auth wiring */
 function wireAuth() {
+  if (isRecoveryOpen()) return wireRecoveryPanel();
+
   const tabs = $$("[data-tab]");
   const loginForm = $("#loginForm");
   const signupForm = $("#signupForm");
@@ -980,9 +1020,18 @@ function wireAuth() {
       : `<option value="" disabled selected>Select a region first</option>`;
   });
 
-  $("[data-forgot]")?.addEventListener("click", () =>
-    toast("Password reset", "Contact your HPF administrator to reset your password.")
-  );
+  // Carry whatever they already typed across, so the recovery panel doesn't ask
+  // for an address they just entered. A username tells us nothing to email.
+  $("[data-forgot]")?.addEventListener("click", async () => {
+    const typed = ($("#li_id")?.value || "").trim();
+    openRecovery("password", typed.includes("@") ? typed : "");
+    await render();
+  });
+
+  $("[data-forgot-user]")?.addEventListener("click", async () => {
+    openRecovery("username");
+    await render();
+  });
 
   loginForm?.addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -1004,6 +1053,11 @@ function wireAuth() {
       }
       await navigate(gotoAfterLogin(user));
     } catch (err) {
+      if (err.needsConfirm) {
+        openEmailConfirm(err.email);
+        toast("Confirm your email first", `${err.email} hasn't been confirmed yet. Finish it below.`, "error");
+        return await navigate("/auth");
+      }
       toast("Sign in failed", err.message, "error");
       if (submit) { submit.disabled = false; submit.textContent = "Login"; }
     }
@@ -1040,6 +1094,13 @@ function wireAuth() {
     if (submit) { submit.disabled = true; submit.textContent = "Creating account…"; }
     try {
       const user = await Auth.register(data);
+      // Registered, but the address still has to be proved before Supabase will
+      // issue a session. The panel takes the emailed code or link from here.
+      if (user.needsConfirm) {
+        openEmailConfirm(user.email, true);
+        toast("Account created", `One step left — confirm ${user.email} to sign in.`, "success");
+        return await navigate("/auth");
+      }
       toast("Account created", `Welcome to the HPF portal, ${(user.fullName || "").split(" ")[0]}!`, "success");
       await navigate(gotoAfterLogin(user));
     } catch (err) {
@@ -1051,6 +1112,36 @@ function wireAuth() {
 
 function gotoAfterLogin(user) {
   return user.role === "field_officer" ? "/field-officer" : "/dashboard";
+}
+
+/* ------------------------------------------------------------ recovery wiring
+   The panel repaints its own steps; app.js only has to say what "cancelled"
+   and "finished" mean, since both change which page we're on. */
+function wireRecoveryPanel() {
+  wireRecovery({
+    onDone: async () => {
+      // Verifying a code or opening a reset link signs the person in, so land
+      // them where a normal sign-in would — and log it like any other sign-in,
+      // otherwise the admin inbox misses everyone who arrived this way.
+      const { data } = await supabase.auth.getSession();
+      const user = await refreshProfile(data.session);
+      if (user) await Repo.record(user, "login");
+      await navigate(user ? gotoAfterLogin(user) : "/auth");
+    },
+  });
+
+  // Delegated: [data-recover-cancel] is re-rendered on every step.
+  $("#recoverPanel")?.addEventListener("click", async (e) => {
+    if (!e.target.closest("[data-recover-cancel]")) return;
+    // Backing out after a code or link was accepted would otherwise leave a live
+    // session behind — signed in, but without having finished what they came for.
+    if (recoveryOwnsSession()) {
+      supaUser = null;
+      await supabase.auth.signOut();
+    }
+    closeRecovery();
+    await render();
+  });
 }
 
 /* ------------------------------------------------------------ field officer wiring */
@@ -1110,11 +1201,32 @@ window.addEventListener("popstate", () => { render(); });
 /* ------------------------------------------------------------ boot */
 (async () => {
   startGlobalCounters();
+
+  /* Registered before the first getSession() so it cannot miss the event fired
+     while Supabase is turning an emailed link into a session. Deliberately not
+     async: calling back into supabase-js from inside this callback can deadlock
+     its internal lock, so anything that does is deferred to a fresh task. */
+  supabase.auth.onAuthStateChange((event, session) => {
+    if (event === "SIGNED_OUT") supaUser = null;
+    if (event !== "PASSWORD_RECOVERY") return;
+    // The link may have landed on any page (Supabase falls back to the Site URL
+    // when the redirect isn't allow-listed), so take over and go to /auth.
+    setTimeout(() => {
+      openPasswordReset(session?.user?.email || "");
+      navigate("/auth");
+    }, 0);
+  });
+
   // Restore any stored Supabase session before the first paint, so a refresh
   // lands on the dashboard instead of flashing the login page.
   try {
     const { data } = await supabase.auth.getSession();
     await refreshProfile(data.session);
+    // A username-recovery magic link opens a brand new page: pick that intent
+    // back up instead of dropping the person on their dashboard.
+    if (await resumeUsernameRecovery(data.session)) {
+      history.replaceState({}, "", BASE + "/auth");
+    }
   } catch (err) {
     console.warn("Session restore failed:", err.message);
   }

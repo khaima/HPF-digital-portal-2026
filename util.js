@@ -7,6 +7,12 @@
 export const $ = (sel, root = document) => root.querySelector(sel);
 export const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
+/* Base path of the deployment ("" on localhost / custom domains, "/<repo>" on
+   GitHub Pages project sites). Derived from this module's URL so the same build
+   runs anywhere. Lives here because both the router and the auth-recovery
+   redirect URLs need it. */
+export const BASE = new URL(".", import.meta.url).pathname.replace(/\/$/, "");
+
 export const read = (k, fb) => {
   try { return JSON.parse(localStorage.getItem(k)) ?? fb; } catch { return fb; }
 };

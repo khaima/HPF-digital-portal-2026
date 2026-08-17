@@ -26,6 +26,7 @@ frontend static (it still deploys on GitHub Pages).
    | 9 | [`patch-08-return-corrections.sql`](patch-08-return-corrections.sql) | Audit trail for corrections to a filed return |
    | 10 | [`patch-09-enrolment-by-grade.sql`](patch-09-enrolment-by-grade.sql) | Enrolment split per grade and gender |
    | 11 | [`patch-10-head-of-institution.sql`](patch-10-head-of-institution.sql) | Head of institution name, title and contact |
+   | 12 | [`patch-11-open-signup.sql`](patch-11-open-signup.sql) | Auto-confirms new accounts so signup and sign-in work |
 
    **All of them are safe to re-run**, so if you are unsure what state the
    database is in, just run them all in order — that is the reliable way to
@@ -46,7 +47,16 @@ frontend static (it still deploys on GitHub Pages).
    update profiles set role = 'admin' where email = 'you@example.org';
    ```
 
-4. **Send me two values** — dashboard → **Project Settings → API**:
+   This is only needed for the **first** admin. After that, sign in to the portal
+   as that admin and use **My Dashboard → Admin → HPF administrators** to create
+   or promote further admins — no SQL, and the accounts work on every device.
+
+4. **Switch on password / username recovery** — the login page's *Forgot
+   password?* and *Forgot username?* need email delivery configured in the
+   dashboard before they can reach anyone. See
+   [`AUTH-RECOVERY.md`](AUTH-RECOVERY.md) — it is all dashboard settings, no SQL.
+
+5. **Send me two values** — dashboard → **Project Settings → API**:
    - **Project URL** (looks like `https://abcd1234.supabase.co`)
    - **anon public** key (a long token labelled `anon` / `public`)
 
