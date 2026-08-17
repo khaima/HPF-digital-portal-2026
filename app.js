@@ -683,8 +683,8 @@ function pageAuth(mode = "login") {
             <label for="su_region">County / region</label>
             <select class="select" id="su_region" name="region" data-region>${regionOptions}</select>
           </div>
-          <div class="field">
-            <label for="su_school">School</label>
+          <div class="field" data-school-field>
+            <label for="su_school">School <span class="su-optional" hidden>(optional)</span></label>
             <select class="select" id="su_school" name="school" data-school disabled>
               <option value="" disabled selected>Select a region first</option>
             </select>
@@ -1004,6 +1004,15 @@ function wireAuth() {
     const isLearner = roleSel.value === "learner";
     emailField.style.display = isLearner ? "none" : "";
     emailInput.required = !isLearner;
+
+    // Admins and field officers work across schools, not at one, so the field
+    // says so and clears itself rather than leaving a stale pick attached to
+    // an account that should not have one.
+    const optional = roleSel.value === "admin" || roleSel.value === "field_officer";
+    const schoolSel = signupForm?.querySelector("[data-school]");
+    const hint = signupForm?.querySelector(".su-optional");
+    if (hint) hint.hidden = !optional;
+    if (schoolSel && optional) schoolSel.value = "";
   }
   roleSel?.addEventListener("change", syncRole);
   syncRole();
@@ -1087,7 +1096,12 @@ function wireAuth() {
     if ((data.password || "").length < 6)
       return toast("Weak password", "Password must be at least 6 characters.", "error");
     if (!data.region) return toast("Region required", "Select your region.", "error");
-    if (!data.school) return toast("School required", "Select your school from the region.", "error");
+    // HPF staff and field officers work across schools rather than at one, so
+    // forcing a choice would only produce a wrong answer. Everyone else is
+    // based somewhere and the figures depend on it being right.
+    const schoolOptional = data.role === "admin" || data.role === "field_officer";
+    if (!schoolOptional && !data.school)
+      return toast("School required", "Select your school from the region.", "error");
     if (!data.project) return toast("Project required", "Select the project you belong to.", "error");
 
     const submit = signupForm.querySelector("[type=submit]");
