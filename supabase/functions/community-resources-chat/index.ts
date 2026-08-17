@@ -80,7 +80,10 @@ Deno.serve(async (req: Request) => {
     }
 
     const data = await res.json();
-    const reply = data?.content?.[0]?.text?.trim() || "Sorry, I don't have an answer for that right now.";
+    // This model can return a leading "thinking" content block before the
+    // actual answer, so pick out the text block instead of assuming index 0.
+    const textBlock = data?.content?.find((block: { type: string }) => block.type === "text");
+    const reply = textBlock?.text?.trim() || "Sorry, I don't have an answer for that right now.";
     return json({ reply });
   } catch (err) {
     console.error("community-resources-chat failed", err);

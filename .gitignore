@@ -3,6 +3,7 @@ __pycache__/
 .DS_Store
 repo.zip
 HPF-digital-portal-2026/
+supabase/.temp/
 
 # Never commit secrets. This site is static — every tracked file is served to
 # the browser, so a secret key here is a public secret. The project URL and
