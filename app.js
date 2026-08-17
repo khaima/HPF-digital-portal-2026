@@ -261,7 +261,7 @@ const NAV = [
   { label: "Learning Resources", href: "/resources" },
   { label: "Assessment Tools", href: "/assessment" },
   { label: "Field Officer App", href: "/field-officer" },
-  { label: "Community Support", href: "/community-support" },
+  { label: "Community Resources", href: "/community-resources" },
 ];
 
 /* shown only when signed in */
@@ -851,16 +851,16 @@ function pageFieldOfficer() {
 }
 
 /* ------------------------------------------------------------ router */
-/* ------------------------------------------------------------ community support
-   Greeting, the four areas HPF supports on, and a chat surface.
+/* ------------------------------------------------------------ community resources
+   Greeting, the four areas HPF supports on, and an AI chat surface.
 
-   The assistant is not wired to a model yet, and deliberately so: answering
-   from the browser would mean shipping an API key to every visitor. The reply
-   path belongs in a Supabase Edge Function where the key stays server-side —
-   see supabase/COMMUNITY-SUPPORT.md. Until that exists the composer stays
-   disabled and says why, rather than looking live and silently doing nothing. */
+   The assistant runs on a Supabase Edge Function (community-resources-chat)
+   that holds the model API key server-side — never in this file, which ships
+   to every visitor's browser. See supabase/COMMUNITY-RESOURCES.md for the
+   function code and deploy steps. If that function isn't deployed yet, the
+   invoke call below fails and the chat says so instead of hanging silently. */
 const SUPPORT_AREAS = [
-  { id: "mara", icon: "mapPin", title: "Maasai Mara",
+  { id: "mara", icon: "mapPin", title: "Maasai community & culture",
     desc: "People, culture, traditions and the land itself.",
     prompt: "Tell me about the Maasai people and their culture." },
   { id: "education", icon: "graduation", title: "Education",
@@ -874,15 +874,15 @@ const SUPPORT_AREAS = [
     prompt: "Please translate this into Maa: " },
 ];
 
-function pageCommunitySupport() {
+function pageCommunityResources() {
   // Every page returns shell(path, main); returning bare markup drops the
   // header and nav entirely, which is how this first shipped.
   const main = `
     <section class="section cs-section">
       <div class="container">
         <div class="section-head">
-          <span class="eyebrow">Community support</span>
-          <h2 class="cs-greeting">Jambo! How can I support you today?</h2>
+          <span class="eyebrow">Community resources</span>
+          <h2 class="cs-greeting">Jambo, How may I support you today?</h2>
           <p>Choose an area below, or type your question. Answers come from an HPF assistant.</p>
         </div>
 
@@ -899,18 +899,18 @@ function pageCommunitySupport() {
           <div class="cs-log" data-cs-log aria-live="polite">
             <div class="cs-msg cs-bot">
               <span class="cs-avatar">${icon("sparkles")}</span>
-              <div class="cs-bubble">Jambo! Pick an area above or ask me anything about HPF's work.</div>
+              <div class="cs-bubble">Jambo, How may I support you today? Pick an area above or ask me anything.</div>
             </div>
           </div>
           <form class="cs-composer" data-cs-form>
-            <input class="input" data-cs-input placeholder="Type your question…" autocomplete="off" disabled>
-            <button class="btn btn-primary" type="submit" disabled>${icon("send")} Send</button>
+            <input class="input" data-cs-input placeholder="Type your question…" autocomplete="off">
+            <button class="btn btn-primary" type="submit">${icon("send")} Send</button>
           </form>
-          <p class="cs-note">${icon("info")} The assistant is not connected yet — the reply service still needs deploying. Your question will not be answered here.</p>
+          <p class="cs-note">${icon("info")} This assistant can make mistakes. For urgent health or safety matters, contact HPF or a local clinic directly.</p>
         </div>
       </div>
     </section>`;
-  return shell("/community-support", main);
+  return shell("/community-resources", main);
 }
 
 const ROUTES = {
@@ -919,7 +919,7 @@ const ROUTES = {
   "/resources": pageResources,
   "/assessment": pageAssessment,
   "/field-officer": pageFieldOfficer,
-  "/community-support": pageCommunitySupport,
+  "/community-resources": pageCommunityResources,
   "/dashboard": pageDashboard,
   "/auth": () => pageAuth("login"),
 };
@@ -931,7 +931,7 @@ function titleFor(path) {
     "/resources": "Digital Learning Resources — Human Practice Foundation",
     "/assessment": "Assessment Tools — Human Practice Foundation",
     "/field-officer": "Field Officer Portal — Human Practice Foundation",
-    "/community-support": "Community Support — Human Practice Foundation",
+    "/community-resources": "Community Resources — Human Practice Foundation",
     "/dashboard": "My Dashboard — Human Practice Foundation",
     "/auth": "Human Practice Foundation — Digital Portal",
   };
@@ -1041,6 +1041,7 @@ async function wireView(path) {
   if (path === "/") wireHeroCarousel();
   if (path === "/auth") wireAuth();
   if (path === "/field-officer") authed ? wireFieldOfficer() : wireAuth();
+  if (path === "/community-resources") wireCommunityResources();
   if (path === "/dashboard") authed ? await wireMyDashboard(authed, Repo.events()) : wireAuth();
 }
 
@@ -1249,6 +1250,66 @@ function wireFieldOfficer() {
     write(K_SUBS, all);
     toast("Report submitted", `${sub.school} recorded successfully.`, "success");
     render();
+  });
+}
+
+/* ------------------------------------------------------------ community resources wiring */
+function wireCommunityResources() {
+  const form = $("[data-cs-form]");
+  const input = $("[data-cs-input]");
+  const log = $("[data-cs-log]");
+  const areaBtns = $$("[data-cs-area]");
+  if (!form || !input || !log) return;
+  let activeArea = null;
+
+  function addMsg(who, text) {
+    const row = document.createElement("div");
+    row.className = `cs-msg ${who === "me" ? "cs-me" : "cs-bot"}`;
+    row.innerHTML = `
+      <span class="cs-avatar">${icon(who === "me" ? "users" : "sparkles")}</span>
+      <div class="cs-bubble">${esc(text)}</div>`;
+    log.appendChild(row);
+    log.scrollTop = log.scrollHeight;
+    return row;
+  }
+
+  areaBtns.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      areaBtns.forEach((b) => b.classList.toggle("active", b === btn));
+      activeArea = btn.dataset.csArea;
+      input.value = btn.dataset.csPrompt || "";
+      input.focus();
+    });
+  });
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const text = input.value.trim();
+    if (!text) return;
+    const sendBtn = form.querySelector("button[type=submit]");
+    addMsg("me", text);
+    input.value = "";
+    input.disabled = true;
+    sendBtn.disabled = true;
+    const typing = addMsg("bot", "…");
+    try {
+      const { data, error } = await supabase.functions.invoke("community-resources-chat", {
+        body: { message: text, area: activeArea },
+      });
+      if (error) throw error;
+      typing.querySelector(".cs-bubble").textContent =
+        data?.reply || "Sorry, I don't have an answer for that right now.";
+    } catch {
+      // The edge function may not be deployed yet, or the request failed —
+      // either way the visitor gets a clear reason, not a stuck "…".
+      typing.querySelector(".cs-bubble").textContent =
+        "I couldn't reach the assistant just now. Please try again in a moment.";
+    } finally {
+      input.disabled = false;
+      sendBtn.disabled = false;
+      input.focus();
+      log.scrollTop = log.scrollHeight;
+    }
   });
 }
 
