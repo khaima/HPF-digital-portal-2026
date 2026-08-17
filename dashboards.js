@@ -5193,26 +5193,77 @@ export function wireMyDashboard(user, events) {
       inp.type = on ? "text" : "password";
       e.currentTarget.innerHTML = `${icon("eye")} ${on ? "Hide" : "Show"}`;
     });
-    body.querySelector("[data-edit-save]")?.addEventListener("click", () => {
+    body.querySelector("[data-edit-save]")?.addEventListener("click", async () => {
       const form = body.querySelector("#editUserForm");
       const data = Object.fromEntries(new FormData(form).entries());
       if (!(data.fullName || "").trim()) return toast("Name required", "", "error");
-      if ((data.password || "").length < 6) return toast("Weak password", "Password must be at least 6 characters.", "error");
-      const users = read(K_USERS, []);
-      const u = users.find((x) => x.id === form.dataset.uid);
-      if (!u) return closeEdit();
+      // Password is optional on an edit: a blank box means "leave it alone",
+      // which is different from "set it to empty". Only validate a typed one.
+      if (data.password && data.password.length < 6)
+        return toast("Weak password", "Password must be at least 6 characters.", "error");
+
+      const uid = form.dataset.uid;
       let role = data.role;
       if ((data.email || "").trim().toLowerCase().endsWith("@" + ORG_DOMAIN)) role = "admin";
-      Object.assign(u, {
-        fullName: data.fullName.trim(), email: (data.email || "").trim(), username: (data.username || "").trim(),
-        password: data.password, role, project: data.project || "", region: data.region || "", school: data.school || "",
-      });
-      write(K_USERS, users);
-      // keep the live session in sync if the admin edited their own account
+
+      const patch = {
+        full_name: data.fullName.trim(),
+        email: (data.email || "").trim() || null,
+        username: (data.username || "").trim() || null,
+        role,
+        project: data.project || null,
+        county: data.region || null,
+        school: data.school || null,
+      };
+
+      /* Write to Postgres when this is a real account. RLS lets an admin update
+         any profile, and guard_profile_role exempts is_admin(), so an admin can
+         change roles here — including demoting themselves, which is why the
+         confirm below exists. A local-only account has no row and falls through
+         to the localStorage path unchanged. */
+      const { data: authUser } = await supabase.auth.getUser();
+      let wroteRemote = false;
+      if (authUser?.user) {
+        const me = authUser.user.id;
+        if (uid === me && role !== "admin") {
+          const ok = confirm(
+            "This removes your own administrator access. You will lose the admin dashboard " +
+            "as soon as the page reloads, and only another admin can restore it. Continue?"
+          );
+          if (!ok) return;
+        }
+        const { error, count } = await supabase
+          .from("profiles").update(patch, { count: "exact" }).eq("id", uid).select("id");
+        if (error) return toast("Could not save", authMessage(error), "error");
+        wroteRemote = (count || 0) > 0;
+      }
+
+      // Mirror locally so legacy accounts and the open session stay consistent.
+      const users = read(K_USERS, []);
+      const u = users.find((x) => x.id === uid);
+      if (u) {
+        Object.assign(u, {
+          fullName: patch.full_name, email: patch.email || "", username: patch.username || "",
+          role, project: patch.project || "", region: patch.county || "", school: patch.school || "",
+        });
+        if (data.password) u.password = data.password;
+        write(K_USERS, users);
+      }
       const sess = read(K_SESSION, null);
-      if (sess && sess.id === u.id) { const { password, ...safe } = u; write(K_SESSION, safe); }
+      if (sess && sess.id === uid) {
+        Object.assign(sess, {
+          fullName: patch.full_name, email: patch.email || "", username: patch.username || "",
+          role, project: patch.project || "", region: patch.county || "",
+          county: patch.county || "", school: patch.school || "",
+        });
+        write(K_SESSION, sess);
+      }
+
       editUserId = null;
-      toast("User updated", `${u.fullName}'s details were saved.`, "success");
+      toast("User updated",
+        wroteRemote ? `${patch.full_name} saved to the HPF database.`
+                    : `${patch.full_name} saved in this browser only — no database account matches.`,
+        wroteRemote ? "success" : "error");
       renderRole("admin");
     });
 
