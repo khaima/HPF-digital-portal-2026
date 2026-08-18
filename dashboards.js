@@ -227,9 +227,10 @@ let adminPromoteOpen = false;
 /* Collapse state for the heavier admin panels — HPF administrators, Digital
    Library, Recent activity. Keyed rather than three separate booleans so the
    toggle markup and handler are one function each instead of three near-
-   identical copies. false = expanded, matching what these panels did before
-   collapsing existed, so nothing looks different until an admin acts. */
-let collapsedPanels = { admins: false, library: false, activity: false };
+   identical copies. Default collapsed: these three are the longest panels on
+   the dashboard and an admin opens this page daily, so the summary heading is
+   what shows first and each expands only on request. */
+let collapsedPanels = { admins: true, library: true, activity: true };
 
 /* A header-row collapse button plus the wrapper its body goes in. Call
    collapseBtn(key) inside the panel's header, then wrap the existing body
@@ -5135,6 +5136,9 @@ export function wireMyDashboard(user, events) {
       panel.querySelector("[data-admin-add-toggle]")?.addEventListener("click", () => {
         adminFormOpen = !adminFormOpen;
         adminPromoteOpen = false;
+        // The form lives inside the collapsible body, so opening it while the
+        // panel is collapsed would click-and-nothing-visibly-happens.
+        if (adminFormOpen) collapsedPanels.admins = false;
         renderAdmins();
         body.querySelector("#addAdminForm [name=fullName]")?.focus();
       });
@@ -5145,6 +5149,7 @@ export function wireMyDashboard(user, events) {
       panel.querySelector("[data-admin-promote-toggle]")?.addEventListener("click", () => {
         adminPromoteOpen = !adminPromoteOpen;
         adminFormOpen = false;
+        if (adminPromoteOpen) collapsedPanels.admins = false;
         renderAdmins();
         body.querySelector("#promoteAdminForm [name=email]")?.focus();
       });
@@ -5317,6 +5322,10 @@ export function wireMyDashboard(user, events) {
     // --- digital library ---
     body.querySelector("[data-lib-toggle]")?.addEventListener("click", () => {
       adminLibOpen = !adminLibOpen;
+      // Same reasoning as the admin add/promote forms: the "Add resource" form
+      // lives inside the collapsible body, so open it visibly rather than
+      // toggling a form nobody can see.
+      if (adminLibOpen) collapsedPanels.library = false;
       renderRole("admin");
     });
     body.querySelector("[data-lib-cancel]")?.addEventListener("click", () => {
