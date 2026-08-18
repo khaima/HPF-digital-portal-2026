@@ -182,6 +182,33 @@ const Repo = {
     });
     if (error) console.warn("login_events insert failed:", error.message);
   },
+  /* The admin inbox, merged. Staff logins are written straight to Postgres by
+     record() above and were never read back — the inbox showed only
+     recordLocal()'s learner/legacy events, a different and much smaller slice
+     of activity than what the table actually holds (see AUDIT.md §3).
+     Normalized onto the local shape (`at` as an epoch number, `to` not
+     `delivered_to`) so adminBody()'s existing rendering needs no changes.
+     Only fetches for an admin viewing their own dashboard — every other role
+     receives `events` but never reads it, so a query nobody will see would
+     just be a wasted round trip on every dashboard load. */
+  async allEvents(user) {
+    const local = Repo.events();
+    if (!user || user.role !== "admin") return local;
+    const { data, error } = await supabase
+      .from("login_events").select("*").order("created_at", { ascending: false }).limit(200);
+    if (error) {
+      console.warn("login_events fetch failed:", error.message);
+      return local; // degrade to the partial local picture rather than an empty inbox
+    }
+    const remote = (data || []).map((e) => ({
+      id: e.id, type: e.type, name: e.name, identifier: e.identifier,
+      role: e.role, at: Date.parse(e.created_at), status: "delivered", to: e.delivered_to,
+    }));
+    // Never both for the same event: record() sends a learner to recordLocal
+    // and everyone else to Postgres, never both, so this is a merge of two
+    // disjoint sets, not deduplication.
+    return [...remote, ...local].sort((a, b) => b.at - a.at).slice(0, 200);
+  },
 };
 
 /* ------------------------------------------------------------ auth store
@@ -772,10 +799,17 @@ function authShell(main) {
 }
 
 /* ------------------------------------------------------------ my dashboard */
-function pageDashboard() {
+// render() calls view() and then wireView(path) in strict sequence for the
+// same navigation (never concurrently, never out of order — see render()),
+// so wireView's /dashboard branch can safely reuse whatever pageDashboard()
+// just fetched instead of repeating the same Postgres round trip a moment
+// later for the same page load.
+let dashboardEventsCache = [];
+async function pageDashboard() {
   const user = Auth.current();
   if (!user) return pageAuth("login");
-  return shell("/dashboard", myDashboardMain(user, Repo.events()));
+  dashboardEventsCache = await Repo.allEvents(user);
+  return shell("/dashboard", myDashboardMain(user, dashboardEventsCache));
 }
 
 /* ------------------------------------------------------------ field officer */
@@ -1129,7 +1163,7 @@ async function wireView(path) {
   if (path === "/auth") wireAuth();
   if (path === "/field-officer") authed ? wireFieldOfficer() : wireAuth();
   if (path === "/community-resources") wireCommunityResources();
-  if (path === "/dashboard") authed ? await wireMyDashboard(authed, Repo.events()) : wireAuth();
+  if (path === "/dashboard") authed ? await wireMyDashboard(authed, dashboardEventsCache) : wireAuth();
 }
 
 /* ------------------------------------------------------------ auth wiring */
