@@ -981,7 +981,12 @@ const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 /* read every store and compute the numbers the analytics tabs visualize */
 function computeAdminStats() {
   const users = read(K_USERS, []);
-  const classes = read(K_CLASSES, []);
+  // getClasses(), not a raw read: it's the same store, but also carries the
+  // assessment-shape migration that used to run only inside the old
+  // localStorage-only getClasses(). An admin viewing this before the coach
+  // view has ever mounted in this browser would otherwise see un-migrated
+  // assessment rows.
+  const classes = getClasses();
   // Filtered once, here. Every widget that counts reports — KPIs, sync donut,
   // county ranking, the school map — reads this array, so the filter bar can
   // never leave two widgets disagreeing about the same number.
@@ -2820,7 +2825,6 @@ function scoreClass(v) {
 }
 
 /* -------- coach: class store, state & progress computations -------- */
-const K_ASSIGN = "hpf_assignments"; // legacy single-class store (migrated below)
 const K_CLASSES = "hpf_classes";
 const ASSIGN_TYPES = {
   lesson: { label: "Lesson", icon: "book", color: "oklch(58% 0.16 300)" },
@@ -2846,59 +2850,90 @@ const coachState = {
   editUserId: null, // user open in the teacher edit modal
 };
 
-/* A seeded MCQ assessment (with auto-marked submissions) so the demo class
-   shows the assessment analytics out of the box. */
-function seedAssessment() {
-  const L = KOLIBRI.coach.learners; // l1..l6
-  const questions = [
-    { id: "q1", text: "What is 1/2 + 1/4?", options: ["1/6", "2/6", "3/4", "1/3"], correct: 2 },
-    { id: "q2", text: "Which fraction is largest?", options: ["1/2", "2/3", "1/4", "3/8"], correct: 1 },
-    { id: "q3", text: "Simplify 4/8.", options: ["1/2", "2/4", "4/8", "1/4"], correct: 0 },
-    { id: "q4", text: "What is 3/5 of 20?", options: ["10", "12", "15", "9"], correct: 1 },
-    { id: "q5", text: "0.75 as a fraction is…", options: ["3/4", "7/5", "1/4", "2/3"], correct: 0 },
-  ];
-  // pre-filled answers per learner (indexes) → auto-marked below
-  const picks = {
-    l1: [2, 1, 0, 1, 0], // 5/5
-    l2: [2, 1, 0, 1, 3], // 4/5
-    l3: [2, 0, 0, 1, 0], // 4/5
-    l4: [0, 1, 2, 3, 0], // 2/5
-    l5: [2, 1, 0, 0, 0], // 4/5
-    l6: [1, 0, 2, 3, 1], // 0/5
-  };
-  const submissions = L.map((l) => {
-    const answers = picks[l.id] || [];
-    const correct = questions.reduce((n, q, i) => n + (answers[i] === q.correct ? 1 : 0), 0);
-    return { learnerId: l.id, name: l.name, answers, correct, total: questions.length,
-      pct: Math.round((correct / questions.length) * 100), at: Date.now() - 864e5 };
+
+/* ---------------------------------------------------------- classes (Postgres)
+   Migrated from hpf_classes-only storage to the real `classes` + `enrollments`
+   tables (see supabase/schema.sql; RLS confirmed live and unchanged — this
+   migration added no new table and no new policy).
+
+   Assignments, assessments and their submissions have NOT migrated — that is
+   audit items 6-7, deliberately separate. They still live nested inside each
+   class object exactly as before, so hpf_classes remains in active use as
+   more than a cache: it is the only store those still hold. This function
+   fetches name/school/roster from Postgres and merges them onto whatever is
+   already in the local class object, preserving its assignments/assessments
+   arrays untouched, then writes the merge back to hpf_classes so every other
+   function in this file that reads a class's nested work keeps working with
+   zero changes.
+
+   A second, structural reason the local mirror cannot simply be deleted once
+   this loads: learners in this app have no Supabase session at all (see
+   isLearnerRole in app.js) and RLS is JWT-based, so a learner's own view of
+   "my assignments" (liveSessionsFor, learnerAssignments below) can never be a
+   direct client-side Postgres query — there is no JWT for RLS to authorize.
+   Those two functions keep reading hpf_classes unchanged; that is the one
+   part of "remove the dependency on hpf_classes" this migration cannot do,
+   and is a scope boundary, not an oversight. */
+let classesCache = [];         // Postgres classes, this session's RLS-visible set
+let classesLoaded = false;
+let classesError = null;
+let classesAuthed = false;     // real Supabase session at all? (false for local/legacy accounts)
+
+async function loadClasses() {
+  const { data: authData } = await supabase.auth.getUser();
+  classesAuthed = !!authData?.user;
+  if (!classesAuthed) {
+    // A local-only or legacy session has no JWT, so every query below would
+    // return empty under RLS regardless — skip the round trip and say why,
+    // the same pattern already used for schools/returns/field reports.
+    classesLoaded = true;
+    classesError = null;
+    return classesCache;
+  }
+
+  const { data: classRows, error: classErr } = await supabase
+    .from("classes").select("*").order("created_at");
+  classesLoaded = true;
+  if (classErr) { classesError = authMessage(classErr); return classesCache; }
+
+  const { data: enrRows, error: enrErr } = await supabase
+    .from("enrollments").select("*").order("created_at");
+  // A failed roster fetch should not blank out the class list an admin or
+  // teacher can otherwise see — degrade to classes with an empty roster
+  // rather than nothing at all.
+  if (enrErr) console.warn("enrollments fetch failed:", enrErr.message);
+
+  classesError = null;
+  const local = read(K_CLASSES, []);
+  const byId = Object.fromEntries(local.map((c) => [c.id, c]));
+
+  classesCache = classRows.map((c) => {
+    const existing = byId[c.id] || {};
+    return {
+      id: c.id, name: c.name, school: c.school, ownerId: c.owner_id,
+      learners: (enrRows || [])
+        .filter((e) => e.class_id === c.id)
+        .map((e) => ({
+          id: e.learner_id || e.id, name: e.name,
+          active: e.active_label || "just now", account: e.is_account,
+          _enrollmentId: e.id, // the row a removal must delete — not the same as `id` for a name-only entry
+        })),
+      // Not yet migrated — carried over from whatever this browser already had.
+      assignments: existing.assignments || [],
+      assessments: existing.assessments || [],
+    };
   });
-  return { id: uid(), title: "Fractions Check — MCQ", session: "ended",
-    published: true, audience: "all", targetIds: [], questions, submissions };
+  write(K_CLASSES, classesCache);
+  return classesCache;
 }
 
-/* Classes persist in localStorage; the demo class (and any legacy
-   assignment store) is migrated in on first run. */
+/* Synchronous read of the local mirror — every render path in this file calls
+   this exactly as it called the old localStorage-only version, unchanged. */
 function getClasses() {
-  let classes = read(K_CLASSES, null);
-  if (!classes || !classes.length) {
-    classes = [
-      {
-        id: uid(),
-        name: KOLIBRI.coach.className,
-        school: SCHOOLS[0],
-        learners: KOLIBRI.coach.learners,
-        assignments: read(K_ASSIGN, null) || KOLIBRI.coach.assignments,
-        assessments: [seedAssessment()],
-      },
-    ];
-    write(K_CLASSES, classes);
-  }
+  let classes = read(K_CLASSES, []);
   let dirty = false;
   classes.forEach((c) => {
-    // migrate classes created before schools / assessments existed
-    if (!SCHOOLS.includes(c.school)) { c.school = SCHOOLS[0]; dirty = true; }
     if (!Array.isArray(c.assessments)) { c.assessments = []; dirty = true; }
-    // migrate assessments created before publish/audience existed
     c.assessments.forEach((a) => {
       if (a.published === undefined) {
         a.published = a.session === "active" || a.session === "ended";
@@ -2912,6 +2947,23 @@ function getClasses() {
   return classes;
 }
 const saveClasses = (classes) => write(K_CLASSES, classes);
+
+/* No control in the current UI deletes a class — grep-confirmed, there is no
+   data-class-delete anywhere — so this is deliberately not wired to a button;
+   adding one would be a UI change beyond what this migration asked for. It
+   exists so the capability is available (e.g. from a future admin tool)
+   without a separate change, and to demonstrate the deletion is genuinely
+   safe under the RLS already in place: `class write` is owner-or-admin, and
+   FK cascades (enrollments.class_id, assignments.class_id, assessments.class_id
+   all ON DELETE CASCADE) mean Postgres itself removes the roster and any
+   migrated coursework with it — nothing is left orphaned in the database. */
+async function deleteClass(classId) {
+  const { error } = await supabase.from("classes").delete().eq("id", classId);
+  if (error) return { error };
+  classesCache = classesCache.filter((c) => c.id !== classId);
+  saveClasses(getClasses().filter((c) => c.id !== classId));
+  return { error: null };
+}
 
 /* the signed-in user whose coach dashboard is rendering (set in dashboardBody).
    A real teacher is scoped to their own school; an admin previewing the
@@ -3941,15 +3993,34 @@ function teacherBody() {
 
   // a scoped teacher with no class yet in their school
   if (!cls) {
-    return `
+    const head = `
       <div class="panel-head-row" style="margin-bottom:1rem">
         <div>
           <h2 style="font-size:1.15rem">Coach</h2>
           <p class="panel-sub" style="margin:0">${icon("school")} ${esc(school || "")}</p>
         </div>
       </div>
-      ${classSwitcher(scoped, null)}
-      <div class="panel"><div class="empty-state">No classes yet for <strong>${esc(school || "your school")}</strong>.<br>Click <strong>New class</strong> above to create your first grade.</div></div>`;
+      ${classSwitcher(scoped, null)}`;
+
+    // Loading, error and "no real database access" are three different
+    // reasons the list can be empty, and a teacher acts differently on each
+    // — waiting, retrying, or asking an admin to fix their account — so they
+    // get three different messages rather than one generic empty state.
+    if (!classesLoaded) {
+      return `${head}<div class="panel"><div class="empty-state">Loading your classes…</div></div>`;
+    }
+    if (classesError) {
+      return `${head}<div class="panel"><div class="empty-state">Could not load your classes — ${esc(classesError)}
+        <div style="margin-top:.6rem"><button class="btn btn-outline btn-xs" data-classes-retry>${icon("refresh")} Try again</button></div>
+      </div></div>`;
+    }
+    const dbNotice = !classesAuthed
+      ? `<div class="notice" style="margin-bottom:1rem">${icon("info")}
+          <span>This browser is signed in on a <strong>local account</strong>, which the HPF database has never seen.
+          Any class created here stays on this device only — sign in with a real HPF account to save to the database.</span>
+        </div>`
+      : "";
+    return `${head}${dbNotice}<div class="panel"><div class="empty-state">No classes yet for <strong>${esc(school || "your school")}</strong>.<br>Click <strong>New class</strong> above to create your first grade.</div></div>`;
   }
 
   const classes = scoped; // dropdowns & switcher only show this coach's school
@@ -5004,9 +5075,13 @@ export function wireMyDashboard(user, events) {
     // schools come from Postgres — fetch once on mount, then re-render so the
     // map swaps out of its loading state. Failures surface in the panel itself
     // (with a retry), so nothing to catch here.
-    // Schools, the heads' returns, and field reports all feed panels in here.
-    // One re-render once they land, rather than the dashboard twitching thrice.
-    Promise.allSettled([loadSchools(), loadReturns(), loadRevisions(), loadGrades(), loadFieldReports()]).then(() => {
+    // Schools, the heads' returns, field reports, and classes all feed panels
+    // in here. One re-render once they land, rather than the dashboard
+    // twitching four times. classesLoaded guards this the same way the coach
+    // view's own mount does, so an admin who already opened the coach view
+    // this session (classesLoaded already true) does not re-fetch here.
+    const classesPromise = classesLoaded ? Promise.resolve(classesCache) : loadClasses();
+    Promise.allSettled([loadSchools(), loadReturns(), loadRevisions(), loadGrades(), loadFieldReports(), classesPromise]).then(() => {
       if (body.querySelector("[data-admin-panel]")) renderAnalytics();
     });
     // update automatically when data changes in another tab (keep just one listener)
@@ -5408,6 +5483,19 @@ export function wireMyDashboard(user, events) {
 
   // Kolibri-style + school-leader interactions
   function wireRoleActions() {
+    // Classes load from Postgres on first mount of the coach view specifically
+    // — guarded on markup only that view renders (classSwitcher's "New class"
+    // control), the same way schools/returns/field-reports guard their loads,
+    // rather than on role, so this never fires a query for a view that isn't
+    // showing this data.
+    if (!classesLoaded && body.querySelector("[data-new-class-toggle]")) {
+      loadClasses().then(() => { if (body.querySelector("[data-new-class-toggle]")) renderRole("teacher"); });
+    }
+    body.querySelector("[data-classes-retry]")?.addEventListener("click", () => {
+      classesLoaded = false;
+      renderRole("teacher");
+    });
+
     // sub-tabs (Learn: Home/Library/Bookmarks · Coach: Reports/Lessons/Quizzes/Learners)
     const subtabs = [...body.querySelectorAll("[data-subtab]")];
     subtabs.forEach((tab) =>
@@ -5858,9 +5946,10 @@ export function wireMyDashboard(user, events) {
       coachState.openClassForm = false;
       renderRole("teacher");
     });
-    body.querySelector("#newClassForm")?.addEventListener("submit", (e) => {
+    body.querySelector("#newClassForm")?.addEventListener("submit", async (e) => {
       e.preventDefault();
-      const fd = new FormData(e.currentTarget);
+      const form = e.currentTarget;
+      const fd = new FormData(form);
       const name = (fd.get("name") || "").trim();
       const school = fd.get("school") || "";
       if (!name) return toast("Name required", "Give the class a name, e.g. Grade 4 — Red.", "error");
@@ -5868,8 +5957,35 @@ export function wireMyDashboard(user, events) {
       const classes = getClasses();
       if (classes.some((c) => c.name.toLowerCase() === name.toLowerCase()))
         return toast("Duplicate class", `A class called “${name}” already exists.`, "error");
-      const cls = { id: uid(), name, school, learners: [], assignments: [] };
+
+      if (!classesAuthed) {
+        // A local-only or legacy account has no JWT, so this can never reach
+        // Postgres — say so plainly rather than pretending it saved (the same
+        // messaging already used for legacy sign-ins and school returns).
+        return toast(
+          "Cannot save to the HPF database",
+          "This account is signed in locally only. Ask an HPF administrator to create your account under Authentication → Users.",
+          "error"
+        );
+      }
+
+      const btn = form.querySelector("[type=submit]");
+      if (btn) { btn.disabled = true; btn.textContent = "Creating…"; }
+
+      const { data, error } = await supabase
+        .from("classes")
+        .insert({ name, school, owner_id: coachUser.id })
+        .select().single();
+
+      if (error) {
+        if (btn) { btn.disabled = false; btn.textContent = "Create class"; }
+        return toast("Could not create class", authMessage(error), "error");
+      }
+
+      const cls = { id: data.id, name: data.name, school: data.school, ownerId: data.owner_id,
+        learners: [], assignments: [], assessments: [] };
       classes.push(cls);
+      classesCache.push(cls);
       saveClasses(classes);
       coachState.classId = cls.id;
       coachState.openClassForm = false;
@@ -5888,26 +6004,47 @@ export function wireMyDashboard(user, events) {
       coachState.openLearnerForm = false;
       renderRole("teacher");
     });
-    body.querySelector("#addLearnerForm")?.addEventListener("submit", (e) => {
+    body.querySelector("#addLearnerForm")?.addEventListener("submit", async (e) => {
       e.preventDefault();
-      const data = Object.fromEntries(new FormData(e.currentTarget).entries());
+      const form = e.currentTarget;
+      const data = Object.fromEntries(new FormData(form).entries());
       const { classes, cls } = currentClass();
       const has = (name) => cls.learners.some((l) => l.name.toLowerCase() === name.toLowerCase());
-      let added = 0, skipped = 0, lastName = "";
+
+      // Collect every row this submission wants to add first, then insert
+      // them in one request — a bulk paste of 30 names should be one round
+      // trip, not thirty.
+      const rows = []; // { name, is_account, learner_id }
+      let skipped = 0;
+      const seenThisSubmit = new Set();
+      const willAdd = (name) => {
+        const key = name.toLowerCase();
+        if (has(name) || seenThisSubmit.has(key)) return false;
+        seenThisSubmit.add(key);
+        return true;
+      };
 
       // 1) enroll a registered portal account
+      let acctName = null;
       if (data.userId) {
         const u = read(K_USERS, []).find((x) => x.id === data.userId);
         if (!u) return toast("Account not found", "", "error");
-        cls.learners.push({ id: u.id, name: u.fullName || u.username, active: "just now", account: true });
-        added++; lastName = u.fullName || u.username;
+        acctName = u.fullName || u.username;
+        if (willAdd(acctName))
+          // learner_id stays null even here: local learner accounts have no
+          // matching row in profiles (they never sign up through Supabase
+          // Auth — see isLearnerRole), so there is no id enrollments.learner_id
+          // could validly reference. The account link is by name only, same
+          // as a roster-only entry, just flagged is_account for the UI.
+          rows.push({ name: acctName, is_account: true, _localId: u.id });
+        else skipped++;
       }
 
       // 2) single name field
       const single = (data.name || "").trim();
       if (single) {
-        if (has(single)) skipped++;
-        else { cls.learners.push({ id: uid(), name: single, active: "just now" }); added++; lastName = single; }
+        if (willAdd(single)) rows.push({ name: single, is_account: false });
+        else skipped++;
       }
 
       // 3) bulk paste — split on newlines, commas or semicolons
@@ -5916,16 +6053,51 @@ export function wireMyDashboard(user, events) {
         .map((s) => s.trim())
         .filter(Boolean)
         .forEach((name) => {
-          if (has(name)) { skipped++; return; }
-          cls.learners.push({ id: uid(), name, active: "just now" });
-          added++; lastName = name;
+          if (willAdd(name)) rows.push({ name, is_account: false });
+          else skipped++;
         });
 
-      if (!added && !skipped) return toast("Nothing to add", "Pick an account, type a name, or paste a list.", "error");
-      if (!added) return toast("All duplicates", `Everyone you listed is already in ${cls.name}.`, "error");
+      if (!rows.length && !skipped) return toast("Nothing to add", "Pick an account, type a name, or paste a list.", "error");
+      if (!rows.length) return toast("All duplicates", `Everyone you listed is already in ${cls.name}.`, "error");
 
-      saveClasses(classes);
+      if (!classesAuthed) {
+        return toast(
+          "Cannot save to the HPF database",
+          "This account is signed in locally only. Ask an HPF administrator to create your account under Authentication → Users.",
+          "error"
+        );
+      }
+
+      const btn = form.querySelector("[type=submit]");
+      if (btn) { btn.disabled = true; btn.textContent = "Adding…"; }
+
+      const { data: inserted, error } = await supabase
+        .from("enrollments")
+        .insert(rows.map((r) => ({ class_id: cls.id, name: r.name, is_account: r.is_account })))
+        .select();
+
+      if (error) {
+        if (btn) { btn.disabled = false; btn.textContent = "Add learner"; }
+        return toast("Could not add learners", authMessage(error), "error");
+      }
+
+      inserted.forEach((e, i) => {
+        const src = rows[i];
+        cls.learners.push({
+          id: src._localId || e.id, name: e.name, active: e.active_label || "just now",
+          account: e.is_account, _enrollmentId: e.id,
+        });
+      });
+      // `cls` came from a fresh JSON.parse of localStorage (getClasses(), inside
+      // currentClass()), a different object than what's in classesCache — the
+      // in-memory push above only touched this copy, so both the cache and the
+      // on-disk array need the same swap explicitly.
+      const cacheIdx = classesCache.findIndex((c) => c.id === cls.id);
+      if (cacheIdx !== -1) classesCache[cacheIdx] = cls;
+      saveClasses(classes.map((c) => (c.id === cls.id ? cls : c)));
+
       coachState.openLearnerForm = false;
+      const added = rows.length, lastName = rows[rows.length - 1].name;
       const msg = added === 1 ? `${lastName} enrolled in ${cls.name}.` : `${added} learners enrolled in ${cls.name}.`;
       toast("Learners added", skipped ? `${msg} (${skipped} duplicate${skipped === 1 ? "" : "s"} skipped.)` : msg, "success");
       renderRole("teacher");
@@ -5933,17 +6105,34 @@ export function wireMyDashboard(user, events) {
 
     // coach: remove a learner from the class (also strips their results)
     body.querySelectorAll("[data-learner-remove]").forEach((btn) =>
-      btn.addEventListener("click", (e) => {
+      btn.addEventListener("click", async (e) => {
         e.stopPropagation();
         const id = btn.dataset.learnerRemove;
         const { classes, cls } = currentClass();
         const l = cls.learners.find((x) => x.id === id);
+        if (!l) return;
+
+        // A roster entry from before this migration (or added while signed in
+        // locally) has no Postgres row to delete — remove it locally only,
+        // same as it always worked, rather than failing on a delete that
+        // was never going to find anything.
+        if (l._enrollmentId) {
+          btn.disabled = true;
+          const { error } = await supabase.from("enrollments").delete().eq("id", l._enrollmentId);
+          if (error) {
+            btn.disabled = false;
+            return toast("Could not remove learner", authMessage(error), "error");
+          }
+        }
+
         cls.learners = cls.learners.filter((x) => x.id !== id);
         cls.assignments.forEach((a) => {
           a.results = a.results.filter((r) => r.id !== id);
         });
-        saveClasses(classes);
-        toast("Learner removed", l ? `${l.name} removed from ${cls.name}.` : "", "success");
+        const cacheIdx = classesCache.findIndex((c) => c.id === cls.id);
+        if (cacheIdx !== -1) classesCache[cacheIdx] = cls;
+        saveClasses(classes.map((c) => (c.id === cls.id ? cls : c)));
+        toast("Learner removed", `${l.name} removed from ${cls.name}.`, "success");
         renderRole("teacher");
       })
     );
