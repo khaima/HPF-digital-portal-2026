@@ -4723,3 +4723,13 @@ textarea.input:focus {
   .cs-area, .cs-msg { animation: none; opacity: 1; }
   .cs-dot, .cs-typing span { animation: none; }
 }
+
+/* ---------------------------------------------------------- panel collapse
+   Shared by HPF administrators, Digital Library and Recent activity. arrowRight
+   rotated 90deg reads as "pointing down" while expanded, matching the pattern
+   already used on the Child Empowerment Model accordion (.cem-chev). */
+.panel-collapse-btn svg { transition: transform 0.18s ease; }
+.panel-collapse-btn.open svg { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) {
+  .panel-collapse-btn svg { transition: none; }
+}

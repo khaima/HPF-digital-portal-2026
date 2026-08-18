@@ -224,6 +224,28 @@ let adminsAuthed = false;   // is this browser on a real Supabase session at all
 let adminFormOpen = false;
 let adminPromoteOpen = false;
 
+/* Collapse state for the heavier admin panels — HPF administrators, Digital
+   Library, Recent activity. Keyed rather than three separate booleans so the
+   toggle markup and handler are one function each instead of three near-
+   identical copies. false = expanded, matching what these panels did before
+   collapsing existed, so nothing looks different until an admin acts. */
+let collapsedPanels = { admins: false, library: false, activity: false };
+
+/* A header-row collapse button plus the wrapper its body goes in. Call
+   collapseBtn(key) inside the panel's header, then wrap the existing body
+   markup in collapseBody(key, html) — the two always agree on state because
+   they read the same collapsedPanels entry. */
+function collapseBtn(key) {
+  const open = !collapsedPanels[key];
+  return `<button class="icon-btn panel-collapse-btn ${open ? "open" : ""}"
+            data-panel-collapse="${key}" aria-expanded="${open}" title="${open ? "Collapse" : "Expand"}">
+            ${icon("arrowRight")}
+          </button>`;
+}
+function collapseBody(key, html) {
+  return `<div class="panel-collapse-body" ${collapsedPanels[key] ? "hidden" : ""}>${html}</div>`;
+}
+
 async function loadAdmins() {
   const { data: sess } = await supabase.auth.getSession();
   adminsAuthed = !!sess?.session;
@@ -290,13 +312,14 @@ function adminAccountsPanel(currentUser) {
         <h2>${icon("shield")} HPF administrators</h2>
         <p class="panel-sub" style="margin-bottom:0">Accounts in the HPF database with full platform access · works on every device</p>
       </div>
-      <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
         <button class="btn btn-outline" data-admin-promote-toggle>${icon("userCheck")} Promote existing account</button>
         <button class="btn btn-primary" data-admin-add-toggle>${icon("userPlus")} Add administrator</button>
+        ${collapseBtn("admins")}
       </div>
     </div>`;
 
-  const wrap = (inner) => `<div class="panel" style="margin-top:1.5rem" data-admins-panel>${head}${inner}</div>`;
+  const wrap = (inner) => `<div class="panel" style="margin-top:1.5rem" data-admins-panel>${head}${collapseBody("admins", inner)}</div>`;
 
   if (!adminsLoaded) return wrap(`<div class="empty-state">Loading administrators…</div>`);
 
@@ -651,16 +674,7 @@ function digitalLibraryPanel() {
         .join("")
     : `<div class="empty-state">The library is empty. Add your first resource above.</div>`;
 
-  return `
-    <div class="panel" style="margin-top:1.5rem" data-lib-panel>
-      <div class="panel-head-row">
-        <div>
-          <h2>${icon("library")} Digital Library</h2>
-          <p class="panel-sub" style="margin:0">Upload and publish resources teachers can share with learners · ${lib.filter((r) => r.published).length} published</p>
-        </div>
-        <button class="btn btn-primary" data-lib-toggle>${icon("plus")} ${adminLibOpen ? "Close" : "Add resource"}</button>
-      </div>
-
+  const body = `
       <form id="libForm" class="add-user-form" ${adminLibOpen ? "" : "hidden"}>
         <div class="form-row">
           <div class="field"><label>Title</label>
@@ -685,7 +699,21 @@ function digitalLibraryPanel() {
         </div>
       </form>
 
-      <div class="lib-list">${rows}</div>
+      <div class="lib-list">${rows}</div>`;
+
+  return `
+    <div class="panel" style="margin-top:1.5rem" data-lib-panel>
+      <div class="panel-head-row">
+        <div>
+          <h2>${icon("library")} Digital Library</h2>
+          <p class="panel-sub" style="margin:0">Upload and publish resources teachers can share with learners · ${lib.filter((r) => r.published).length} published</p>
+        </div>
+        <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
+          <button class="btn btn-primary" data-lib-toggle>${icon("plus")} ${adminLibOpen ? "Close" : "Add resource"}</button>
+          ${collapseBtn("library")}
+        </div>
+      </div>
+      ${collapseBody("library", body)}
     </div>`;
 }
 let adminView = "scorecard";         // which analytics tab is open
@@ -2364,9 +2392,14 @@ function adminBody(ctx) {
     ${userManagementPanel(ctx.user)}
     ${digitalLibraryPanel()}
     <div class="panel" style="margin-top:1.5rem">
-      <h2>Recent activity</h2>
-      <p class="panel-sub">Across schools, teachers, learners and field teams</p>
-      <div>${d.activity
+      <div class="panel-head-row">
+        <div>
+          <h2>Recent activity</h2>
+          <p class="panel-sub" style="margin-bottom:0">Across schools, teachers, learners and field teams</p>
+        </div>
+        ${collapseBtn("activity")}
+      </div>
+      ${collapseBody("activity", `<div>${d.activity
         .map(
           (a) => `<div class="submission">
             <span class="s-icon">${icon("activity")}</span>
@@ -2374,7 +2407,7 @@ function adminBody(ctx) {
               <div class="s-meta">${esc(a.act)} · ${esc(ROLE_LABEL[a.role] || a.role)}</div></div>
           </div>`
         )
-        .join("")}</div>
+        .join("")}</div>`)}
     </div>`;
 }
 
@@ -4617,6 +4650,20 @@ export function wireMyDashboard(user, events) {
             ?.scrollIntoView({ behavior: "smooth", block: "start" })
         );
       }
+    });
+
+    /* Collapse toggles for HPF administrators / Digital Library / Recent
+       activity. Delegated for the same reason as the KPI actions above: these
+       panels are replaced wholesale on most re-renders, so a direct listener
+       would go stale. A full renderRole is needed rather than a targeted
+       repaint — the three panels are built by three different functions with
+       no shared re-render path. */
+    body.addEventListener("click", (e) => {
+      const b = e.target.closest("[data-panel-collapse]");
+      if (!b || !body.contains(b)) return;
+      const key = b.dataset.panelCollapse;
+      collapsedPanels[key] = !collapsedPanels[key];
+      renderRole("admin");
     });
 
     /* --- dashboard filter bar ---
