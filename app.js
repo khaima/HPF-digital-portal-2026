@@ -24,9 +24,66 @@ import {
 /* ------------------------------------------------------------ storage keys */
 const K_USERS = "hpf_users";
 const K_SESSION = "hpf_session";
-const K_SUBS = "hpf_submissions";
 const K_EVENTS = "hpf_login_events"; // dummy repository of all login requests
 const ADMIN_EMAIL = "patrick@humanpractice.org";
+const K_FO_OUTBOX = "hpf_fo_outbox"; // field reports written offline, waiting to sync
+
+/* ------------------------------------------------------------ field reports
+   Real Postgres table (field_reports), RLS-scoped so a field officer sees
+   their own visits and an admin sees every officer's. The page renders
+   synchronously, so reads come from a module-level cache filled on mount —
+   the same pattern schools and school_returns already use. */
+let foReportsCache = [];
+let foReportsLoaded = false;
+let foReportsError = null;
+
+async function loadFoReports() {
+  const { data, error } = await supabase
+    .from("field_reports").select("*").order("created_at", { ascending: false });
+  foReportsLoaded = true;
+  foReportsError = error ? authMessage(error) : null;
+  if (!error) foReportsCache = data || [];
+  return foReportsCache;
+}
+
+/* A report only ever reaches Postgres if the browser had a connection at the
+   moment it was submitted — field officers work in places that often don't.
+   A report that fails for that reason is queued here rather than lost, and
+   flushed automatically the next time the browser comes online or this page
+   loads. A report Postgres refuses for any OTHER reason (no JWT, RLS) is a
+   problem retrying can never fix, so it is never queued — see
+   foReportIsConnectivityFailure below. */
+const foOutbox = () => read(K_FO_OUTBOX, []);
+const foReportIsConnectivityFailure = (error) =>
+  // A genuine network failure never reaches PostgREST, so supabase-js has no
+  // structured error to hand back — only a message like "Failed to fetch".
+  // An RLS refusal (42501) or any other structured Postgres error is real: the
+  // request arrived and was declined, which offline retry cannot change.
+  !error.code && /fetch|network/i.test(error.message || "");
+
+/* Returns { synced, changed } rather than just a sync count. A pending item
+   that turns out to be blocked is not a sync, but the outbox state still
+   changed — the row needs to stop showing as "pending" and start showing why
+   it's stuck, so callers must re-render on either, not only on success. */
+async function flushFoOutbox() {
+  const queue = foOutbox();
+  if (!queue.length) return { synced: 0, changed: false };
+  const remaining = [];
+  let synced = 0, newlyBlocked = 0;
+  for (const item of queue) {
+    const { error } = await supabase.from("field_reports").insert(item.row);
+    if (error) {
+      if (foReportIsConnectivityFailure(error)) remaining.push(item);
+      // else: a real refusal (e.g. the session lost its JWT) — surfacing this
+      // silently on every page load would be noise; it shows next time the
+      // officer opens the field portal and sees it still pending.
+      else { remaining.push({ ...item, blocked: authMessage(error) }); newlyBlocked++; }
+    } else synced++;
+  }
+  write(K_FO_OUTBOX, remaining);
+  if (synced) await loadFoReports();
+  return { synced, changed: synced > 0 || newlyBlocked > 0 };
+}
 
 /* ------------------------------------------------------------ user shape
    Views read camelCase (user.fullName, user.orgType); the profiles table is
@@ -727,9 +784,13 @@ function pageFieldOfficer() {
   if (!user) return pageAuth("login");
 
   const allowed = user.role === "field_officer" || user.role === "admin";
-  const subs = read(K_SUBS, []).filter((s) => s.userId === user.id);
-  const synced = subs.filter((s) => s.status === "synced").length;
-  const pending = subs.length - synced;
+  // Postgres already scopes this to the signed-in officer via RLS (admins see
+  // everyone's), so no client-side filter by user is needed the way the old
+  // localStorage version required.
+  const outboxPending = foOutbox().filter((o) => !o.blocked);
+  const outboxBlocked = foOutbox().filter((o) => o.blocked);
+  const syncedCount = foReportsCache.length;
+  const totalCount = syncedCount + outboxPending.length + outboxBlocked.length;
 
   const gateNotice = allowed
     ? ""
@@ -739,6 +800,15 @@ function pageFieldOfficer() {
         You can explore the interface below, but submissions are marked for review.</span>
       </div>`;
 
+  const dbNotice = !foReportsLoaded
+    ? `<div class="empty-state">Loading your reports…</div>`
+    : foReportsError
+    ? `<div class="notice">${icon("info")}
+        <span>Could not load past reports — ${esc(foReportsError)}</span>
+        <button class="btn btn-outline btn-xs" data-fo-retry style="margin-left:.6rem">${icon("refresh")} Try again</button>
+      </div>`
+    : "";
+
   const visitOptions = VISIT_TYPES.map((v) => `<option>${v}</option>`).join("");
   const countyOptions =
     `<option value="" disabled ${user.county ? "" : "selected"}>Select county</option>` +
@@ -746,21 +816,28 @@ function pageFieldOfficer() {
       (c) => `<option ${user.county === c ? "selected" : ""}>${c}</option>`
     ).join("");
 
-  const subsList = subs.length
-    ? subs
-        .slice()
-        .reverse()
+  // Three sources merged into one list: synced (Postgres, authoritative),
+  // queued (offline, waiting for a connection), blocked (Postgres refused it
+  // for a reason offline retry can't fix — surfaced rather than hidden).
+  const allRows = [
+    ...foReportsCache.map((s) => ({ ...s, _status: "synced" })),
+    ...outboxPending.map((o) => ({ ...o.row, _status: "pending" })),
+    ...outboxBlocked.map((o) => ({ ...o.row, _status: "blocked", _reason: o.blocked })),
+  ].sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
+
+  const subsList = allRows.length
+    ? allRows
         .map(
           (s) => `
         <div class="submission">
           <span class="s-icon">${icon("clipboard")}</span>
           <div>
             <div class="s-title">${esc(s.school)}</div>
-            <div class="s-meta">${esc(s.visitType)} · ${esc(s.county)} · ${new Date(
-            s.createdAt
-          ).toLocaleDateString()}</div>
+            <div class="s-meta">${esc(s.visit_type)} · ${esc(s.county)} · ${
+            s.created_at ? new Date(s.created_at).toLocaleDateString() : "not yet uploaded"
+          }${s._status === "blocked" ? ` · ${esc(s._reason)}` : ""}</div>
           </div>
-          <span class="pill ${s.status}">${s.status}</span>
+          <span class="pill ${s._status}">${s._status}</span>
         </div>`
         )
         .join("")
@@ -782,19 +859,20 @@ function pageFieldOfficer() {
         </div>
 
         ${gateNotice}
+        ${dbNotice}
 
         <div class="stat-row">
           <div class="stat-tile">
             <div class="st-label">${icon("clipboard")} Total visits</div>
-            <div class="st-num">${countNum(subs.length)}</div>
+            <div class="st-num">${countNum(totalCount)}</div>
           </div>
           <div class="stat-tile">
             <div class="st-label">${icon("cloud")} Synced</div>
-            <div class="st-num">${countNum(synced)}</div>
+            <div class="st-num">${countNum(syncedCount)}</div>
           </div>
           <div class="stat-tile">
             <div class="st-label">${icon("clock")} Pending</div>
-            <div class="st-num">${countNum(pending)}</div>
+            <div class="st-num">${countNum(outboxPending.length)}</div>
           </div>
           <div class="stat-tile">
             <div class="st-label">${icon("mapPin")} County</div>
@@ -841,7 +919,7 @@ function pageFieldOfficer() {
 
           <div class="panel">
             <h2>Recent submissions</h2>
-            <p class="panel-sub">Your latest field reports on this device.</p>
+            <p class="panel-sub">Saved to the HPF database · anything queued only exists on this device until it syncs.</p>
             <div id="subsList">${subsList}</div>
           </div>
         </div>
@@ -1234,31 +1312,85 @@ function wireRecoveryPanel() {
 }
 
 /* ------------------------------------------------------------ field officer wiring */
+let foOnlineListenerAttached = false; // attach the retry-on-reconnect listener once, ever
+
 function wireFieldOfficer() {
   const form = $("#foForm");
   const user = Auth.current();
-  form?.addEventListener("submit", (e) => {
+  const onFieldOfficerPage = () => location.pathname.includes("/field-officer");
+
+  if (!foReportsLoaded) {
+    loadFoReports().then(() => { if (onFieldOfficerPage()) render(); });
+  }
+  // A visit saved while offline waits in the outbox; try it again on every
+  // mount in case connectivity came back since. Re-render on any change, not
+  // only a successful sync — a pending item that turns out blocked still
+  // needs its pill and reason to update, or it would sit mislabeled "pending"
+  // forever even though flushFoOutbox already found out otherwise.
+  if (foOutbox().some((o) => !o.blocked)) {
+    flushFoOutbox().then(({ changed }) => { if (changed && onFieldOfficerPage()) render(); });
+  }
+  if (!foOnlineListenerAttached) {
+    foOnlineListenerAttached = true;
+    window.addEventListener("online", async () => {
+      const { changed } = await flushFoOutbox();
+      if (changed && onFieldOfficerPage()) render();
+    });
+  }
+
+  $("[data-fo-retry]")?.addEventListener("click", async () => {
+    foReportsLoaded = false;
+    await render();
+  });
+
+  form?.addEventListener("submit", async (e) => {
     e.preventDefault();
     const fd = new FormData(form);
-    const allowed = user.role === "field_officer" || user.role === "admin";
-    const sub = {
-      id: uid(),
-      userId: user.id,
+    const county = fd.get("county");
+    if (!county) return toast("County required", "Please select a county.", "error");
+
+    const row = {
+      user_id: user.id,
       school: fd.get("school"),
-      visitType: fd.get("visitType"),
-      county: fd.get("county"),
+      visit_type: fd.get("visitType"),
+      county,
       teachers: +fd.get("teachers") || 0,
       learners: +fd.get("learners") || 0,
-      notes: fd.get("notes"),
-      status: allowed ? "synced" : "pending",
-      createdAt: Date.now(),
+      notes: fd.get("notes") || null,
+      // Explicit, not the column's default: a row only ever reaches this
+      // table via a live insert, so its mere presence in Postgres already
+      // proves it synced. A queued-but-unsynced visit lives only in this
+      // browser's outbox, never in this table — see K_FO_OUTBOX above.
+      status: "synced",
     };
-    if (!sub.county) return toast("County required", "Please select a county.", "error");
-    const all = read(K_SUBS, []);
-    all.push(sub);
-    write(K_SUBS, all);
-    toast("Report submitted", `${sub.school} recorded successfully.`, "success");
-    render();
+
+    const btn = form.querySelector("[type=submit]");
+    if (btn) { btn.disabled = true; btn.textContent = "Submitting…"; }
+
+    const { error } = await supabase.from("field_reports").insert(row);
+
+    if (!error) {
+      form.reset();
+      toast("Report submitted", `${row.school} saved to the HPF database.`, "success");
+      await loadFoReports();
+      return render();
+    }
+
+    if (foReportIsConnectivityFailure(error)) {
+      // No connection right now — this is not a failure to report as one.
+      // The visit is real and recorded; it just hasn't reached the server yet.
+      const outbox = foOutbox();
+      outbox.push({ id: uid(), row, at: Date.now() });
+      write(K_FO_OUTBOX, outbox);
+      form.reset();
+      toast("Saved offline", `${row.school} is queued — it will upload once you're back online.`, "success");
+      return render();
+    }
+
+    // A real refusal (no JWT, RLS, etc.) — restore the button so the officer
+    // can see the submit failed rather than watching it spin forever.
+    if (btn) { btn.disabled = false; btn.textContent = "Submit field report"; }
+    toast("Could not save report", authMessage(error), "error");
   });
 }
 

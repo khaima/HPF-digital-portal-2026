@@ -611,9 +611,25 @@ function sideNav(tabs, active, attr) {
    Admin analytics — live visuals aggregated from the real data
    (users, classes, assessments, assignments, field reports, logins)
    ============================================================ */
-const K_SUBS = "hpf_submissions";   // field-officer reports
 const K_EVENTS = "hpf_login_events"; // login / signup inbox
 const K_LIBRARY = "hpf_library";     // admin-curated digital library
+
+/* Field officer visit reports — real Postgres table (field_reports), RLS
+   scoped so an admin's read returns every officer's rows. Same async-cache
+   shape as schools/returns: the dashboard renders synchronously, so this is
+   filled on mount and the page re-renders once it resolves. */
+let fieldReportsCache = [];
+let fieldReportsLoaded = false;
+let fieldReportsError = null;
+async function loadFieldReports() {
+  const { data, error } = await supabase
+    .from("field_reports").select("*").order("created_at", { ascending: false });
+  fieldReportsLoaded = true;
+  fieldReportsError = error ? authMessage(error) : null;
+  if (!error) fieldReportsCache = data || [];
+  return fieldReportsCache;
+}
+const getFieldReports = () => fieldReportsCache;
 
 let adminLibOpen = false;            // admin "add resource" form toggle
 let adminInboxOpen = false;          // expand the full login-requests list
@@ -772,7 +788,9 @@ function reportPassesFilter(r) {
   if (dashFilter.net !== "all" && (r.status || "pending") !== dashFilter.net) return false;
   const from = dashRangeStart();
   if (from) {
-    const at = r.at || r.createdAt;
+    // Postgres hands back an ISO string, not the epoch number dashRangeStart
+    // compares against.
+    const at = r.created_at ? Date.parse(r.created_at) : null;
     // A report with no timestamp cannot be shown to fall inside a window;
     // excluding it is the honest reading of "last 7 days".
     if (!at || at < from) return false;
@@ -960,36 +978,19 @@ const ROLE_COLOR = {
 };
 const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
-/* seed a few field reports so the field-officer visuals aren't empty on a
-   fresh browser (same demo-seed approach as the demo class). */
-function seedFieldReports() {
-  if (read(K_SUBS, []).length) return;
-  const now = Date.now(), day = 864e5;
-  const seed = [
-    ["Aitong School", "Monitoring & Evaluation Visit", "Narok", 6, 180, "synced", 2],
-    ["Naboisho School", "School Support Visit", "Narok", 4, 120, "synced", 4],
-    ["Ololomei School", "Teacher Coaching Session", "Narok", 5, 95, "pending", 1],
-    ["Olkimitare School", "Baseline Data Collection", "Kajiado", 3, 140, "synced", 6],
-    ["Aitong School", "Classroom Observation", "Narok", 7, 200, "synced", 8],
-    ["Naboisho School", "Infrastructure Assessment", "Kajiado", 2, 60, "pending", 9],
-    ["Ololomei School", "Monitoring & Evaluation Visit", "Kisumu", 5, 160, "synced", 11],
-    ["Olkimitare School", "School Support Visit", "Turkana", 4, 110, "pending", 13],
-  ].map(([school, visitType, county, teachers, learners, status, ago]) => ({
-    id: uid(), userId: "seed", school, visitType, county, teachers, learners,
-    notes: "", status, createdAt: now - ago * day,
-  }));
-  write(K_SUBS, seed);
-}
-
 /* read every store and compute the numbers the analytics tabs visualize */
 function computeAdminStats() {
-  seedFieldReports();
   const users = read(K_USERS, []);
   const classes = read(K_CLASSES, []);
   // Filtered once, here. Every widget that counts reports — KPIs, sync donut,
   // county ranking, the school map — reads this array, so the filter bar can
   // never leave two widgets disagreeing about the same number.
-  const reports = read(K_SUBS, []).filter(reportPassesFilter);
+  //
+  // "Pending" reports live only in a field officer's own browser outbox until
+  // they sync (app.js, K_FO_OUTBOX) — a row only ever lands in this table once
+  // it has. So an admin's view of field_reports is, structurally, always 100%
+  // synced; that is a limit on what's visible from here, not a bug.
+  const reports = getFieldReports().filter(reportPassesFilter);
   const events = read(K_EVENTS, []);
   const now = Date.now(), day = 864e5;
 
@@ -1779,7 +1780,14 @@ function adminField(s) {
     { label: "Synced", value: s.fo.synced, color: "oklch(68% 0.17 155)" },
     { label: "Pending", value: s.fo.pending, color: "oklch(78% 0.15 75)" },
   ];
+  const dbNotice = fieldReportsError
+    ? `<div class="notice" style="margin-bottom:1rem">${icon("info")}
+        <span>Could not load field reports — ${esc(fieldReportsError)}</span>
+        <button class="btn btn-outline btn-xs" data-field-reports-retry style="margin-left:.6rem">${icon("refresh")} Try again</button>
+      </div>`
+    : "";
   return `
+    ${dbNotice}
     <div class="stat-row" style="margin-bottom:1.25rem">
       <div class="stat-tile"><div class="st-label">${icon("clipboard")} Field reports</div><div class="st-num">${countNum(s.reports.length)}</div></div>
       <div class="stat-tile"><div class="st-label">${icon("graduation")} Learners reached</div><div class="st-num">${countNum(s.learnersReached, "", true)}</div></div>
@@ -4667,6 +4675,14 @@ export function wireMyDashboard(user, events) {
       renderRole("admin");
     });
 
+    body.addEventListener("click", (e) => {
+      const b = e.target.closest("[data-field-reports-retry]");
+      if (!b || !body.contains(b)) return;
+      loadFieldReports().then(() => {
+        if (body.querySelector("[data-admin-panel]")) renderAnalytics();
+      });
+    });
+
     /* --- dashboard filter bar ---
        Selects only touch the draft, so nothing recomputes until Apply. The
        county select is the exception: it re-renders immediately so the school
@@ -4988,15 +5004,18 @@ export function wireMyDashboard(user, events) {
     // schools come from Postgres — fetch once on mount, then re-render so the
     // map swaps out of its loading state. Failures surface in the panel itself
     // (with a retry), so nothing to catch here.
-    // Schools and the heads' returns both feed panels in here. One re-render
-    // once both land, rather than the dashboard twitching twice.
-    Promise.allSettled([loadSchools(), loadReturns(), loadRevisions(), loadGrades()]).then(() => {
+    // Schools, the heads' returns, and field reports all feed panels in here.
+    // One re-render once they land, rather than the dashboard twitching thrice.
+    Promise.allSettled([loadSchools(), loadReturns(), loadRevisions(), loadGrades(), loadFieldReports()]).then(() => {
       if (body.querySelector("[data-admin-panel]")) renderAnalytics();
     });
     // update automatically when data changes in another tab (keep just one listener)
+    // hpf_submissions dropped: field reports moved to Postgres, so nothing
+    // writes that key any more — a same-tab reload after a new visit syncs
+    // already re-renders via the mount-time load above.
     if (window.__hpfAdminStorage) window.removeEventListener("storage", window.__hpfAdminStorage);
     window.__hpfAdminStorage = (e) => {
-      if (["hpf_classes", "hpf_users", "hpf_submissions", "hpf_login_events"].includes(e.key)) {
+      if (["hpf_classes", "hpf_users", "hpf_login_events"].includes(e.key)) {
         if (body.querySelector("[data-admin-panel]")) renderAnalytics();
       }
     };
