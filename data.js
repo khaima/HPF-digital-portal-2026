@@ -282,12 +282,12 @@ export const REGIONS = {
   Meru: ["Meru Primary School", "Kithoka Primary School", "Nkubu Primary School"],
   Isiolo: ["Akandeli Primary", "Shambani Primary School"],
   Laikipia: ["Nanyuki Primary School", "Rumuruti Primary School", "Doldol Primary School"],
-  Narok: ["“Naboisho Primary”, “Ololomei Primary”, “Maasai Mara High School”, “Aitong Primary School”, 
-          “Olesere”, “Primary School”, “Mbitin Primary School”, “Olkimitare Primary School”, 
-          “Lemek Namunyak Secondary”, “Olemoncho Primary School”, “Ositeti Primary School”, 
-          “Kutete Primary School”,  “Rekero Primary School”, “Sekenani Primary School”, 
-          “Laila Primary School”, “Mpiro Primary School”, “Ilndung'isho Primary School”, 
-          “Pardamat Primary School”, “Enkorika Secondary School”, “Olkinyei Secondary School”, “Nterere Primary Primary School”],
+  Narok: ["Naboisho Primary", "Ololomei Primary", "Maasai Mara High School", "Aitong Primary School",
+          "Olesere Primary School", "Mbitin Primary School", "Olkimitare Primary School",
+          "Lemek Namunyak Secondary", "Olemoncho Primary School", "Ositeti Primary School",
+          "Kutete Primary School", "Rekero Primary School", "Sekenani Primary School",
+          "Laila Primary School", "Mpiro Primary School", "Ilndung'isho Primary School",
+          "Pardamat Primary School", "Enkorika Secondary School", "Olkinyei Secondary School", "Nterere Primary Primary School"],
 };
 
 /* School names and GPS now live in Postgres — see supabase/patch-02-schools.sql,
