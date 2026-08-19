@@ -14,6 +14,7 @@ const K_SESSION = "hpf_session";
 const K_IMPERSONATE = "hpf_impersonate"; // stores the real user while "in" someone's account
 const ROLE_LABEL = Object.fromEntries(ROLES.map((r) => [r.value, r.label]));
 const DASH_ROLES = ["admin", "learner", "teacher", "field_officer", "school_leader"];
+const STAFF_ROLES = DASH_ROLES.filter((r) => r !== "learner"); // roles that actually get a profiles row
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
 /* which role workspaces each role may view via the switcher:
@@ -199,6 +200,13 @@ function taskList(tasks) {
     </div>`;
 }
 
+/* A metric with no real data source yet — no invented number, no silently
+   dropped widget, just an honest "not measured" state, the same convention
+   kpiCard() already uses for a KPI with no trend history. */
+function notTracked(note) {
+  return `<div class="empty-state">${icon("info")} Not yet tracked — ${esc(note)}</div>`;
+}
+
 /* ---------------------------------------------------------- HPF administrators
    Appointing a second admin from the portal, which until now needed SQL.
 
@@ -299,6 +307,28 @@ async function loadAssignments() {
   fieldOfficersCache = officersRes.data || [];
   assignmentsCache = assignRes.data || [];
   return assignmentsCache;
+}
+
+/* ---------------------------------------------------------- every staff account
+   Real role counts for the admin dashboard. Only ever covers admin/teacher/
+   school_leader/field_officer — a learner has no Supabase account at all (no
+   email, no JWT), so there is no row in profiles to count and never will be;
+   see computeAdminStats() for how a device-local learner count is kept
+   separate rather than folded into this as if it were a global figure. */
+let profilesCache = [];
+let profilesLoaded = false;
+let profilesError = null;
+let profilesAuthed = false; // same "local account, DB never saw it" check loadAdmins() uses
+
+async function loadProfiles() {
+  const { data: sess } = await supabase.auth.getSession();
+  profilesAuthed = !!sess?.session;
+  const { data, error } = await supabase.from("profiles").select("id, role, county, created_at");
+  profilesLoaded = true;
+  if (error) { profilesError = authMessage(error); return profilesCache; }
+  profilesError = null;
+  profilesCache = data || [];
+  return profilesCache;
 }
 
 async function createAdminAccount({ fullName, email, password }) {
@@ -737,6 +767,21 @@ async function loadFieldReports() {
 }
 const getFieldReports = () => fieldReportsCache;
 
+/* An officer's own assigned schools, for their own "/dashboard" role view.
+   RLS on school_officer_assignments already scopes a non-admin's read to
+   officer_id = auth.uid(), so no explicit filter is needed here — mirrors
+   loadFoSchools() in app.js, which does the same thing for the /field-officer
+   report form's school picker. */
+let myFoSchoolsCache = [];
+let myFoSchoolsLoaded = false;
+async function loadMyFoSchools() {
+  const { data, error } = await supabase
+    .from("school_officer_assignments").select("school").order("school");
+  myFoSchoolsLoaded = true;
+  if (!error) myFoSchoolsCache = (data || []).map((r) => r.school);
+  return myFoSchoolsCache;
+}
+
 let adminLibOpen = false;            // admin "add resource" form toggle
 let adminInboxOpen = false;          // expand the full login-requests list
 let usersListOpen = false;           // expand the full user table
@@ -1085,8 +1130,22 @@ const ROLE_COLOR = {
 const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 /* read every store and compute the numbers the analytics tabs visualize */
-function computeAdminStats() {
-  const users = read(K_USERS, []);
+function computeAdminStats(events = []) {
+  // Real accounts (profiles, every device) unioned with local-only accounts
+  // (this device only) — the same merge shape as Repo.allEvents() in app.js,
+  // and for the same reason: a learner has no Supabase account at all, so
+  // "every account" can only ever mean "every real account, plus whatever
+  // this browser happens to know about locally." localOnly is kept as its
+  // own flag on each row rather than silently merged in as if it were a
+  // global count — see roleCounts vs localOnlyRoleCounts below.
+  const localUsers = read(K_USERS, []);
+  const users = [
+    ...profilesCache.map((p) => ({
+      id: p.id, role: p.role, county: p.county, createdAt: new Date(p.created_at).getTime(), localOnly: false,
+    })),
+    ...localUsers.filter((u) => u.role === "learner" || !profilesCache.some((p) => p.id === u.id))
+      .map((u) => ({ ...u, localOnly: true })),
+  ];
   // getClasses(), not a raw read: it's the same store, but also carries the
   // assessment-shape migration that used to run only inside the old
   // localStorage-only getClasses(). An admin viewing this before the coach
@@ -1102,15 +1161,19 @@ function computeAdminStats() {
   // it has. So an admin's view of field_reports is, structurally, always 100%
   // synced; that is a limit on what's visible from here, not a bug.
   const reports = getFieldReports().filter(reportPassesFilter);
-  const events = read(K_EVENTS, []);
   const now = Date.now(), day = 864e5;
 
-  // roles + counties from the user table
+  // roles + counties: roleCounts is the honest, global, real number (profiles
+  // only — every device); localOnlyRoleCounts is what's additionally known on
+  // just this device (learners, plus any not-yet-migrated legacy accounts).
+  // Never add the two together into one figure — that would silently claim a
+  // device-local count as if it were global.
   const roleCounts = {};
-  DASH_ROLES.forEach((r) => (roleCounts[r] = 0));
+  const localOnlyRoleCounts = {};
+  DASH_ROLES.forEach((r) => { roleCounts[r] = 0; localOnlyRoleCounts[r] = 0; });
   const county = {};
   users.forEach((u) => {
-    roleCounts[u.role] = (roleCounts[u.role] || 0) + 1;
+    (u.localOnly ? localOnlyRoleCounts : roleCounts)[u.role] = ((u.localOnly ? localOnlyRoleCounts : roleCounts)[u.role] || 0) + 1;
     if (u.county) county[u.county] = (county[u.county] || 0) + 1;
   });
 
@@ -1167,10 +1230,11 @@ function computeAdminStats() {
   const trendLabels = trend.map((_, k) => DOW[new Date(now - (6 - k) * day).getDay()]);
 
   return {
-    users, roleCounts, county, enrolled, assignments, assessments, activeSessions,
+    users, roleCounts, localOnlyRoleCounts, county, enrolled, assignments, assessments, activeSessions,
     classRows, subs, bands, passed, avgScore, comp,
     reports, foCounty, fo, learnersReached, teachersReached,
     trend, trendLabels, totalUsers: users.length,
+    totalStaff: profilesCache.length, totalLocalOnly: users.filter((u) => u.localOnly).length,
   };
 }
 
@@ -1576,8 +1640,8 @@ function rankedBars(map, color, topN = 6) {
 }
 
 /* ---------------------------------------------------------- analytics tabs */
-function adminAnalytics() {
-  const s = computeAdminStats();
+function adminAnalytics(ctx) {
+  const s = computeAdminStats(ctx?.events || []);
   // Four categories, not five: Learners and Teachers were two halves of the
   // same question — how are the people doing — and splitting them made an
   // admin toggle back and forth to compare a class against its results.
@@ -1663,7 +1727,7 @@ function kpiCard(k) {
 
     <div class="kpi-figures">
       <span class="kpi-value">${countNum(k.value, k.suffix || "", k.compact)}</span>
-      <span class="kpi-target">${zeroGoal ? "target: clear all" : `of ${(k.target || 0).toLocaleString()} target`}</span>
+      <span class="kpi-target">${zeroGoal ? "target: clear all" : k.target ? `of ${k.target.toLocaleString()} target` : "no target set"}</span>
     </div>
 
     <div class="kpi-bar" role="progressbar" aria-valuenow="${fill}" aria-valuemin="0" aria-valuemax="100"
@@ -1796,15 +1860,24 @@ function adminKpis(s) {
 }
 
 function adminOverview(s) {
-  const roleSegs = DASH_ROLES.filter((r) => s.roleCounts[r] > 0).map((r) => ({
+  // Staff only — see profilesCache's comment: a learner has no profiles row,
+  // so roleCounts (real, cross-device) never includes one. s.totalLocalOnly
+  // covers whatever this device additionally knows about locally.
+  const roleSegs = STAFF_ROLES.filter((r) => s.roleCounts[r] > 0).map((r) => ({
     label: ROLE_LABEL[r] || r, value: s.roleCounts[r], color: ROLE_COLOR[r],
   }));
   return `
     ${adminKpis(s)}
     <div class="dash-grid">
       <div class="panel"><h2>Users by role</h2>
-        <p class="panel-sub">${s.totalUsers} registered accounts</p>
-        <div class="donut-wrap">${donut(roleSegs, s.totalUsers, "users")}${chartLegend(roleSegs)}</div>
+        <p class="panel-sub">${s.totalStaff} staff account${s.totalStaff === 1 ? "" : "s"}${
+          s.totalLocalOnly ? ` · ${s.totalLocalOnly} learner${s.totalLocalOnly === 1 ? "" : "s"} on this device` : ""
+        }</p>
+        <div class="donut-wrap">${!profilesLoaded
+          ? `<div class="empty-state">Loading…</div>`
+          : !profilesAuthed
+          ? `<div class="empty-state">Signed in on a local account — sign in with a real HPF account to see role counts.</div>`
+          : `${donut(roleSegs, s.totalStaff, "staff")}${chartLegend(roleSegs)}`}</div>
       </div>
       <div class="panel"><h2>Sign-in activity</h2>
         <p class="panel-sub">Logins & signups · last 7 days</p>
@@ -2417,8 +2490,8 @@ function adminScorecard(s) {
 }
 
 function adminBody(ctx) {
-  const d = DASH.admin;
   const events = ctx.events || [];
+  const s = computeAdminStats(events);
   const dayAgo = Date.now() - 864e5;
   const signupsDay = events.filter((e) => e.type === "signup" && e.at >= dayAgo).length;
   const loginsDay = events.filter((e) => e.type === "login" && e.at >= dayAgo).length;
@@ -2451,23 +2524,30 @@ function adminBody(ctx) {
     <span class="ib-chip muted"><strong>${events.length}</strong> total</span>
   </div>`;
 
-  const totalRoles = d.roleBreakdown.reduce((a, b) => a + b.value, 0);
+  // roleBreakdown is real (profiles), staff roles only — a learner has no
+  // profiles row to count (§ profilesCache comment). totalStaff is the honest
+  // denominator for "largest group" below; local-only accounts (learners,
+  // this device) are surfaced separately, never folded into this %.
+  const roleSegs = STAFF_ROLES.filter((r) => s.roleCounts[r] > 0).map((r) => ({
+    label: ROLE_LABEL[r] || r, value: s.roleCounts[r], color: ROLE_COLOR[r],
+  }));
+  const roleMax = Math.max(...roleSegs.map((r) => r.value), 1);
 
   // computed insights: busiest day, week-over-day delta, top role share
-  const peak = Math.max(...d.weekly);
-  const peakDay = DAYS[d.weekly.indexOf(peak)];
-  const prev = d.weekly[d.weekly.length - 2] || 1;
-  const delta = Math.round(((d.weekly[d.weekly.length - 1] - prev) / prev) * 100);
-  const topRole = d.roleBreakdown.reduce((a, b) => (b.value > a.value ? b : a));
+  const peak = Math.max(...s.trend, 0);
+  const peakDay = s.trendLabels[s.trend.indexOf(peak)];
+  const prev = s.trend[s.trend.length - 2] || 1;
+  const delta = Math.round(((s.trend[s.trend.length - 1] - prev) / prev) * 100);
+  const topRole = roleSegs.length ? roleSegs.reduce((a, b) => (b.value > a.value ? b : a)) : null;
   const signupsToday = events.filter((e) => e.type === "signup" && Date.now() - e.at < 864e5).length;
   const smart = insights([
-    {
+    peak > 0 && {
       icon: "trendingUp", tone: delta >= 0 ? "good" : "bad",
       html: `Logins are <strong>${delta >= 0 ? "up " + delta : "down " + Math.abs(delta)}%</strong> vs yesterday — busiest day this week was <strong>${peakDay}</strong> (${peak}).`,
     },
-    {
+    topRole && {
       icon: "users", tone: "",
-      html: `<strong>${topRole.label}</strong> are your largest group — <strong>${Math.round((topRole.value / totalRoles) * 100)}%</strong> of all ${totalRoles.toLocaleString()} accounts.`,
+      html: `<strong>${topRole.label}</strong> are your largest staff group — <strong>${Math.round((topRole.value / s.totalStaff) * 100)}%</strong> of ${s.totalStaff.toLocaleString()} staff accounts.`,
     },
     {
       icon: "inbox", tone: signupsToday ? "warn" : "",
@@ -2475,13 +2555,12 @@ function adminBody(ctx) {
         ? `<strong>${signupsToday} new signup${signupsToday === 1 ? "" : "s"}</strong> in the last 24h — review them in the inbox below.`
         : `No new signups in the last 24h. Invite links can be shared from <strong>User management</strong>.`,
     },
-  ]);
+  ].filter(Boolean));
 
   return `
     ${dashFilterBar()}
-    ${statTiles(d.stats)}
     ${smart}
-    ${adminAnalytics()}
+    ${adminAnalytics(ctx)}
     <div class="notice">${icon("info")}
       <span>Every login and signup across the portal is pushed to
       <strong>patrick@humanpractice.org</strong> and logged in the repository below.</span>
@@ -2495,18 +2574,24 @@ function adminBody(ctx) {
       </div>
       <div class="panel">
         <h2>Users by role</h2>
-        <p class="panel-sub">${totalRoles.toLocaleString()} registered accounts</p>
+        <p class="panel-sub">${s.totalStaff.toLocaleString()} staff account${s.totalStaff === 1 ? "" : "s"}${
+          s.totalLocalOnly ? ` · ${s.totalLocalOnly} learner${s.totalLocalOnly === 1 ? "" : "s"} on this device` : ""
+        }</p>
         <div class="legend">
-          ${d.roleBreakdown
-            .map((r) => hbar(r.label, r.value, d.roleBreakdown[0].value, r.color))
-            .join("")}
+          ${!profilesLoaded
+            ? `<div class="empty-state">Loading…</div>`
+            : !profilesAuthed
+            ? `<div class="empty-state">Signed in on a local account, which the HPF database has never seen — sign in with an account that exists in the database to see real role counts.</div>`
+            : roleSegs.length
+            ? roleSegs.map((r) => hbar(r.label, r.value, roleMax, r.color)).join("")
+            : `<div class="empty-state">No staff accounts in the database yet.</div>`}
         </div>
       </div>
     </div>
     <div class="panel" style="margin-top:1.5rem">
       <h2>Logins this week</h2>
       <p class="panel-sub">Daily authenticated sessions</p>
-      ${barChart(d.weekly, DAYS)}
+      ${barChart(s.trend, s.trendLabels)}
     </div>
     ${adminAccountsPanel(ctx.user)}
     ${officerAssignmentsPanel()}
@@ -2520,15 +2605,18 @@ function adminBody(ctx) {
         </div>
         ${collapseBtn("activity")}
       </div>
-      ${collapseBody("activity", `<div>${d.activity
-        .map(
-          (a) => `<div class="submission">
-            <span class="s-icon">${icon("activity")}</span>
-            <div><div class="s-title">${esc(a.who)}</div>
-              <div class="s-meta">${esc(a.act)} · ${esc(ROLE_LABEL[a.role] || a.role)}</div></div>
-          </div>`
-        )
-        .join("")}</div>`)}
+      ${collapseBody("activity", events.length
+        ? `<div>${events
+            .map(
+              (e) => `<div class="submission">
+                <span class="s-icon">${icon(e.type === "signup" ? "plus" : "login")}</span>
+                <div><div class="s-title">${esc(e.name || e.identifier)}</div>
+                  <div class="s-meta">${e.type === "signup" ? "New signup" : "Login"} ·
+                    ${esc(ROLE_LABEL[e.role] || e.role || "—")} · ${timeAgo(e.at)}</div></div>
+              </div>`
+            )
+            .join("")}</div>`
+        : `<div class="empty-state">No activity yet.</div>`)}
     </div>`;
 }
 
@@ -3248,7 +3336,7 @@ function assignmentRow(a, clickable) {
   </div>`;
 }
 
-function coachOverview(list, learners) {
+function coachOverview(list, learners, cls) {
   const dist = { completed: 0, in_progress: 0, not_started: 0 };
   list.forEach((a) => {
     const c = statusCounts(a);
@@ -3258,6 +3346,15 @@ function coachOverview(list, learners) {
   });
   const total = dist.completed + dist.in_progress + dist.not_started || 1;
   const seg = (n, cls) => `<div class="dist-seg ${cls}" style="width:${(n / total) * 100}%"></div>`;
+
+  // Real submissions, most recent first — the only assignment activity that
+  // carries a timestamp locally (assignment results don't, only assessment
+  // submissions do). Not yet Postgres-backed (that's the assignments/
+  // assessments migration), but not fabricated either.
+  const activity = (cls?.assessments || [])
+    .flatMap((a) => (a.submissions || []).map((sub) => ({ ...sub, title: a.title })))
+    .sort((a, b) => (b.at || 0) - (a.at || 0))
+    .slice(0, 5);
 
   return `
     <div class="panel">
@@ -3280,13 +3377,15 @@ function coachOverview(list, learners) {
     <div class="panel" style="margin-top:1.5rem">
       <h2>Class activity</h2>
       <p class="panel-sub">Recent learner activity</p>
-      <div>${KOLIBRI.coach.activity
-        .map(
-          (a) => `<div class="submission"><span class="s-icon">${icon("activity")}</span>
-            <div><div class="s-title">${esc(a.who)}</div>
-            <div class="s-meta">${esc(a.what)} · ${esc(a.when)}</div></div></div>`
-        )
-        .join("")}</div>
+      <div>${activity.length
+        ? activity
+            .map(
+              (s) => `<div class="submission"><span class="s-icon">${icon("activity")}</span>
+                <div><div class="s-title">${esc(s.name)}</div>
+                <div class="s-meta">scored ${s.pct}% on “${esc(s.title)}” · ${s.at ? timeAgo(s.at) : "—"}</div></div></div>`
+            )
+            .join("")
+        : `<div class="empty-state">No assessment activity yet.</div>`}</div>
     </div>`;
 }
 
@@ -4195,7 +4294,7 @@ function teacherBody() {
     content = coachState.learnerId
       ? coachLearnerDetail(list, learners, coachState.learnerId, cls)
       : coachLearnersList(list, learners, cls);
-  else content = coachOverview(list, learners);
+  else content = coachOverview(list, learners, cls);
 
   return `
     <div class="panel-head-row" style="margin-bottom:1rem">
@@ -4257,63 +4356,86 @@ function addUserForm(cls) {
     </form>`;
 }
 
-function fieldOfficerBody() {
-  const d = DASH.field_officer;
+function fieldOfficerBody(ctx) {
+  const userId = ctx?.user?.id;
+  const myReports = getFieldReports().filter((r) => r.user_id === userId);
+  const now = new Date(), day = 864e5;
 
-  // computed insights: priority visit, unsynced reports, weekly pace
-  const priority = [...d.schools].sort((a, b) => a.health - b.health)[0];
-  const unsynced = d.stats.find((s) => s.label === "Reports synced");
-  const visits = d.stats.find((s) => s.label === "Visits this month");
-  const backlog = visits && unsynced ? visits.count - unsynced.count : 0;
-  const openTasks = d.tasks.filter((t) => !t.done).length;
+  const visitsThisMonth = myReports.filter((r) => {
+    const t = new Date(r.created_at);
+    return t.getMonth() === now.getMonth() && t.getFullYear() === now.getFullYear();
+  }).length;
+
+  // last real visit per assigned school — the honest version of what the old
+  // fake "health score" gestured at (which school needs attention next)
+  const schoolRows = myFoSchoolsCache.map((name) => {
+    const last = myReports
+      .filter((r) => r.school === name)
+      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0];
+    return { name, last };
+  }).sort((a, b) => new Date(a.last?.created_at || 0) - new Date(b.last?.created_at || 0));
+  const stalest = schoolRows[0];
+
+  // last 7 days, real
+  const trend = new Array(7).fill(0);
+  myReports.forEach((r) => {
+    const ago = Math.floor((now.getTime() - new Date(r.created_at).getTime()) / day);
+    if (ago >= 0 && ago < 7) trend[6 - ago]++;
+  });
+  const trendLabels = trend.map((_, k) => DOW[new Date(now.getTime() - (6 - k) * day).getDay()]);
+
   const smart = insights([
-    priority && {
-      icon: "alert", tone: priority.health < 60 ? "bad" : "warn",
-      html: `<strong>${esc(priority.name)}</strong> has the lowest school-health score (<strong>${priority.health}%</strong>) — schedule it as your next visit.`,
-    },
-    {
-      icon: "cloud", tone: backlog > 0 ? "warn" : "good",
-      html: backlog > 0
-        ? `<strong>${backlog} report${backlog === 1 ? "" : "s"} not yet synced</strong> — connect to sync before your next field day.`
-        : `All field reports are synced — you're fully up to date.`,
+    stalest && {
+      icon: "alert", tone: stalest.last ? "warn" : "bad",
+      html: stalest.last
+        ? `<strong>${esc(stalest.name)}</strong> hasn't had a visit in the longest — last one was ${timeAgo(new Date(stalest.last.created_at).getTime())}.`
+        : `<strong>${esc(stalest.name)}</strong> has no logged visit yet — it's the school most in need of a first one.`,
     },
     {
       icon: "clipboard", tone: "",
-      html: `<strong>${openTasks} open task${openTasks === 1 ? "" : "s"}</strong> today — tick them off in the Field tasks panel.`,
+      html: `<strong>${myReports.length} report${myReports.length === 1 ? "" : "s"}</strong> filed in total, <strong>${visitsThisMonth}</strong> this month.`,
     },
   ].filter(Boolean));
 
+  const stats = [
+    { label: "Assigned schools", count: myFoSchoolsCache.length, icon: "school", href: "/field-officer", actionLabel: "View schools" },
+    { label: "Visits this month", count: visitsThisMonth, icon: "mapPin", href: "/field-officer", actionLabel: "Log a visit" },
+    { label: "Reports filed (all time)", count: myReports.length, icon: "cloud", href: "/field-officer", actionLabel: "Open field data" },
+  ];
+
   return `
-    ${statTiles(d.stats)}
+    <div data-fo-dash></div>
+    ${statTiles(stats)}
     ${smart}
     <div class="dash-grid">
       <div class="panel">
         <h2>Assigned schools</h2>
-        <p class="panel-sub">School health & visit status</p>
+        <p class="panel-sub">${myFoSchoolsLoaded ? `Last visit per school` : "Loading…"}</p>
         <div class="mini-table">
-          ${d.schools
-            .map(
-              (s) => `<div class="mt-row">
-                <span class="mt-name">${esc(s.name)}<br><span class="mt-sub">${esc(s.county)}</span></span>
-                <span class="mt-health">${hbar("", s.health, 100,
-                  s.health >= 75 ? "var(--success)" : s.health >= 60 ? "oklch(70% 0.16 75)" : "var(--destructive)",
-                  "%")}</span>
-                <span class="pill ${s.status === "Visited" ? "synced" : "pending"}">${esc(s.status)}</span>
-              </div>`
-            )
-            .join("")}
+          ${!myFoSchoolsLoaded
+            ? `<div class="empty-state">Loading…</div>`
+            : schoolRows.length
+            ? schoolRows
+                .map(
+                  (s) => `<div class="mt-row">
+                    <span class="mt-name">${esc(s.name)}</span>
+                    <span class="pill ${s.last ? "synced" : "pending"}">${s.last ? timeAgo(new Date(s.last.created_at).getTime()) : "not yet visited"}</span>
+                  </div>`
+                )
+                .join("")
+            : `<div class="empty-state">No schools assigned yet — ask an HPF administrator to assign you one.</div>`}
         </div>
       </div>
       <div class="panel">
         <h2>Field tasks</h2>
-        <p class="panel-sub">Tap a task to mark it complete</p>
-        ${taskList(d.tasks)}
+        <p class="panel-sub">Task tracking</p>
+        ${notTracked("no task list exists yet, only field reports")}
       </div>
     </div>
     <div class="panel" style="margin-top:1.5rem">
       <h2>Visits logged this week</h2>
       <p class="panel-sub">School support & monitoring visits</p>
-      ${barChart(d.weekly, DAYS)}
+      ${barChart(trend, trendLabels)}
       <a class="btn btn-primary" href="/field-officer" data-link style="margin-top:1.25rem">
         ${icon("clipboard")} Open field data collection
       </a>
@@ -4664,28 +4786,45 @@ function leaderCounty() {
 }
 
 function schoolLeaderBody() {
-  const d = DASH.school_leader;
+  const school = leaderSchool();
+  // Most recently filed/updated return first — school_returns is termly, not
+  // daily, so "latest" means the newest filing, not "today's" figures.
+  const returns = returnsForSchool(school).slice()
+    .sort((a, b) => new Date(b.updated_at || b.created_at) - new Date(a.updated_at || a.created_at));
+  const latest = returns[0];
 
-  // computed insights: strongest/weakest grade, attendance trend, top teacher
-  const best = d.grades.reduce((a, b) => (b.value > a.value ? b : a));
-  const worst = d.grades.reduce((a, b) => (b.value < a.value ? b : a));
-  const att = d.weekly;
-  const attDelta = att[att.length - 1] - att[0];
-  const topT = d.teachers.reduce((a, b) => (b.rating > a.rating ? b : a));
+  const stats = latest ? [
+    { label: "Enrolled learners", count: latest.boys + latest.girls, icon: "graduation", href: "/assessment", actionLabel: "School progress" },
+    { label: "Teaching staff", count: latest.tsc_teachers + latest.non_tsc_teachers, icon: "users", href: "/curriculum", actionLabel: "Review staff" },
+    { label: "Attendance rate", count: latest.attendance_rate ?? 0, suffix: latest.attendance_rate != null ? "%" : "", icon: "userCheck", href: "/assessment", actionLabel: "View attendance" },
+  ] : [];
+
+  // Chronological (oldest first) across whatever terms have actually been
+  // filed — the only real "trend" this data supports; there's no daily
+  // attendance record to draw a weekly chart from.
+  const chrono = [...returns].reverse().filter((r) => r.attendance_rate != null).slice(-8);
+  const attTrend = chrono.map((r) => r.attendance_rate);
+  const attLabels = chrono.map((r) => `${r.term} ${r.year}`);
+  const attDelta = attTrend.length >= 2 ? attTrend[attTrend.length - 1] - attTrend[0] : null;
+
   const smart = insights([
-    {
-      icon: "lightbulb", tone: "warn",
-      html: `<strong>${esc(worst.label)}</strong> is your weakest grade (${worst.value}%) — <strong>${best.value - worst.value} points</strong> behind ${esc(best.label)}. Consider targeted coaching there.`,
+    !returnsLoaded && {
+      icon: "info", tone: "",
+      html: `Loading your school's returns…`,
     },
-    {
+    returnsLoaded && !latest && {
+      icon: "info", tone: "warn",
+      html: `No termly return has been filed for <strong>${esc(school || "your school")}</strong> yet — file one below to populate this overview.`,
+    },
+    latest && attDelta !== null && {
       icon: attDelta >= 0 ? "trendingUp" : "trendingDown", tone: attDelta >= 0 ? "good" : "bad",
-      html: `Attendance is <strong>${attDelta >= 0 ? "up" : "down"} ${Math.abs(attDelta)} point${Math.abs(attDelta) === 1 ? "" : "s"}</strong> across the week, ending at <strong>${att[att.length - 1]}%</strong>.`,
+      html: `Attendance is <strong>${attDelta >= 0 ? "up" : "down"} ${Math.abs(attDelta)} point${Math.abs(attDelta) === 1 ? "" : "s"}</strong> since your first filed term, now at <strong>${attTrend[attTrend.length - 1]}%</strong>.`,
     },
-    {
-      icon: "star", tone: "good",
-      html: `<strong>${esc(topT.name)}</strong> (${esc(topT.subject)}) is your top-rated teacher at <strong>★ ${topT.rating}</strong> — a great peer-coaching lead.`,
+    latest && {
+      icon: "users", tone: "",
+      html: `<strong>${latest.tsc_teachers} TSC</strong> / <strong>${latest.non_tsc_teachers} non-TSC</strong> teacher${latest.tsc_teachers + latest.non_tsc_teachers === 1 ? "" : "s"} this term — the non-TSC count is where HPF's funding gap shows up.`,
     },
-  ]);
+  ].filter(Boolean));
 
   return `
     <div class="panel-head-row" style="margin-bottom:1.25rem">
@@ -4695,35 +4834,25 @@ function schoolLeaderBody() {
       </div>
       <button class="btn btn-primary" data-generate-report>${icon("download")} Generate term report</button>
     </div>
-    ${statTiles(d.stats)}
+    ${latest ? statTiles(stats) : ""}
     ${smart}
     ${schoolReturnsPanel(leaderSchool(), leaderCounty())}
     <div class="dash-grid">
       <div class="panel">
         <h2>Performance by grade</h2>
         <p class="panel-sub">Average competency score (%)</p>
-        ${barChart(d.grades.map((g) => g.value), d.grades.map((g) => g.label), "%")}
+        ${notTracked("no per-grade competency score is recorded anywhere yet")}
       </div>
       <div class="panel">
         <h2>Teaching staff</h2>
         <p class="panel-sub">Coaching ratings this term</p>
-        <div class="mini-table">
-          ${d.teachers
-            .map(
-              (t) => `<div class="mt-row">
-                <span class="mt-name">${esc(t.name)}<br><span class="mt-sub">${esc(t.subject)}</span></span>
-                <button class="btn btn-outline btn-xs" data-review="${esc(t.name)}">Review</button>
-                <span class="pill synced">★ ${t.rating}</span>
-              </div>`
-            )
-            .join("")}
-        </div>
+        ${notTracked("no coaching-rating record exists yet")}
       </div>
     </div>
     <div class="panel" style="margin-top:1.5rem">
       <h2>School attendance trend</h2>
-      <p class="panel-sub">Whole-school attendance rate (%)</p>
-      ${barChart(d.weekly, DAYS, "%")}
+      <p class="panel-sub">Whole-school attendance rate (%), by filed term</p>
+      ${attTrend.length ? barChart(attTrend, attLabels, "%") : notTracked("no term with an attendance rate has been filed yet")}
     </div>`;
 }
 
@@ -5174,7 +5303,7 @@ export function wireMyDashboard(user, events) {
     function renderAnalytics() {
       const holder = body.querySelector("[data-admin-panel]");
       if (!holder) return;
-      holder.outerHTML = adminAnalytics();
+      holder.outerHTML = adminAnalytics(ctx);
       wireAnalytics();
       runCounters();
     }
@@ -5432,6 +5561,11 @@ export function wireMyDashboard(user, events) {
 
     wireAdminAccounts();
     loadAdmins().then(renderAdmins);
+
+    // Real role counts for "Users by role" (both here and the Scorecard's
+    // Overview tab) and for computeAdminStats() generally — a full re-render
+    // since profilesCache feeds panels in more than one place on this page.
+    if (!profilesLoaded) loadProfiles().then(() => renderRole("admin"));
 
     /* --- Field officer assignments: who covers which school --- */
     function renderAssignments() {
@@ -6729,6 +6863,15 @@ export function wireMyDashboard(user, events) {
   }
 
   /* Termly returns: the head files them, the scorecard reads them. */
+  function wireFieldOfficerDash() {
+    // Guard on the dashboard's own marker, not a flag — by the time either
+    // promise resolves the admin/teacher/etc. tab switcher may have already
+    // moved the view elsewhere, and re-rendering over that would yank it back.
+    const stillHere = () => body.querySelector("[data-fo-dash]");
+    if (!fieldReportsLoaded) loadFieldReports().then(() => { if (stillHere()) renderRole("field_officer"); });
+    if (!myFoSchoolsLoaded) loadMyFoSchools().then(() => { if (stillHere()) renderRole("field_officer"); });
+  }
+
   function wireSchoolReturns(role) {
     const rerender = () => renderRole(role);
     const refresh = async () => { await Promise.allSettled([loadReturns(), loadRevisions(), loadGrades()]); rerender(); };
@@ -7029,6 +7172,7 @@ export function wireMyDashboard(user, events) {
     wireTasks();
     wireRoleActions();
     if (role === "admin") wireAdmin();
+    if (role === "field_officer") wireFieldOfficerDash();
     if (role === "school_leader") wireSchoolReturns(role);
     // "Enter account" buttons live inside the body (admin table, coach learners)
     body.querySelectorAll("[data-enter-account]").forEach((btn) =>

@@ -313,38 +313,22 @@ export const VISIT_TYPES = [
 ];
 
 /* ============================================================
-   Simulated data for the role-based "My Dashboard"
+   Simulated data for the role-based "My Dashboard".
+
+   Only `learner` remains here. admin/teacher/field_officer/school_leader
+   were removed once every widget that read them was rewired to a real
+   Supabase source (or, where no real source exists yet — a per-school
+   "health" score, teacher coaching ratings, per-grade competency scores —
+   an honest "not yet tracked" state instead of an invented number). See
+   dashboards.js: computeAdminStats(), fieldOfficerBody(), schoolLeaderBody().
+
+   `learner` is still simulated: course progress, streak and badges have no
+   real data behind them yet, and won't until the assignments/assessments/
+   submissions Postgres migration lands and a product decision is made about
+   what a "streak" or "badge" means in a real database.
    ============================================================ */
 
 export const DASH = {
-  admin: {
-    stats: [
-      { label: "Total users", count: 1284, suffix: "", icon: "users", trend: 4.2,
-        target: 1500, freshMins: 5, action: "users", actionLabel: "Manage users" },
-      { label: "Active schools", count: 32, suffix: "", icon: "school", trend: 6.7,
-        target: 30, freshMins: 60, action: "scorecard", actionLabel: "View scorecard" },
-      { label: "Login requests (today)", count: 148, suffix: "", icon: "inbox", trend: 64,
-        target: 200, freshMins: 2, action: "inbox", actionLabel: "Open inbox" },
-      { label: "Learners reached", count: 10000, suffix: "+", compact: true, icon: "trendingUp", trend: 12,
-        target: 10000, freshMins: 180, action: "scorecard", actionLabel: "View scorecard" },
-    ],
-    roleBreakdown: [
-      { label: "Learners", value: 820, color: "oklch(52% 0.14 148)" },
-      { label: "Teachers", value: 312, color: "oklch(68% 0.17 155)" },
-      { label: "School Leaders", value: 84, color: "oklch(78% 0.15 75)" },
-      { label: "Field Officers", value: 46, color: "oklch(55% 0.15 300)" },
-      { label: "Admins", value: 22, color: "oklch(62% 0.24 27)" },
-    ],
-    weekly: [42, 61, 55, 78, 66, 90, 148],
-    activity: [
-      { who: "Grace Achieng", act: "created a Teacher account", role: "teacher" },
-      { who: "Nyeri Hill Primary", act: "submitted a field report", role: "field_officer" },
-      { who: "Daniel Kipkoech", act: "completed Numeracy Module 3", role: "learner" },
-      { who: "St. Mary's School", act: "updated enrollment data", role: "school_leader" },
-      { who: "Mercy Wafula", act: "requested audience access", role: "teacher" },
-    ],
-  },
-
   learner: {
     stats: [
       { label: "Courses enrolled", count: 6, suffix: "", icon: "book",
@@ -371,84 +355,6 @@ export const DASH = {
     weekly: [2, 3, 1, 4, 3, 5, 6],
   },
 
-  teacher: {
-    stats: [
-      { label: "My classes", count: 4, suffix: "", icon: "users",
-        target: 5, freshMins: 45, href: "/curriculum", actionLabel: "Open curriculum" },
-      { label: "Students", count: 156, suffix: "", icon: "graduation",
-        target: 180, freshMins: 45, href: "/assessment", actionLabel: "Assessment tools" },
-      { label: "Lesson plans", count: 38, suffix: "", icon: "file",
-        target: 50, freshMins: 90, href: "/resources", actionLabel: "Plan a lesson" },
-      { label: "Avg. attendance", count: 92, suffix: "%", icon: "check",
-        target: 95, freshMins: 20, href: "/assessment", actionLabel: "Check attendance" },
-    ],
-    classes: [
-      { name: "Grade 4 — Blue", students: 42, attendance: 94 },
-      { name: "Grade 5 — Green", students: 38, attendance: 89 },
-      { name: "Grade 6 — Yellow", students: 40, attendance: 95 },
-      { name: "Grade 6 — Red", students: 36, attendance: 90 },
-    ],
-    tasks: [
-      { title: "Mark Grade 5 numeracy quiz", due: "Today", done: false },
-      { title: "Prepare CBC lesson plan — Week 6", due: "Tomorrow", done: false },
-      { title: "Submit attendance register", due: "Today", done: false },
-      { title: "Upload term assessment scores", due: "Done", done: true },
-    ],
-    weekly: [88, 91, 90, 93, 89, 95, 92],
-  },
-
-  field_officer: {
-    stats: [
-      { label: "Assigned schools", count: 14, suffix: "", icon: "school",
-        target: 14, freshMins: 240, href: "/field-officer", actionLabel: "View schools" },
-      { label: "Visits this month", count: 27, suffix: "", icon: "mapPin", trend: 8,
-        target: 30, freshMins: 30, href: "/field-officer", actionLabel: "Log a visit" },
-      { label: "Reports synced", count: 24, suffix: "", icon: "cloud", trend: 4,
-        target: 27, freshMins: 10, href: "/field-officer", actionLabel: "Sync now" },
-      { label: "Pending reviews", count: 3, suffix: "", icon: "clock", trend: -25,
-        target: 0, freshMins: 10, href: "/field-officer", actionLabel: "Clear backlog" },
-    ],
-    schools: [
-      { name: "Nyeri Hill Primary", county: "Nyeri", status: "Visited", health: 86 },
-      { name: "Kisumu Central Academy", county: "Kisumu", status: "Scheduled", health: 72 },
-      { name: "Turkana Star School", county: "Turkana", status: "Visited", health: 65 },
-      { name: "Mombasa Coast Primary", county: "Mombasa", status: "Needs visit", health: 58 },
-    ],
-    tasks: [
-      { title: "Upload Turkana baseline data", due: "Today", done: false },
-      { title: "Coaching session — Kisumu Central", due: "Tomorrow", done: false },
-      { title: "Sync offline reports", due: "Today", done: false },
-      { title: "Infrastructure audit — Mombasa", due: "Done", done: true },
-    ],
-    weekly: [3, 5, 4, 6, 5, 2, 2],
-  },
-
-  school_leader: {
-    stats: [
-      { label: "Enrolled learners", count: 640, suffix: "", icon: "graduation", trend: 3,
-        target: 700, freshMins: 120, href: "/assessment", actionLabel: "School progress" },
-      { label: "Teaching staff", count: 28, suffix: "", icon: "users",
-        target: 32, freshMins: 240, href: "/curriculum", actionLabel: "Review staff" },
-      { label: "Attendance rate", count: 93, suffix: "%", icon: "userCheck", trend: 2,
-        target: 95, freshMins: 30, href: "/assessment", actionLabel: "View attendance" },
-      { label: "Improvement score", count: 78, suffix: "/100", icon: "trendingUp", trend: 6,
-        target: 85, freshMins: 180, href: "/assessment", actionLabel: "See breakdown" },
-    ],
-    grades: [
-      { label: "Grade 4", value: 88 },
-      { label: "Grade 5", value: 81 },
-      { label: "Grade 6", value: 76 },
-      { label: "Grade 7", value: 84 },
-      { label: "Grade 8", value: 79 },
-    ],
-    teachers: [
-      { name: "Grace Achieng", subject: "Literacy", rating: 4.8 },
-      { name: "Peter Otieno", subject: "Numeracy", rating: 4.5 },
-      { name: "Mercy Wafula", subject: "Science", rating: 4.7 },
-      { name: "John Mwangi", subject: "Life Skills", rating: 4.3 },
-    ],
-    weekly: [90, 92, 91, 94, 93, 95, 93],
-  },
 };
 
 /* ============================================================
@@ -498,70 +404,11 @@ export const KOLIBRI = {
     ],
     channels: ["All", "Khan Academy", "CK-12", "Global Digital Library", "PhET Simulations", "TED-Ed"],
   },
-
-  coach: {
-    className: "Grade 6 — Blue",
-    learners: [
-      { id: "l1", name: "Amina Hassan", active: "2h ago" },
-      { id: "l2", name: "Brian Kimani", active: "1d ago" },
-      { id: "l3", name: "Catherine Auma", active: "3h ago" },
-      { id: "l4", name: "David Mutua", active: "2d ago" },
-      { id: "l5", name: "Esther Njeri", active: "5h ago" },
-      { id: "l6", name: "Felix Omondi", active: "4d ago" },
-    ],
-    // Each assignment tracks per-learner progress (pct) and, for
-    // exercises/quizzes, a score. Status is derived from pct.
-    assignments: [
-      {
-        id: "a1", type: "lesson", title: "Fractions — Introduction",
-        detail: "4 resources", due: "in 2 days",
-        results: [
-          { id: "l1", pct: 100 }, { id: "l2", pct: 100 }, { id: "l3", pct: 60 },
-          { id: "l4", pct: 40 }, { id: "l5", pct: 100 }, { id: "l6", pct: 20 },
-        ],
-      },
-      {
-        id: "a2", type: "lesson", title: "Place Value & Rounding",
-        detail: "3 resources", due: "in 5 days",
-        results: [
-          { id: "l1", pct: 100 }, { id: "l2", pct: 80 }, { id: "l3", pct: 100 },
-          { id: "l4", pct: 20 }, { id: "l5", pct: 60 }, { id: "l6", pct: 0 },
-        ],
-      },
-      {
-        id: "a3", type: "exercise", title: "Multiplication Practice",
-        detail: "20 questions", due: "Today",
-        results: [
-          { id: "l1", pct: 100, score: 92 }, { id: "l2", pct: 100, score: 80 },
-          { id: "l3", pct: 60, score: 70 }, { id: "l4", pct: 0, score: 0 },
-          { id: "l5", pct: 100, score: 88 }, { id: "l6", pct: 40, score: 55 },
-        ],
-      },
-      {
-        id: "a4", type: "quiz", title: "Numeracy Quiz 1",
-        detail: "10 questions", due: "Yesterday",
-        results: [
-          { id: "l1", pct: 100, score: 88 }, { id: "l2", pct: 100, score: 81 },
-          { id: "l3", pct: 100, score: 72 }, { id: "l4", pct: 100, score: 60 },
-          { id: "l5", pct: 100, score: 90 }, { id: "l6", pct: 0, score: 0 },
-        ],
-      },
-      {
-        id: "a5", type: "quiz", title: "Fractions Check-in",
-        detail: "8 questions", due: "in 3 days",
-        results: [
-          { id: "l1", pct: 100, score: 84 }, { id: "l2", pct: 100, score: 78 },
-          { id: "l3", pct: 60, score: 0 }, { id: "l4", pct: 0, score: 0 },
-          { id: "l5", pct: 100, score: 80 }, { id: "l6", pct: 0, score: 0 },
-        ],
-      },
-    ],
-    activity: [
-      { who: "Amina Hassan", what: "completed “Adding Fractions” video", when: "2h ago" },
-      { who: "Esther Njeri", what: "scored 90% on Numeracy Quiz 1", when: "5h ago" },
-      { who: "Catherine Auma", what: "started “The Water Cycle”", when: "3h ago" },
-      { who: "Brian Kimani", what: "needs help on Place Value exercise", when: "1d ago" },
-    ],
-  },
+  // coach (teacher-facing) was removed: the coach dashboard has run on real
+  // class/assignment/assessment data (hpf_classes, now Postgres-backed for
+  // the class shell) since the classes/enrollments migration. The one line
+  // that still read this — "Class activity" on the Overview tab — now
+  // computes from real local submissions instead (dashboards.js,
+  // coachOverview()).
 };
 
