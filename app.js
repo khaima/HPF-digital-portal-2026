@@ -28,6 +28,24 @@ const K_EVENTS = "hpf_login_events"; // dummy repository of all login requests
 const ADMIN_EMAIL = "patrick@humanpractice.org";
 const K_FO_OUTBOX = "hpf_fo_outbox"; // field reports written offline, waiting to sync
 
+/* ------------------------------------------------------------ officer's assigned schools
+   Which schools this field officer covers — school_officer_assignments,
+   admin-managed, RLS lets an officer read only their own rows. Drives the
+   report form's school picker: an officer can only file a NEW report for a
+   school they are assigned to (server-enforced, not just a UI nicety — the
+   "fr insert" policy checks the same assignment table), so a free-text field
+   here would just produce a confusing RLS rejection instead of a clear list. */
+let foSchoolsCache = [];
+let foSchoolsLoaded = false;
+
+async function loadFoSchools() {
+  const { data, error } = await supabase
+    .from("school_officer_assignments").select("school").order("school");
+  foSchoolsLoaded = true;
+  if (!error) foSchoolsCache = (data || []).map((r) => r.school);
+  return foSchoolsCache;
+}
+
 /* ------------------------------------------------------------ field reports
    Real Postgres table (field_reports), RLS-scoped so a field officer sees
    their own visits and an admin sees every officer's. The page renders
@@ -834,6 +852,29 @@ function pageFieldOfficer() {
         You can explore the interface below, but submissions are marked for review.</span>
       </div>`;
 
+  // Admin bypasses the assignment check entirely (RLS: is_admin() OR
+  // assigned_to_school(school)), so a free-text field is fine and matches
+  // that bypass. A field officer can only ever successfully file a NEW report
+  // for a school in their own assignment list — offering anything wider would
+  // just be a form that sometimes fails with a database error instead of a
+  // clear reason.
+  const schoolField = user.role === "admin"
+    ? `<input class="input" id="fo_school" name="school" type="text" required placeholder="e.g. Nyeri Hill Primary School">`
+    : !foSchoolsLoaded
+    ? `<input class="input" disabled placeholder="Loading your assigned schools…">`
+    : foSchoolsCache.length
+    ? `<select class="select" id="fo_school" name="school" required>
+         <option value="" disabled selected>Select a school</option>
+         ${foSchoolsCache.map((s) => `<option>${esc(s)}</option>`).join("")}
+       </select>`
+    : `<input class="input" disabled placeholder="No schools assigned yet">`;
+  const noAssignmentsNotice = (user.role !== "admin" && foSchoolsLoaded && !foSchoolsCache.length)
+    ? `<div class="notice">${icon("info")}
+        <span>You have no assigned schools yet, so there is nowhere to file a new report.
+        Ask an HPF administrator to assign you to one or more schools.</span>
+      </div>`
+    : "";
+
   const dbNotice = !foReportsLoaded
     ? `<div class="empty-state">Loading your reports…</div>`
     : foReportsError
@@ -894,6 +935,7 @@ function pageFieldOfficer() {
 
         ${gateNotice}
         ${dbNotice}
+        ${noAssignmentsNotice}
 
         <div class="stat-row">
           <div class="stat-tile">
@@ -921,7 +963,7 @@ function pageFieldOfficer() {
             <form id="foForm">
               <div class="field">
                 <label for="fo_school">School / institution name</label>
-                <input class="input" id="fo_school" name="school" type="text" required placeholder="e.g. Nyeri Hill Primary School">
+                ${schoolField}
               </div>
               <div class="form-row">
                 <div class="field">
@@ -1355,6 +1397,9 @@ function wireFieldOfficer() {
 
   if (!foReportsLoaded) {
     loadFoReports().then(() => { if (onFieldOfficerPage()) render(); });
+  }
+  if (!foSchoolsLoaded && user.role !== "admin") {
+    loadFoSchools().then(() => { if (onFieldOfficerPage()) render(); });
   }
   // A visit saved while offline waits in the outbox; try it again on every
   // mount in case connectivity came back since. Re-render on any change, not

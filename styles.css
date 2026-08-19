@@ -4733,3 +4733,13 @@ textarea.input:focus {
 @media (prefers-reduced-motion: reduce) {
   .panel-collapse-btn svg { transition: none; }
 }
+
+/* ---------------------------------------------------------- field officer assignments */
+.assign-chips { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.4rem; }
+.assign-chips .pill { display: inline-flex; align-items: center; gap: 0.3rem; }
+.pill-x {
+  display: inline-grid; place-items: center; width: 14px; height: 14px;
+  border: none; border-radius: 999px; background: rgb(0 0 0 / 0.15); color: inherit;
+  font-size: 0.7rem; line-height: 1; cursor: pointer; padding: 0;
+}
+.pill-x:hover { background: rgb(0 0 0 / 0.3); }

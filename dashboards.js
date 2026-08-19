@@ -230,7 +230,7 @@ let adminPromoteOpen = false;
    identical copies. Default collapsed: these three are the longest panels on
    the dashboard and an admin opens this page daily, so the summary heading is
    what shows first and each expands only on request. */
-let collapsedPanels = { admins: true, library: true, activity: true };
+let collapsedPanels = { admins: true, library: true, activity: true, assignments: true };
 
 /* A header-row collapse button plus the wrapper its body goes in. Call
    collapseBtn(key) inside the panel's header, then wrap the existing body
@@ -274,6 +274,31 @@ async function promoteToAdmin(id) {
       `Supabase SQL editor: update profiles set role = 'admin' where id = '${id}';`
     );
   }
+}
+
+/* ---------------------------------------------------------- officer -> school assignments
+   Gives "Field Officer: assigned schools" a real, admin-managed mechanism
+   (school_officer_assignments) instead of an officer only ever seeing reports
+   they personally filed. Same cache/load/error shape as every other Postgres
+   panel in this file. */
+let assignmentsCache = [];
+let assignmentsLoaded = false;
+let assignmentsError = null;
+let fieldOfficersCache = []; // profiles with role = field_officer, for the picker
+let assignFormOpen = false;
+
+async function loadAssignments() {
+  const [officersRes, assignRes] = await Promise.all([
+    supabase.from("profiles").select("id, full_name, email").eq("role", "field_officer").order("full_name"),
+    supabase.from("school_officer_assignments").select("*").order("created_at", { ascending: false }),
+  ]);
+  assignmentsLoaded = true;
+  if (officersRes.error) { assignmentsError = authMessage(officersRes.error); return assignmentsCache; }
+  if (assignRes.error)   { assignmentsError = authMessage(assignRes.error);   return assignmentsCache; }
+  assignmentsError = null;
+  fieldOfficersCache = officersRes.data || [];
+  assignmentsCache = assignRes.data || [];
+  return assignmentsCache;
 }
 
 async function createAdminAccount({ fullName, email, password }) {
@@ -388,6 +413,87 @@ function adminAccountsPanel(currentUser) {
     </form>` : "";
 
   return wrap(`${addForm}${promoteForm}${rows}`);
+}
+
+/* Which schools each field officer covers. This is the mechanism, not just
+   a display: field_reports RLS checks the same table, so an assignment made
+   here is what actually lets an officer file a report for that school, on
+   every device, not merely what this panel shows. */
+function officerAssignmentsPanel() {
+  const head = `
+    <div class="panel-head-row">
+      <div>
+        <h2>${icon("mapPin")} Field officer assignments</h2>
+        <p class="panel-sub" style="margin-bottom:0">Which schools each officer may file reports for and see — enforced in the database, not just this screen</p>
+      </div>
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
+        <button class="btn btn-primary" data-assign-toggle>${icon("plus")} Assign a school</button>
+        ${collapseBtn("assignments")}
+      </div>
+    </div>`;
+
+  const wrap = (inner) => `<div class="panel" style="margin-top:1.5rem" data-assignments-panel>${head}${collapseBody("assignments", inner)}</div>`;
+
+  if (!assignmentsLoaded) return wrap(`<div class="empty-state">Loading assignments…</div>`);
+  if (assignmentsError) {
+    return wrap(`<div class="empty-state">Could not load assignments — ${esc(assignmentsError)}
+      <div style="margin-top:.6rem"><button class="btn btn-outline btn-xs" data-assignments-retry>${icon("refresh")} Try again</button></div>
+    </div>`);
+  }
+
+  // Grouped by officer — "who covers what" reads more usefully than a flat
+  // list of individual assignment rows, and matches how an admin thinks about
+  // the question ("where is Grace assigned?") rather than the storage shape.
+  const byOfficer = new Map();
+  assignmentsCache.forEach((a) => {
+    if (!byOfficer.has(a.officer_id)) byOfficer.set(a.officer_id, []);
+    byOfficer.get(a.officer_id).push(a);
+  });
+
+  const rows = fieldOfficersCache.length
+    ? fieldOfficersCache.map((o) => {
+        const mine = byOfficer.get(o.id) || [];
+        return `<div class="submission">
+          <span class="avatar-sm">${esc((o.full_name || o.email || "O").slice(0, 1).toUpperCase())}</span>
+          <div style="flex:1;min-width:0">
+            <div class="s-title">${esc(o.full_name || "—")}</div>
+            <div class="s-meta">${esc(o.email || "—")}</div>
+            <div class="assign-chips">
+              ${mine.length
+                ? mine.map((a) => `<span class="pill role-pill">${esc(a.school)}
+                    <button class="pill-x" data-assign-remove="${esc(a.id)}" title="Remove">×</button></span>`).join("")
+                : `<span class="s-meta">No schools assigned</span>`}
+            </div>
+          </div>
+        </div>`;
+      }).join("")
+    : `<div class="empty-state">No field officer accounts in the database yet — they appear here once someone signs up (or is promoted) as a Field Officer.</div>`;
+
+  const officerOpts = fieldOfficersCache.length
+    ? `<option value="" disabled selected>Select an officer</option>` +
+      fieldOfficersCache.map((o) => `<option value="${esc(o.id)}">${esc(o.full_name || o.email)}</option>`).join("")
+    : `<option value="" disabled selected>No field officer accounts yet</option>`;
+  const schoolOpts = getSchools().map((s) => `<option>${esc(s.name)}</option>`).join("");
+
+  const addForm = assignFormOpen ? `
+    <form id="assignForm" class="add-user-form">
+      <div class="form-row">
+        <div class="field"><label>Field officer</label>
+          <select class="select" name="officerId" required ${fieldOfficersCache.length ? "" : "disabled"}>
+            ${officerOpts}
+          </select></div>
+        <div class="field"><label>School</label>
+          <select class="select" name="school" required>
+            <option value="" disabled selected>Select a school</option>${schoolOpts}
+          </select></div>
+      </div>
+      <div class="add-user-actions">
+        <button class="btn btn-primary" type="submit">${icon("check")} Assign</button>
+        <button class="btn btn-outline" type="button" data-assign-cancel>Cancel</button>
+      </div>
+    </form>` : "";
+
+  return wrap(`${addForm}${rows}`);
 }
 
 /* ---------------------------------------------------------- user management */
@@ -2403,6 +2509,7 @@ function adminBody(ctx) {
       ${barChart(d.weekly, DAYS)}
     </div>
     ${adminAccountsPanel(ctx.user)}
+    ${officerAssignmentsPanel()}
     ${userManagementPanel(ctx.user)}
     ${digitalLibraryPanel()}
     <div class="panel" style="margin-top:1.5rem">
@@ -5325,6 +5432,76 @@ export function wireMyDashboard(user, events) {
 
     wireAdminAccounts();
     loadAdmins().then(renderAdmins);
+
+    /* --- Field officer assignments: who covers which school --- */
+    function renderAssignments() {
+      const holder = body.querySelector("[data-assignments-panel]");
+      if (!holder) return;
+      holder.outerHTML = officerAssignmentsPanel();
+      wireOfficerAssignments();
+    }
+
+    function wireOfficerAssignments() {
+      const panel = body.querySelector("[data-assignments-panel]");
+      if (!panel) return;
+
+      panel.querySelector("[data-assign-toggle]")?.addEventListener("click", () => {
+        assignFormOpen = !assignFormOpen;
+        if (assignFormOpen) collapsedPanels.assignments = false;
+        renderAssignments();
+      });
+      panel.querySelector("[data-assign-cancel]")?.addEventListener("click", () => {
+        assignFormOpen = false;
+        renderAssignments();
+      });
+      panel.querySelector("[data-assignments-retry]")?.addEventListener("click", async () => {
+        assignmentsLoaded = false;
+        renderAssignments();
+        await loadAssignments();
+        renderAssignments();
+      });
+
+      panel.querySelector("#assignForm")?.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const form = e.currentTarget;
+        const d = Object.fromEntries(new FormData(form).entries());
+        if (!d.officerId) return toast("Officer required", "Select which field officer to assign.", "error");
+        if (!d.school) return toast("School required", "Select which school to assign them to.", "error");
+
+        const submit = form.querySelector("[type=submit]");
+        if (submit) { submit.disabled = true; submit.textContent = "Assigning…"; }
+        const { error } = await supabase.from("school_officer_assignments")
+          .insert({ officer_id: d.officerId, school: d.school, assigned_by: ctx.user.id });
+        if (error) {
+          if (submit) { submit.disabled = false; submit.innerHTML = `${icon("check")} Assign`; }
+          if (error.code === "23505")
+            return toast("Already assigned", "This officer already covers that school.", "error");
+          return toast("Could not assign", authMessage(error), "error");
+        }
+        assignFormOpen = false;
+        await loadAssignments();
+        renderAssignments();
+        toast("School assigned", "The officer can now file and see reports for this school on every device.", "success");
+      });
+
+      panel.querySelectorAll("[data-assign-remove]").forEach((btn) =>
+        btn.addEventListener("click", async () => {
+          btn.disabled = true;
+          const { error } = await supabase.from("school_officer_assignments")
+            .delete().eq("id", btn.dataset.assignRemove);
+          if (error) {
+            btn.disabled = false;
+            return toast("Could not remove assignment", authMessage(error), "error");
+          }
+          await loadAssignments();
+          renderAssignments();
+          toast("Assignment removed", "", "success");
+        })
+      );
+    }
+
+    wireOfficerAssignments();
+    loadAssignments().then(renderAssignments);
 
     // --- edit a user's full credentials (incl. password) ---
     body.querySelectorAll("[data-edit-user]").forEach((btn) =>
