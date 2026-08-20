@@ -3091,12 +3091,31 @@ async function loadClasses() {
   classesLoaded = true;
   if (classErr) { classesError = authMessage(classErr); return classesCache; }
 
-  const { data: enrRows, error: enrErr } = await supabase
-    .from("enrollments").select("*").order("created_at");
-  // A failed roster fetch should not blank out the class list an admin or
-  // teacher can otherwise see — degrade to classes with an empty roster
-  // rather than nothing at all.
-  if (enrErr) console.warn("enrollments fetch failed:", enrErr.message);
+  // A failed fetch on any of these should not blank out what an admin or
+  // teacher can otherwise see — degrade to classes without that piece rather
+  // than nothing at all, matching the enrollments fallback already below.
+  const [enrRes, assignRes, assessRes] = await Promise.all([
+    supabase.from("enrollments").select("*").order("created_at"),
+    supabase.from("assignments").select("*").order("created_at", { ascending: false }),
+    supabase.from("assessments").select("*").order("created_at", { ascending: false }),
+  ]);
+  if (enrRes.error) console.warn("enrollments fetch failed:", enrRes.error.message);
+  if (assignRes.error) console.warn("assignments fetch failed:", assignRes.error.message);
+  if (assessRes.error) console.warn("assessments fetch failed:", assessRes.error.message);
+  const enrRows = enrRes.data || [];
+  const assignRows = assignRes.data || [];
+  const assessRows = assessRes.data || [];
+
+  // questions depend on knowing which assessments exist, so this can only
+  // run after the fetch above resolves.
+  const assessIds = assessRows.map((a) => a.id);
+  let questionRows = [];
+  if (assessIds.length) {
+    const { data, error } = await supabase
+      .from("questions").select("*").in("assessment_id", assessIds).order("position");
+    if (error) console.warn("questions fetch failed:", error.message);
+    questionRows = data || [];
+  }
 
   classesError = null;
   const local = read(K_CLASSES, []);
@@ -3104,18 +3123,39 @@ async function loadClasses() {
 
   classesCache = classRows.map((c) => {
     const existing = byId[c.id] || {};
+    const existingAssign = Object.fromEntries((existing.assignments || []).map((a) => [a.id, a]));
+    const existingAssess = Object.fromEntries((existing.assessments || []).map((a) => [a.id, a]));
     return {
       id: c.id, name: c.name, school: c.school, ownerId: c.owner_id,
-      learners: (enrRows || [])
+      learners: enrRows
         .filter((e) => e.class_id === c.id)
         .map((e) => ({
           id: e.learner_id || e.id, name: e.name,
           active: e.active_label || "just now", account: e.is_account,
           _enrollmentId: e.id, // the row a removal must delete — not the same as `id` for a name-only entry
         })),
-      // Not yet migrated — carried over from whatever this browser already had.
-      assignments: existing.assignments || [],
-      assessments: existing.assessments || [],
+      // The shell (title/type/due/session, questions) is real, from Postgres.
+      // Per-learner results/submissions are not yet migrated (that is the
+      // separate results-sync stage) — carried over from whatever this
+      // browser already recorded locally for that same assignment/assessment
+      // id, same "preserve untouched" approach the class merge above uses.
+      assignments: assignRows
+        .filter((a) => a.class_id === c.id)
+        .map((a) => ({
+          id: a.id, type: a.type, title: a.title, detail: a.detail || "",
+          due: a.due || "no due date", session: a.session,
+          results: (existingAssign[a.id] && existingAssign[a.id].results) || [],
+        })),
+      assessments: assessRows
+        .filter((a) => a.class_id === c.id)
+        .map((a) => ({
+          id: a.id, title: a.title, session: a.session, published: a.published,
+          audience: a.audience, targetIds: a.target_ids || [],
+          questions: questionRows
+            .filter((q) => q.assessment_id === a.id)
+            .map((q) => ({ id: q.id, text: q.text, options: q.options, correct: q.correct })),
+          submissions: (existingAssess[a.id] && existingAssess[a.id].submissions) || [],
+        })),
     };
   });
   write(K_CLASSES, classesCache);
@@ -3176,7 +3216,15 @@ function scopedClasses() {
 
 function currentClass() {
   const classes = getClasses();          // full store — used when saving
-  const scoped = scopedClasses();        // only what this coach may see
+  // A *filtered view* of `classes`, not scopedClasses()'s own independent
+  // getClasses() call — read() re-parses localStorage into brand new objects
+  // every time, so a second call would return a `cls` no longer the same
+  // object as anything in `classes`, and mutating it would silently never
+  // reach saveClasses(classes). Every caller of currentClass() destructures
+  // both and mutates `cls` expecting that to change what gets saved, so this
+  // has to share identity with `classes`, not just match its data.
+  const school = coachSchool();
+  const scoped = school ? classes.filter((c) => c.school === school) : classes;
   const cls = scoped.find((c) => c.id === coachState.classId) || scoped[0] || null;
   coachState.classId = cls ? cls.id : null;
   return { classes, scoped, cls };
@@ -6016,11 +6064,16 @@ export function wireMyDashboard(user, events) {
       })
     );
     body.querySelectorAll("[data-assign-delete]").forEach((el) =>
-      el.addEventListener("click", (e) => {
+      el.addEventListener("click", async (e) => {
         e.stopPropagation();
         const { classes, cls } = currentClass();
         const a = cls.assignments.find((x) => x.id === el.dataset.assignDelete);
         if (!a) return;
+        el.disabled = true;
+        // FK is ON DELETE CASCADE, so the assignment's results go with it —
+        // one delete, nothing orphaned (same as the class-delete note above).
+        const { error } = await supabase.from("assignments").delete().eq("id", a.id);
+        if (error) { el.disabled = false; return toast("Could not delete", authMessage(error), "error"); }
         cls.assignments = cls.assignments.filter((x) => x.id !== a.id);
         saveClasses(classes);
         if (coachState.editAssignId === a.id) coachState.editAssignId = null;
@@ -6146,14 +6199,26 @@ export function wireMyDashboard(user, events) {
       }
     });
 
-    assignForm?.addEventListener("submit", (e) => {
+    assignForm?.addEventListener("submit", async (e) => {
       e.preventDefault();
       const form = e.currentTarget;
       const data = Object.fromEntries(new FormData(form).entries());
       if (!(data.title || "").trim()) return toast("Title required", "Give the assignment a title.", "error");
 
+      const submit = form.querySelector("[type=submit]");
+      const busy = (msg) => { if (submit) { submit.disabled = true; submit.textContent = msg; } };
+      const idle = (html) => { if (submit) { submit.disabled = false; submit.innerHTML = html; } };
+
       // --- edit mode: update the metadata of an existing assignment ---
       if (form.dataset.editing) {
+        busy("Saving…");
+        const { error } = await supabase.from("assignments").update({
+          title: data.title.trim(), type: data.type || undefined,
+          detail: (data.detail || "").trim(), due: (data.due || "").trim() || "no due date",
+        }).eq("id", form.dataset.editing);
+        idle(`${icon("check")} Save changes`);
+        if (error) return toast("Could not save changes", authMessage(error), "error");
+
         const { classes, cls } = currentClass();
         const a = cls.assignments.find((x) => x.id === form.dataset.editing);
         if (a) {
@@ -6171,20 +6236,28 @@ export function wireMyDashboard(user, events) {
 
       const classes = getClasses();
       const withScore0 = data.type !== "lesson";
-      const makeWork = (learnerIds) => ({
-        id: uid(), type: data.type || "lesson", title: data.title.trim(),
-        detail: (data.detail || "").trim() || (withScore0 ? "questions" : "resources"),
-        due: (data.due || "").trim() || "no due date", session: "planned",
-        results: learnerIds.map((id) => (withScore0 ? { id, pct: 0, score: 0 } : { id, pct: 0 })),
-      });
+      const detail0 = (data.detail || "").trim() || (withScore0 ? "questions" : "resources");
+      const due0 = (data.due || "").trim() || "no due date";
+      const resultsFor = (learnerIds) => learnerIds.map((id) => (withScore0 ? { id, pct: 0, score: 0 } : { id, pct: 0 }));
 
       // --- assign to every grade in the teacher's school ---
       if (data.classId === "__all__") {
         const targets = scopedClasses().filter((c) => c.learners.length);
         if (!targets.length) return toast("No classes with learners", "Enroll learners first.", "error");
-        targets.forEach((sc) => {
-          const c = classes.find((x) => x.id === sc.id);
-          c.assignments.unshift(makeWork(c.learners.map((l) => l.id)));
+        busy("Creating…");
+        const { data: rows, error } = await supabase.from("assignments").insert(
+          targets.map((sc) => ({ class_id: sc.id, type: data.type || "lesson", title: data.title.trim(), detail: detail0, due: due0, session: "planned" }))
+        ).select();
+        idle(`${icon("send")} Create & assign`);
+        if (error) return toast("Could not create assignment", authMessage(error), "error");
+
+        rows.forEach((row) => {
+          const c = classes.find((x) => x.id === row.class_id);
+          c.assignments.unshift({
+            id: row.id, type: row.type, title: row.title, detail: row.detail || "",
+            due: row.due || "no due date", session: row.session,
+            results: resultsFor(c.learners.map((l) => l.id)),
+          });
         });
         saveClasses(classes);
         coachState.tab = "assignments";
@@ -6203,16 +6276,17 @@ export function wireMyDashboard(user, events) {
           : target.learners.map((l) => l.id);
       if (!ids.length) return toast("No learners selected", "Pick at least one learner.", "error");
 
-      const withScore = data.type !== "lesson";
-      const results = ids.map((id) => (withScore ? { id, pct: 0, score: 0 } : { id, pct: 0 }));
+      busy("Creating…");
+      const { data: row, error } = await supabase.from("assignments").insert({
+        class_id: target.id, type: data.type || "lesson", title: data.title.trim(), detail: detail0, due: due0, session: "planned",
+      }).select().single();
+      idle(`${icon("send")} Create & assign`);
+      if (error) return toast("Could not create assignment", authMessage(error), "error");
+
       target.assignments.unshift({
-        id: uid(),
-        type: data.type || "lesson",
-        title: data.title.trim(),
-        detail: (data.detail || "").trim() || (withScore ? "questions" : "resources"),
-        due: (data.due || "").trim() || "no due date",
-        session: "planned",
-        results,
+        id: row.id, type: row.type, title: row.title, detail: row.detail || "",
+        due: row.due || "no due date", session: row.session,
+        results: resultsFor(ids),
       });
       saveClasses(classes);
       coachState.classId = target.id;
@@ -6531,19 +6605,23 @@ export function wireMyDashboard(user, events) {
 
     // coach: start / end a live session on an assignment
     body.querySelectorAll("[data-session-toggle]").forEach((btn) =>
-      btn.addEventListener("click", () => {
+      btn.addEventListener("click", async () => {
         const { classes, cls } = currentClass();
         const a = cls.assignments.find((x) => x.id === btn.dataset.sessionToggle);
         if (!a) return;
-        const now = sessionOf(a);
-        if (now === "active") {
-          a.session = "ended";
-          a.endedAt = Date.now();
-          toast("Session ended", `“${a.title}” is closed — learners can no longer join.`, "success");
-        } else {
+        const startingUp = sessionOf(a) !== "active";
+        btn.disabled = true;
+        const { error } = await supabase.from("assignments").update({ session: startingUp ? "active" : "ended" }).eq("id", a.id);
+        btn.disabled = false;
+        if (error) return toast("Could not update session", authMessage(error), "error");
+        if (startingUp) {
           a.session = "active";
           a.startedAt = Date.now();
           toast("Session started", `“${a.title}” is now live for ${cls.name} learners.`, "success");
+        } else {
+          a.session = "ended";
+          a.endedAt = Date.now();
+          toast("Session ended", `“${a.title}” is closed — learners can no longer join.`, "success");
         }
         saveClasses(classes);
         renderRole("teacher");
@@ -6576,7 +6654,7 @@ export function wireMyDashboard(user, events) {
       rm.closest("[data-qblock]").remove();
       renumberQ();
     });
-    body.querySelector("#assessForm")?.addEventListener("submit", (e) => {
+    body.querySelector("#assessForm")?.addEventListener("submit", async (e) => {
       e.preventDefault();
       const form = e.currentTarget;
       const title = form.querySelector('[name="title"]').value.trim();
@@ -6594,18 +6672,41 @@ export function wireMyDashboard(user, events) {
         rawOpts.forEach((o, oi) => { if (o) { if (oi === correctRaw) correct = kept.length; kept.push(o); } });
         if (kept.length < 2) return toast(`Question ${i + 1} needs 2+ options`, "Fill at least two options.", "error");
         if (correct < 0) return toast(`Mark the answer for question ${i + 1}`, "The correct option can't be blank.", "error");
-        questions.push({ id: uid(), text, options: kept, correct });
+        questions.push({ text, options: kept, correct });
       }
       const { classes, cls } = currentClass();
-      const newId = uid();
+
+      const submit = form.querySelector("[type=submit]");
+      if (submit) { submit.disabled = true; submit.textContent = "Saving…"; }
+
+      const { data: assessRow, error: assessErr } = await supabase.from("assessments").insert({
+        class_id: cls.id, title, session: "planned", published: false, audience: "all", target_ids: [],
+      }).select().single();
+      if (assessErr) {
+        if (submit) { submit.disabled = false; submit.innerHTML = `${icon("check")} Save assessment`; }
+        return toast("Could not create assessment", authMessage(assessErr), "error");
+      }
+
+      const { data: qRows, error: qErr } = await supabase.from("questions").insert(
+        questions.map((q, i) => ({ assessment_id: assessRow.id, position: i, text: q.text, options: q.options, correct: q.correct }))
+      ).select().order("position");
+      if (qErr) {
+        // The assessment shell exists in Postgres but has no questions — delete
+        // it rather than leave a half-created draft the teacher never asked for.
+        await supabase.from("assessments").delete().eq("id", assessRow.id);
+        if (submit) { submit.disabled = false; submit.innerHTML = `${icon("check")} Save assessment`; }
+        return toast("Could not save the questions", authMessage(qErr), "error");
+      }
+
       cls.assessments.unshift({
-        id: newId, title, session: "planned",
-        published: false, audience: "all", targetIds: [],
-        questions, submissions: [],
+        id: assessRow.id, title: assessRow.title, session: assessRow.session,
+        published: assessRow.published, audience: assessRow.audience, targetIds: assessRow.target_ids || [],
+        questions: qRows.map((q) => ({ id: q.id, text: q.text, options: q.options, correct: q.correct })),
+        submissions: [],
       });
       saveClasses(classes);
       coachState.openAssessForm = false;
-      coachState.publishId = newId; // open the publish dialog right away
+      coachState.publishId = assessRow.id; // open the publish dialog right away
       toast("Assessment saved", `“${title}” (${questions.length} questions) is a draft — publish it to a class or learners.`, "success");
       renderRole("teacher");
     });
@@ -6618,8 +6719,12 @@ export function wireMyDashboard(user, events) {
       })
     );
     body.querySelectorAll("[data-remove-assess]").forEach((btn) =>
-      btn.addEventListener("click", () => {
+      btn.addEventListener("click", async () => {
         const { classes, cls } = currentClass();
+        btn.disabled = true;
+        // ON DELETE CASCADE on both questions and submissions — one delete.
+        const { error } = await supabase.from("assessments").delete().eq("id", btn.dataset.removeAssess);
+        if (error) { btn.disabled = false; return toast("Could not delete", authMessage(error), "error"); }
         cls.assessments = cls.assessments.filter((x) => x.id !== btn.dataset.removeAssess);
         saveClasses(classes);
         toast("Assessment deleted", "", "success");
@@ -6642,16 +6747,22 @@ export function wireMyDashboard(user, events) {
       })
     );
     body.querySelectorAll("[data-assess-session]").forEach((btn) =>
-      btn.addEventListener("click", () => {
+      btn.addEventListener("click", async () => {
         const { classes, cls } = currentClass();
         const a = cls.assessments.find((x) => x.id === btn.dataset.assessSession);
         if (!a) return;
-        if ((a.session || "planned") === "active") {
-          a.session = "ended"; a.endedAt = Date.now();
-          toast("Session ended", `“${a.title}” is closed.`, "success");
-        } else {
+        const startingUp = (a.session || "planned") !== "active";
+        const nextSession = startingUp ? "active" : "ended";
+        btn.disabled = true;
+        const { error } = await supabase.from("assessments").update({ session: nextSession }).eq("id", a.id);
+        btn.disabled = false;
+        if (error) return toast("Could not update session", authMessage(error), "error");
+        if (startingUp) {
           a.session = "active"; a.startedAt = Date.now();
           toast("Session started", `“${a.title}” is live — ${cls.name} learners can take it.`, "success");
+        } else {
+          a.session = "ended"; a.endedAt = Date.now();
+          toast("Session ended", `“${a.title}” is closed.`, "success");
         }
         saveClasses(classes);
         renderRole("teacher");
@@ -6712,7 +6823,7 @@ export function wireMyDashboard(user, events) {
         master.indeterminate = !master.checked && boxes.some((b) => b.checked);
       }
     });
-    body.querySelector("[data-publish-form]")?.addEventListener("submit", (e) => {
+    body.querySelector("[data-publish-form]")?.addEventListener("submit", async (e) => {
       e.preventDefault();
       const form = e.currentTarget;
       const assessId = form.dataset.publishForm;
@@ -6726,7 +6837,16 @@ export function wireMyDashboard(user, events) {
       if (!target.learners.length) return toast("Class is empty", `“${target.name}” has no learners — enroll some first.`, "error");
       if (audience === "individual" && !ids.length) return toast("Pick learner(s)", "Select at least one learner, or choose Whole class.", "error");
 
-      // detach the assessment from whichever class currently holds it
+      const targetIds = audience === "individual" ? ids : [];
+      const submit = form.querySelector("[type=submit]");
+      if (submit) submit.disabled = true;
+      const { error } = await supabase.from("assessments").update({
+        class_id: target.id, published: true, audience, target_ids: targetIds, session: "active",
+      }).eq("id", assessId);
+      if (submit) submit.disabled = false;
+      if (error) return toast("Could not publish", authMessage(error), "error");
+
+      // detach the assessment from whichever class currently holds it locally
       let assessment;
       classes.forEach((c) => {
         const i = c.assessments.findIndex((x) => x.id === assessId);
@@ -6736,7 +6856,7 @@ export function wireMyDashboard(user, events) {
 
       assessment.published = true;
       assessment.audience = audience;
-      assessment.targetIds = audience === "individual" ? ids : [];
+      assessment.targetIds = targetIds;
       assessment.session = "active";
       assessment.startedAt = Date.now();
       target.assessments.unshift(assessment);
