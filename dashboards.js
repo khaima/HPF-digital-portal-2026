@@ -323,12 +323,24 @@ let profilesAuthed = false; // same "local account, DB never saw it" check loadA
 async function loadProfiles() {
   const { data: sess } = await supabase.auth.getSession();
   profilesAuthed = !!sess?.session;
-  const { data, error } = await supabase.from("profiles").select("id, role, county, created_at");
+  const { data, error } = await supabase.from("profiles").select("id, role, county, school, created_at");
   profilesLoaded = true;
   if (error) { profilesError = authMessage(error); return profilesCache; }
   profilesError = null;
   profilesCache = data || [];
   return profilesCache;
+}
+
+/* Open device-maintenance tickets, for the Programme Overview's priority
+   actions. devices/device_maintenance are new (patch-13), still genuinely
+   empty — this reads 0 honestly rather than a fabricated count. */
+let deviceIssuesCache = [];
+let deviceIssuesLoaded = false;
+async function loadDeviceIssues() {
+  const { data, error } = await supabase.from("device_maintenance").select("id, status").neq("status", "resolved");
+  deviceIssuesLoaded = true;
+  if (!error) deviceIssuesCache = data || [];
+  return deviceIssuesCache;
 }
 
 async function createAdminAccount({ fullName, email, password }) {
@@ -2489,6 +2501,134 @@ function adminScorecard(s) {
   </div>`;
 }
 
+/* A school's status dot, derived from its own most-recently-filed termly
+   return — a real signal (attendance + dropout rate), not an invented
+   score. Mirrors how the field officer's fake "health score" became a real
+   "last visit" fact in an earlier pass: same principle, different data. */
+function schoolStatus(latestReturn) {
+  if (!latestReturn || latestReturn.attendance_rate == null)
+    return { key: "grey", label: "No return filed" };
+  const att = latestReturn.attendance_rate;
+  const enrolled = (latestReturn.boys || 0) + (latestReturn.girls || 0);
+  const dropoutRate = enrolled ? ((latestReturn.dropouts || 0) / enrolled) * 100 : 0;
+  if (att >= 85 && dropoutRate < 5) return { key: "green", label: "On track" };
+  if (att >= 70 && dropoutRate < 10) return { key: "amber", label: "Needs attention" };
+  return { key: "red", label: "At risk" };
+}
+
+/* HPF Programme Overview — the admin dashboard's new lead section. Every
+   number below reads from caches wireAdmin() already loads at mount
+   (schools, returns, classes, profiles) plus one small new one
+   (deviceIssuesCache) — no new per-render queries. Anything with no real
+   data source anywhere in the schema yet (digital tool usage) shows an
+   honest "—" / "not yet tracked" rather than an invented figure. */
+function programmeOverview(s) {
+  const schools = getSchools();
+  const classes = getClasses();
+
+  // One pass, reused by the tiles, the meters, the table and the actions
+  // below — so none of them can disagree about the same school's numbers.
+  const schoolRows = schools.map((sch) => {
+    const returns = returnsForSchool(sch.name);
+    const latest = returns.length
+      ? [...returns].sort((a, b) => new Date(b.updated_at || b.created_at) - new Date(a.updated_at || a.created_at))[0]
+      : null;
+    const learners = classes.filter((c) => c.school === sch.name).reduce((n, c) => n + c.learners.length, 0);
+    const teachers = profilesCache.filter((p) => p.role === "teacher" && p.school === sch.name).length;
+    return { school: sch, latest, learners, teachers, status: schoolStatus(latest) };
+  });
+
+  const attendanceValues = schoolRows.map((r) => r.latest?.attendance_rate).filter((v) => v != null);
+  const avgAttendance = attendanceValues.length
+    ? Math.round(attendanceValues.reduce((a, b) => a + b, 0) / attendanceValues.length)
+    : null;
+
+  const tiles = [
+    { label: "Schools", icon: "school", value: schools.length },
+    { label: "Teachers", icon: "userCheck", value: s.roleCounts.teacher || 0 },
+    { label: "Learners", icon: "graduation", value: s.enrolled },
+    { label: "Digital", icon: "laptop", value: null },
+  ];
+  const tileHtml = tiles.map((t) => `
+    <div class="stat-tile">
+      <div class="st-label">${icon(t.icon)} ${esc(t.label)}</div>
+      <div class="st-num">${t.value == null ? `<span class="ov-untracked">—</span>` : countNum(t.value)}</div>
+    </div>`).join("");
+
+  const meters = [
+    { label: "Learning", value: s.subs.length ? s.avgScore : null, color: "oklch(52% 0.14 148)" },
+    { label: "Teacher ICT", value: null, color: "oklch(55% 0.15 300)" },
+    { label: "Digital Use", value: null, color: "oklch(68% 0.17 155)" },
+    { label: "Attendance", value: avgAttendance, color: "oklch(62% 0.19 250)" },
+  ];
+  const meterHtml = meters
+    .map((m) => (m.value == null
+      ? `<div class="hbar"><div class="hbar-top"><span>${esc(m.label)}</span><span class="ov-untracked">not yet tracked</span></div></div>`
+      : hbar(m.label, m.value, 100, m.color, "%")))
+    .join("");
+
+  const statusLabel = { green: "On track", amber: "Needs attention", red: "At risk", grey: "No return filed" };
+  const tableHtml = schoolRows.length
+    ? schoolRows
+        .map(
+          (r) => `<div class="utx-row school-perf">
+            <div class="utx-cell">${esc(r.school.name)}</div>
+            <div class="utx-cell">${countNum(r.learners)}</div>
+            <div class="utx-cell">${countNum(r.teachers)}</div>
+            <div class="utx-cell ov-untracked">—</div>
+            <div class="utx-cell"><span class="status-dot ${r.status.key}" title="${esc(statusLabel[r.status.key])}"></span> ${esc(statusLabel[r.status.key])}</div>
+          </div>`
+        )
+        .join("")
+    : `<div class="empty-state">No schools in the database yet.</div>`;
+
+  // priority actions — real signals only, each line only shown if it's true
+  const atRisk = schoolRows.filter((r) => r.status.key === "red");
+  const noReturn = schoolRows.filter((r) => r.status.key === "grey");
+  const emptyClassOwners = new Set(classes.filter((c) => !c.learners.length).map((c) => c.ownerId));
+  const openDeviceIssues = deviceIssuesCache.length;
+
+  const actions = insights([
+    atRisk.length && {
+      icon: "alert", tone: "bad",
+      html: `<strong>${atRisk.length} school${atRisk.length === 1 ? "" : "s"}</strong> ${atRisk.length === 1 ? "is" : "are"} at risk — low attendance or high dropouts on the latest filed return.`,
+    },
+    noReturn.length && {
+      icon: "clock", tone: "warn",
+      html: `<strong>${noReturn.length} school${noReturn.length === 1 ? "" : "s"}</strong> ${noReturn.length === 1 ? "hasn't" : "haven't"} filed a termly return yet.`,
+    },
+    emptyClassOwners.size && {
+      icon: "users", tone: "warn",
+      html: `<strong>${emptyClassOwners.size} teacher${emptyClassOwners.size === 1 ? "" : "s"}</strong> ${emptyClassOwners.size === 1 ? "has" : "have"} a class with no learners enrolled yet.`,
+    },
+    openDeviceIssues > 0 && {
+      icon: "laptop", tone: "warn",
+      html: `<strong>${openDeviceIssues} device${openDeviceIssues === 1 ? "" : "s"}</strong> ${openDeviceIssues === 1 ? "needs" : "need"} maintenance.`,
+    },
+  ].filter(Boolean));
+
+  return `
+    <div class="panel" data-programme-overview>
+      <h2>${icon("chartColumn")} HPF Programme Overview</h2>
+      <p class="panel-sub">Whole programme, every school — not affected by the filters below</p>
+      <div class="stat-row" style="margin-top:1rem">${tileHtml}</div>
+
+      <h3 class="dash-section">Programme performance</h3>
+      <div class="legend">${meterHtml}</div>
+
+      <h3 class="dash-section">School performance</h3>
+      <div class="utx-table utx-narrow" style="min-width:0">
+        <div class="utx-row utx-head school-perf">
+          <div>School</div><div>Learners</div><div>Teachers</div><div>Digital</div><div>Status</div>
+        </div>
+        ${tableHtml}
+      </div>
+
+      <h3 class="dash-section">Priority actions</h3>
+      ${actions || `<div class="empty-state">${icon("check")} Nothing needs attention right now.</div>`}
+    </div>`;
+}
+
 function adminBody(ctx) {
   const events = ctx.events || [];
   const s = computeAdminStats(events);
@@ -2558,6 +2698,7 @@ function adminBody(ctx) {
   ].filter(Boolean));
 
   return `
+    ${programmeOverview(s)}
     ${dashFilterBar()}
     ${smart}
     ${adminAnalytics(ctx)}
@@ -5438,8 +5579,11 @@ export function wireMyDashboard(user, events) {
     // view's own mount does, so an admin who already opened the coach view
     // this session (classesLoaded already true) does not re-fetch here.
     const classesPromise = classesLoaded ? Promise.resolve(classesCache) : loadClasses();
-    Promise.allSettled([loadSchools(), loadReturns(), loadRevisions(), loadGrades(), loadFieldReports(), classesPromise]).then(() => {
-      if (body.querySelector("[data-admin-panel]")) renderAnalytics();
+    Promise.allSettled([loadSchools(), loadReturns(), loadRevisions(), loadGrades(), loadFieldReports(), classesPromise, loadDeviceIssues()]).then(() => {
+      // Full re-render, not just renderAnalytics(): Programme Overview (a
+      // sibling of the analytics panel, not inside it) reads the same
+      // schools/returns/classes/device data and needs the same refresh.
+      if (body.querySelector("[data-programme-overview]")) renderRole("admin");
     });
     // update automatically when data changes in another tab (keep just one listener)
     // hpf_submissions dropped: field reports moved to Postgres, so nothing

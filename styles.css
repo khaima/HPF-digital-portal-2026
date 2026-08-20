@@ -3998,6 +3998,24 @@ textarea.input:focus {
 .utx-table.utx-narrow { min-width: 560px; }
 .utx-row.utx-people { grid-template-columns: 1.6fr 1fr 1fr auto; }
 
+/* Programme Overview: School / Learners / Teachers / Digital / Status */
+.utx-row.school-perf { grid-template-columns: 1.6fr 0.9fr 0.9fr 0.9fr 1fr; }
+
+.status-dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  margin-right: 0.3rem;
+}
+.status-dot.green { background: var(--success); }
+.status-dot.amber { background: oklch(72% 0.16 75); }
+.status-dot.red   { background: var(--destructive); }
+.status-dot.grey  { background: oklch(85% 0.01 265); }
+
+/* A stat/meter with no real data source yet — never a fabricated number */
+.ov-untracked { color: var(--muted-foreground); font-weight: 500; }
+
 /* status distribution bar */
 .dist-bar {
   display: flex;
