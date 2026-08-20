@@ -28,6 +28,7 @@ frontend static (it still deploys on GitHub Pages).
    | 11 | [`patch-10-head-of-institution.sql`](patch-10-head-of-institution.sql) | Head of institution name, title and contact |
    | 12 | [`patch-11-open-signup.sql`](patch-11-open-signup.sql) | Auto-confirms new accounts so signup and sign-in work |
    | 13 | [`patch-12-school-officer-assignments.sql`](patch-12-school-officer-assignments.sql) | Assigns field officers to schools; scopes field report & return access to it |
+   | 14 | [`patch-13-data-model-expansion.sql`](patch-13-data-model-expansion.sql) | Roles, learners, subjects, teacher/field-officer records, learning content, field visits, devices, interventions, notifications, audit trail — schema for features not built yet |
 
    **All of them are safe to re-run**, so if you are unsure what state the
    database is in, just run them all in order — that is the reliable way to
