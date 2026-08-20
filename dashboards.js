@@ -2880,6 +2880,12 @@ function openAssessModal(classId, assessId, userId, onDone) {
       answers, correct, total: a.questions.length, pct, at: Date.now(),
     });
     write(K_CLASSES, classes);
+    // Opportunistic — only actually reaches Postgres if the browser's still-
+    // active session belongs to the teacher who owns this class (the shared-
+    // device model: the teacher's own JWT stays valid while a learner uses
+    // the same browser). Otherwise this is a no-op and the next real mount
+    // of the coach view picks it up instead.
+    syncResults();
 
     close();
     toast("Assessment submitted", `You scored ${correct}/${a.questions.length} (${pct}%). Auto-marked instantly.`, "success");
@@ -3160,6 +3166,73 @@ async function loadClasses() {
   });
   write(K_CLASSES, classesCache);
   return classesCache;
+}
+
+/* ---------------------------------------------------------- results sync
+   assignment_results and submissions are per-learner data, and a learner in
+   this app never has a Supabase session to write them with directly (no
+   email, no JWT — the same structural fact behind every "learner reads the
+   local mirror" note above). Both tables' write policies already carve out
+   for this: alongside `learner_id = auth.uid()`, they also accept
+   `owns_class(...)` with no learner_id check at all — the schema expects the
+   *teacher's* authenticated session to record a local learner's result on
+   their behalf, keyed by name rather than an identity Postgres never has.
+   That's what this does: push whatever this device has recorded locally,
+   that Postgres doesn't have yet, up through the teacher's own session.
+
+   "Doesn't have yet" is tracked with a local-only _syncedId stamped onto the
+   result/submission once its insert succeeds — write()/loadClasses()'s merge
+   both carry it forward untouched (it's not a column either table has), so a
+   second sync run skips anything already stamped instead of double-inserting.
+   Never synced: a result with no matching enrollment id, e.g. a learner
+   enrolled through the older local-only "Add user" path (see Stage B's
+   commit message) rather than the real enrollments table — inserting that
+   would fail assignment_results' foreign key, so it's left local-only,
+   same limit that path already has for everything else. */
+let syncingResults = false;
+let resultsOnlineListenerAttached = false;
+
+async function syncResults() {
+  if (!classesAuthed || syncingResults) return;
+  syncingResults = true;
+  try {
+    const classes = getClasses();
+    let changed = false;
+
+    for (const c of classes) {
+      const realLearnerIds = new Set(c.learners.map((l) => l.id));
+
+      for (const a of c.assignments) {
+        const pending = a.results.filter((r) => !r._syncedId && realLearnerIds.has(r.id));
+        if (!pending.length) continue;
+        const { data: rows, error } = await supabase.from("assignment_results").insert(
+          pending.map((r) => ({ assignment_id: a.id, enrollment_id: r.id, pct: r.pct, score: typeof r.score === "number" ? r.score : null }))
+        ).select();
+        if (error) { console.warn("assignment_results sync failed:", error.message); continue; }
+        rows.forEach((row, i) => { pending[i]._syncedId = row.id; });
+        changed = true;
+      }
+
+      for (const a of c.assessments) {
+        const pending = (a.submissions || []).filter((s) => !s._syncedId);
+        if (!pending.length) continue;
+        const { data: rows, error } = await supabase.from("submissions").insert(
+          pending.map((s) => ({
+            assessment_id: a.id, learner_id: null, name: s.name,
+            answers: s.answers, correct: s.correct, total: s.total, pct: s.pct,
+            created_at: s.at ? new Date(s.at).toISOString() : undefined,
+          }))
+        ).select();
+        if (error) { console.warn("submissions sync failed:", error.message); continue; }
+        rows.forEach((row, i) => { pending[i]._syncedId = row.id; });
+        changed = true;
+      }
+    }
+
+    if (changed) saveClasses(classes);
+  } finally {
+    syncingResults = false;
+  }
 }
 
 /* Synchronous read of the local mirror — every render path in this file calls
@@ -5848,12 +5921,22 @@ export function wireMyDashboard(user, events) {
     // rather than on role, so this never fires a query for a view that isn't
     // showing this data.
     if (!classesLoaded && body.querySelector("[data-new-class-toggle]")) {
-      loadClasses().then(() => { if (body.querySelector("[data-new-class-toggle]")) renderRole("teacher"); });
+      loadClasses().then(() => {
+        syncResults(); // background — whatever's pending doesn't block the render
+        if (body.querySelector("[data-new-class-toggle]")) renderRole("teacher");
+      });
     }
     body.querySelector("[data-classes-retry]")?.addEventListener("click", () => {
       classesLoaded = false;
       renderRole("teacher");
     });
+    // Same "retry on reconnect" idea as the field officer's report outbox
+    // (app.js) — a result recorded while offline just waits for the next
+    // successful sync, whichever trigger gets there first.
+    if (!resultsOnlineListenerAttached) {
+      resultsOnlineListenerAttached = true;
+      window.addEventListener("online", () => syncResults());
+    }
 
     // sub-tabs (Learn: Home/Library/Bookmarks · Coach: Reports/Lessons/Quizzes/Learners)
     const subtabs = [...body.querySelectorAll("[data-subtab]")];
