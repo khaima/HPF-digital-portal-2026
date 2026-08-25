@@ -186,8 +186,18 @@ export const ROLES = [
   { value: "school_leader", label: "School Leader" },
   { value: "field_officer", label: "Field Officer" },
   { value: "learner", label: "Learner" },
-  { value: "admin", label: "HPF Staff (Admin)" },
+  { value: "staff", label: "HPF Staff" },
+  { value: "admin", label: "HPF Admin" },
 ];
+
+// Self-serve signup only ever offers these — handle_new_user() (patch-01)
+// clamps anything else to "learner" server-side, so a role that isn't in
+// this list would be a working button that silently does something else.
+// Neither "staff" nor "admin" is reachable by signing up; both are granted
+// by an existing staff/admin account promoting someone (dashboards.js).
+export const SELF_SERVE_ROLES = ROLES.filter(
+  (r) => r.value !== "staff" && r.value !== "admin"
+);
 
 export const ORG_TYPES = [
   "Public Primary School",

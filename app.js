@@ -6,7 +6,7 @@
 import { icon } from "./icons.js";
 import {
   PORTAL_CARDS, CURRICULUM, RESOURCES, ASSESSMENT, IMPACT,
-  ROLES, ORG_TYPES, COUNTIES, VISIT_TYPES, HERO_SLIDES, HERO_QUOTES,
+  ROLES, SELF_SERVE_ROLES, ORG_TYPES, COUNTIES, VISIT_TYPES, HERO_SLIDES, HERO_QUOTES,
   REGIONS, PROJECTS, EMPOWERMENT_MODEL,
 } from "./data.js";
 import {
@@ -724,7 +724,7 @@ function pageAuth(mode = "login") {
 
   const roleOptions =
     `<option value="" disabled selected>Select your role</option>` +
-    ROLES.map((r) => `<option value="${r.value}">${r.label}</option>`).join("");
+    SELF_SERVE_ROLES.map((r) => `<option value="${r.value}">${r.label}</option>`).join("");
   const regionOptions =
     `<option value="" disabled selected>Select your region</option>` +
     Object.keys(REGIONS).map((r) => `<option>${r}</option>`).join("");

@@ -29,6 +29,8 @@ frontend static (it still deploys on GitHub Pages).
    | 12 | [`patch-11-open-signup.sql`](patch-11-open-signup.sql) | Auto-confirms new accounts so signup and sign-in work |
    | 13 | [`patch-12-school-officer-assignments.sql`](patch-12-school-officer-assignments.sql) | Assigns field officers to schools; scopes field report & return access to it |
    | 14 | [`patch-13-data-model-expansion.sql`](patch-13-data-model-expansion.sql) | Roles, learners, subjects, teacher/field-officer records, learning content, field visits, devices, interventions, notifications, audit trail — schema for features not built yet |
+   | 15 | [`patch-14a-staff-role-enum.sql`](patch-14a-staff-role-enum.sql) | Adds the `staff` role value — must run and commit on its own, before patch-14 |
+   | 16 | [`patch-14-staff-tier.sql`](patch-14-staff-tier.sql) | Splits Admin into Staff (full access) + Admin (full access, plus the exclusive power to grant Admin) |
 
    **All of them are safe to re-run**, so if you are unsure what state the
    database is in, just run them all in order — that is the reliable way to

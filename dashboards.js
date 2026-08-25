@@ -13,14 +13,20 @@ const K_USERS = "hpf_users";
 const K_SESSION = "hpf_session";
 const K_IMPERSONATE = "hpf_impersonate"; // stores the real user while "in" someone's account
 const ROLE_LABEL = Object.fromEntries(ROLES.map((r) => [r.value, r.label]));
-const DASH_ROLES = ["admin", "learner", "teacher", "field_officer", "school_leader"];
-const STAFF_ROLES = DASH_ROLES.filter((r) => r !== "learner"); // roles that actually get a profiles row
+const DASH_ROLES = ["admin", "staff", "learner", "teacher", "field_officer", "school_leader"];
+// Every role with a real profiles row (i.e. not learner) — an unrelated "staff"
+// to the "staff" *role value* added below: this is "which roles are staff of
+// the org" (admin/staff/teacher/field_officer/school_leader), not the role
+// named "staff" specifically. Kept as one name since renaming it would touch
+// every "Users by role" chart on the admin dashboard for no behavior change.
+const STAFF_ROLES = DASH_ROLES.filter((r) => r !== "learner");
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
 /* which role workspaces each role may view via the switcher:
-   admin sees everyone, teacher sees teacher+learner, others only themselves */
+   admin/staff see everyone, teacher sees teacher+learner, others only themselves */
 const VIEWABLE = {
-  admin: ["admin", "teacher", "learner", "field_officer", "school_leader"],
+  admin: ["admin", "staff", "teacher", "learner", "field_officer", "school_leader"],
+  staff: ["admin", "staff", "teacher", "learner", "field_officer", "school_leader"],
   teacher: ["teacher", "learner"],
   field_officer: ["field_officer"],
   school_leader: ["school_leader"],
@@ -29,7 +35,8 @@ const VIEWABLE = {
 
 /* which roles a user is allowed to "enter" (impersonate to help remotely) */
 const CAN_ENTER = {
-  admin: ["admin", "teacher", "learner", "field_officer", "school_leader"],
+  admin: ["admin", "staff", "teacher", "learner", "field_officer", "school_leader"],
+  staff: ["admin", "staff", "teacher", "learner", "field_officer", "school_leader"],
   teacher: ["learner"],
 };
 
@@ -64,7 +71,13 @@ const ROLE_META = {
   admin: {
     icon: "shield",
     tagline: "Run the platform",
-    blurb: "Oversee every account, review sign-in activity, and keep the portal healthy.",
+    blurb: "Oversee every account, review sign-in activity, and keep the portal healthy. The only role that can promote another account to Admin.",
+    can: ["Add users & change roles", "Promote Staff to Admin", "Review login requests", "Monitor platform activity"],
+  },
+  staff: {
+    icon: "shield",
+    tagline: "Run the platform",
+    blurb: "The same full platform access as Admin — every school, every account — short of granting the Admin role itself.",
     can: ["Add users & change roles", "Review login requests", "Monitor platform activity"],
   },
   learner: {
@@ -255,13 +268,17 @@ function collapseBody(key, html) {
   return `<div class="panel-collapse-body" ${collapsedPanels[key] ? "hidden" : ""}>${html}</div>`;
 }
 
+/* adminsCache now holds both tiers (staff and admin), not just admin — kept
+   the name rather than renaming it and its ~10 call sites for a cosmetic-only
+   change. Each row carries `role` now so the panel can show which tier it is
+   and gate the "Promote to Admin" action to staff rows only. */
 async function loadAdmins() {
   const { data: sess } = await supabase.auth.getSession();
   adminsAuthed = !!sess?.session;
   const { data, error } = await supabase
     .from("profiles")
-    .select("id, full_name, email, username, created_at")
-    .eq("role", "admin")
+    .select("id, full_name, email, username, role, created_at")
+    .in("role", ["admin", "staff"])
     .order("created_at");
   adminsLoaded = true;
   adminsError = error ? authMessage(error) : null;
@@ -269,20 +286,26 @@ async function loadAdmins() {
   return adminsCache;
 }
 
-/* Raise one profile to admin. Reads the row back because a refused promotion is
-   silent: guard_profile_role() restores the old role and returns success. */
-async function promoteToAdmin(id) {
+/* Raise one profile to admin or staff. Reads the row back because a refused
+   promotion is silent: guard_profile_role() restores the old role and
+   returns success. Admin is the one transition the database reserves for an
+   existing admin (patch-14) — staff is open to any staff-or-admin viewer,
+   same as every other admin-level action. */
+async function promoteToRole(id, role) {
   const { data, error } = await supabase
-    .from("profiles").update({ role: "admin" }).eq("id", id).select("role").maybeSingle();
+    .from("profiles").update({ role }).eq("id", id).select("role").maybeSingle();
   if (error) throw new Error(authMessage(error));
-  if (data?.role !== "admin") {
+  if (data?.role !== role) {
+    const noun = role === "admin" ? "an HPF admin" : "HPF staff";
     throw new Error(
-      "The database refused the promotion — this session isn't recognised as an HPF admin. " +
-      "Sign in with an admin account that exists in the database, or run this in the " +
-      `Supabase SQL editor: update profiles set role = 'admin' where id = '${id}';`
+      `The database refused the promotion — this session isn't recognised as ${noun}. ` +
+      "Sign in with an account that has that permission, or run this in the " +
+      `Supabase SQL editor: update profiles set role = '${role}' where id = '${id}';`
     );
   }
 }
+const promoteToAdmin = (id) => promoteToRole(id, "admin");
+const promoteToStaff = (id) => promoteToRole(id, "staff");
 
 /* ---------------------------------------------------------- officer -> school assignments
    Gives "Field Officer: assigned schools" a real, admin-managed mechanism
@@ -343,10 +366,13 @@ async function loadDeviceIssues() {
   return deviceIssuesCache;
 }
 
-async function createAdminAccount({ fullName, email, password }) {
+/* Creates the account as Staff, not Admin — matching the panel's own
+   "Add staff member" framing (patch-14): Staff is the entry tier, Admin is
+   reached by promoting an existing Staff account, one row at a time. */
+async function createStaffAccount({ fullName, email, password }) {
   // No role in the metadata on purpose: patch-01 clamps whatever is sent here to
   // the self-serve roles, so the row always lands as a learner and step 2 is
-  // what actually appoints them. Sending "admin" would only look like it worked.
+  // what actually appoints them. Sending "staff" would only look like it worked.
   const { data: res, error } = await adminClient().auth.signUp({
     email,
     password,
@@ -362,45 +388,50 @@ async function createAdminAccount({ fullName, email, password }) {
   if (!id) throw new Error("Supabase reported no error but returned no account. Please try again.");
 
   try {
-    await promoteToAdmin(id);
+    await promoteToStaff(id);
   } catch (err) {
     // The auth user exists from here on and the browser cannot delete it (that
     // needs the service_role key), so don't pretend this failed cleanly.
     throw new Error(`${email} was created but is still an ordinary account. ${err.message}`);
   }
-  // With "Confirm email" on, signUp returns no session and the new admin has to
-  // click the emailed link before their first sign-in.
+  // With "Confirm email" on, signUp returns no session and the new staff
+  // member has to click the emailed link before their first sign-in.
   return { id, needsConfirm: !res.session };
 }
 
+/* Staff and Admin, one combined list (patch-14): the database, not this
+   panel, is what actually keeps Admin exclusive — the "Promote to Admin"
+   button below only ever appears for the viewer it would actually work for,
+   but the real gate is guard_profile_role(), verified separately. */
 function adminAccountsPanel(currentUser) {
+  const viewerIsAdmin = currentUser.role === "admin";
   const head = `
     <div class="panel-head-row">
       <div>
-        <h2>${icon("shield")} HPF administrators</h2>
+        <h2>${icon("shield")} HPF Staff &amp; Admins</h2>
         <p class="panel-sub" style="margin-bottom:0">Accounts in the HPF database with full platform access · works on every device</p>
       </div>
       <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
         <button class="btn btn-outline" data-admin-promote-toggle>${icon("userCheck")} Promote existing account</button>
-        <button class="btn btn-primary" data-admin-add-toggle>${icon("userPlus")} Add administrator</button>
+        <button class="btn btn-primary" data-admin-add-toggle>${icon("userPlus")} Add staff member</button>
         ${collapseBtn("admins")}
       </div>
     </div>`;
 
   const wrap = (inner) => `<div class="panel" style="margin-top:1.5rem" data-admins-panel>${head}${collapseBody("admins", inner)}</div>`;
 
-  if (!adminsLoaded) return wrap(`<div class="empty-state">Loading administrators…</div>`);
+  if (!adminsLoaded) return wrap(`<div class="empty-state">Loading staff &amp; admins…</div>`);
 
   // A locally-created or legacy account has no JWT, so every read comes back
-  // empty rather than failing — which would read as "there are no admins".
+  // empty rather than failing — which would read as "there is no staff".
   if (!adminsAuthed) {
     return wrap(`<div class="notice">${icon("info")}
       <span>This browser is signed in on a <strong>local account</strong>, which the HPF
-      database has never seen. Sign in with an admin account that exists in the database
-      to see or appoint administrators.</span></div>`);
+      database has never seen. Sign in with a staff or admin account that exists in the
+      database to see or appoint staff.</span></div>`);
   }
   if (adminsError) {
-    return wrap(`<div class="empty-state">Could not load administrators — ${esc(adminsError)}
+    return wrap(`<div class="empty-state">Could not load staff &amp; admins — ${esc(adminsError)}
       <div style="margin-top:.6rem"><button class="btn btn-outline btn-xs" data-admins-retry>${icon("refresh")} Try again</button></div>
     </div>`);
   }
@@ -416,9 +447,12 @@ function adminAccountsPanel(currentUser) {
             <div class="s-meta">${esc(a.email || "—")}${a.username ? " · " + esc(a.username) : ""}
               · added ${new Date(a.created_at).toLocaleDateString()}</div>
           </div>
-          <span class="pill role-pill">Admin</span>
+          ${viewerIsAdmin && a.role === "staff"
+            ? `<button class="btn btn-outline btn-xs" data-promote-to-admin="${a.id}" style="margin-right:.5rem">${icon("shield")} Promote to Admin</button>`
+            : ""}
+          <span class="pill role-pill">${a.role === "admin" ? "Admin" : "Staff"}</span>
         </div>`).join("")
-    : `<div class="empty-state">No administrator rows in the database yet.</div>`;
+    : `<div class="empty-state">No staff or admin rows in the database yet.</div>`;
 
   const addForm = adminFormOpen ? `
     <form id="addAdminForm" class="add-user-form">
@@ -434,10 +468,12 @@ function adminAccountsPanel(currentUser) {
         <div class="field"><label>Confirm password</label>
           <input class="input" name="confirm" type="password" minlength="6" required></div>
       </div>
-      <p class="hint">Must be an <strong>@${ORG_DOMAIN}</strong> address. Give them the password in
-        person — they can change it themselves with <strong>Forgot password?</strong> on the login page.</p>
+      <p class="hint">Must be an <strong>@${ORG_DOMAIN}</strong> address. Creates the account as
+        <strong>Staff</strong> — promote to Admin afterwards if that's what they need. Give them
+        the password in person — they can change it themselves with
+        <strong>Forgot password?</strong> on the login page.</p>
       <div class="add-user-actions">
-        <button class="btn btn-primary" type="submit">${icon("shield")} Create administrator</button>
+        <button class="btn btn-primary" type="submit">${icon("shield")} Create staff member</button>
         <button class="btn btn-outline" type="button" data-admin-add-cancel>Cancel</button>
       </div>
     </form>` : "";
@@ -447,9 +483,10 @@ function adminAccountsPanel(currentUser) {
       <div class="field"><label>Email of an existing HPF account</label>
         <input class="input" name="email" type="email" required placeholder="name@${ORG_DOMAIN}"></div>
       <p class="hint">The person already signed up (as a teacher, school leader or field officer)
-        and keeps their current password — only their role changes.</p>
+        and keeps their current password — only their role changes, to <strong>Staff</strong>.
+        An admin can promote them again from Staff to Admin afterwards, from this list.</p>
       <div class="add-user-actions">
-        <button class="btn btn-primary" type="submit">${icon("userCheck")} Make administrator</button>
+        <button class="btn btn-primary" type="submit">${icon("userCheck")} Make staff</button>
         <button class="btn btn-outline" type="button" data-admin-promote-cancel>Cancel</button>
       </div>
     </form>` : "";
@@ -1137,6 +1174,7 @@ const ROLE_COLOR = {
   teacher: "oklch(68% 0.17 155)",
   school_leader: "oklch(78% 0.15 75)",
   field_officer: "oklch(55% 0.15 300)",
+  staff: "oklch(58% 0.18 230)",
   admin: "oklch(62% 0.24 27)",
 };
 const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -5120,6 +5158,7 @@ function schoolLeaderBody() {
 
 const BODIES = {
   admin: adminBody,
+  staff: adminBody, // same dashboard code — the RLS split is what actually differs
   learner: learnerBody,
   teacher: teacherBody,
   field_officer: fieldOfficerBody,
@@ -5199,7 +5238,7 @@ export function wireMyDashboard(user, events) {
     );
   }
 
-  function wireAdmin() {
+  function wireAdmin(role) {
     /* KPI quick actions, delegated. The top KPI row sits outside the analytics
        panel and survives its re-renders, while the cards inside it are replaced
        on every one — binding directly would both miss the new buttons and stack
@@ -5215,14 +5254,14 @@ export function wireMyDashboard(user, events) {
       }
       if (act === "people")    { adminView = "people";    return renderAnalytics(); }
       if (act === "scorecard") { adminView = "scorecard"; return renderAnalytics(); }
-      if (act === "inbox")     { adminInboxOpen = true;   return renderRole("admin"); }
+      if (act === "inbox")     { adminInboxOpen = true;   return renderRole(role); }
       if (act === "users") {
         // The user table lives outside the analytics panel, so open it and
         // scroll rather than switching tab. renderRole() replaces the body and
         // restarts its fade-in in the same frame, which cancels a smooth scroll
         // started synchronously — wait for the next frame.
         usersListOpen = true;
-        renderRole("admin");
+        renderRole(role);
         requestAnimationFrame(() =>
           body.querySelector("[data-users-role]")?.closest(".panel")
             ?.scrollIntoView({ behavior: "smooth", block: "start" })
@@ -5241,7 +5280,7 @@ export function wireMyDashboard(user, events) {
       if (!b || !body.contains(b)) return;
       const key = b.dataset.panelCollapse;
       collapsedPanels[key] = !collapsedPanels[key];
-      renderRole("admin");
+      renderRole(role);
     });
 
     body.addEventListener("click", (e) => {
@@ -5286,7 +5325,7 @@ export function wireMyDashboard(user, events) {
       scFilter.school = dashFilter.school;
       scFilter.programme = dashFilter.programme;
 
-      renderRole("admin");
+      renderRole(role);
       toast(
         reset ? "Filters reset" : "Filters applied",
         reset ? "Showing all counties, schools and dates."
@@ -5583,7 +5622,7 @@ export function wireMyDashboard(user, events) {
       // Full re-render, not just renderAnalytics(): Programme Overview (a
       // sibling of the analytics panel, not inside it) reads the same
       // schools/returns/classes/device data and needs the same refresh.
-      if (body.querySelector("[data-programme-overview]")) renderRole("admin");
+      if (body.querySelector("[data-programme-overview]")) renderRole(role);
     });
     // update automatically when data changes in another tab (keep just one listener)
     // hpf_submissions dropped: field reports moved to Postgres, so nothing
@@ -5611,7 +5650,7 @@ export function wireMyDashboard(user, events) {
           write(K_SESSION, sess);
         }
         toast("Role updated", `${u.fullName || u.username} is now ${ROLE_LABEL[sel.value]}.`, "success");
-        renderRole("admin");
+        renderRole(role);
       })
     );
 
@@ -5637,18 +5676,19 @@ export function wireMyDashboard(user, events) {
       } else {
         if (!data.email) return toast("Email required", "Enter an email for this account.", "error");
       }
-      // anyone with an organisation email is an admin
-      if ((data.email || "").trim().toLowerCase().endsWith("@" + ORG_DOMAIN)) data.role = "admin";
-      // This table is this browser's localStorage, so an admin created here could
-      // not sign in anywhere else. Hand admins to the panel that makes real ones.
-      if (data.role === "admin") {
+      // anyone with an organisation email belongs to HPF staff, not this table
+      if ((data.email || "").trim().toLowerCase().endsWith("@" + ORG_DOMAIN)) data.role = "staff";
+      // This table is this browser's localStorage, so a staff/admin account
+      // created here could not sign in anywhere else. Hand both tiers to the
+      // panel that makes real ones.
+      if (data.role === "staff" || data.role === "admin") {
         adminFormOpen = true;
         adminPromoteOpen = false;
         toast(
-          "Admins are created in the database",
-          "An admin account has to work on every device, so it can't live in this table. Use the HPF administrators panel, just above."
+          "Staff accounts are created in the database",
+          "A staff or admin account has to work on every device, so it can't live in this table. Use the HPF Staff & Admins panel, just above."
         );
-        return renderRole("admin");
+        return renderRole(role);
       }
       if ((data.password || "").length < 6) return toast("Weak password", "Min. 6 characters.", "error");
 
@@ -5660,7 +5700,7 @@ export function wireMyDashboard(user, events) {
       users.push({ ...data, id: uid(), createdAt: Date.now() });
       write(K_USERS, users);
       toast("User added", `${data.fullName} created as ${ROLE_LABEL[data.role]}.`, "success");
-      renderRole("admin");
+      renderRole(role);
     });
 
     // Remove a user
@@ -5671,7 +5711,7 @@ export function wireMyDashboard(user, events) {
         const u = users.find((x) => x.id === id);
         write(K_USERS, users.filter((x) => x.id !== id));
         toast("User removed", u ? `${u.fullName || u.username} deleted.` : "", "success");
-        renderRole("admin");
+        renderRole(role);
       })
     );
 
@@ -5688,29 +5728,29 @@ export function wireMyDashboard(user, events) {
     // smart inbox: expand / collapse the full request list
     body.querySelector("[data-inbox-toggle]")?.addEventListener("click", () => {
       adminInboxOpen = !adminInboxOpen;
-      renderRole("admin");
+      renderRole(role);
     });
     // user list: collapse / expand the full table
     body.querySelector("[data-users-toggle]")?.addEventListener("click", () => {
       usersListOpen = !usersListOpen;
-      renderRole("admin");
+      renderRole(role);
     });
     // user list: filter by role + sort
     body.querySelector("[data-users-role]")?.addEventListener("change", (e) => {
       usersRoleFilter = e.target.value;
       usersListOpen = true; // show the result of the filter straight away
-      renderRole("admin");
+      renderRole(role);
     });
     body.querySelector("[data-users-sort]")?.addEventListener("change", (e) => {
       usersSort = e.target.value;
-      renderRole("admin");
+      renderRole(role);
     });
     body.querySelectorAll("[data-users-role-pick]").forEach((b) =>
       b.addEventListener("click", () => {
         const r = b.dataset.usersRolePick;
         usersRoleFilter = usersRoleFilter === r ? "all" : r;
         usersListOpen = usersRoleFilter !== "all";
-        renderRole("admin");
+        renderRole(role);
       })
     );
 
@@ -5767,7 +5807,7 @@ export function wireMyDashboard(user, events) {
         const email = (d.email || "").trim().toLowerCase();
         if (!fullName) return toast("Name required", "Enter the person's full name.", "error");
         if (!email.endsWith("@" + ORG_DOMAIN))
-          return toast("HPF email required", `An administrator must use an @${ORG_DOMAIN} address.`, "error");
+          return toast("HPF email required", `A staff account must use an @${ORG_DOMAIN} address.`, "error");
         if ((d.password || "").length < 6)
           return toast("Weak password", "Password must be at least 6 characters.", "error");
         if (d.password !== d.confirm)
@@ -5776,20 +5816,20 @@ export function wireMyDashboard(user, events) {
         const submit = form.querySelector("[type=submit]");
         if (submit) { submit.disabled = true; submit.textContent = "Creating…"; }
         try {
-          const { needsConfirm } = await createAdminAccount({ fullName, email, password: d.password });
+          const { needsConfirm } = await createStaffAccount({ fullName, email, password: d.password });
           adminFormOpen = false;
           await loadAdmins();
           renderAdmins();
           toast(
-            "Administrator added",
+            "Staff member added",
             needsConfirm
-              ? `${fullName} is an HPF admin. They must click the confirmation link emailed to ${email} before their first sign-in.`
-              : `${fullName} can now sign in as an HPF admin.`,
+              ? `${fullName} is HPF staff. They must click the confirmation link emailed to ${email} before their first sign-in.`
+              : `${fullName} can now sign in as HPF staff.`,
             "success"
           );
         } catch (err) {
-          toast("Could not add administrator", err.message, "error");
-          if (submit) { submit.disabled = false; submit.innerHTML = `${icon("shield")} Create administrator`; }
+          toast("Could not add staff member", err.message, "error");
+          if (submit) { submit.disabled = false; submit.innerHTML = `${icon("shield")} Create staff member`; }
         }
       });
 
@@ -5806,22 +5846,44 @@ export function wireMyDashboard(user, events) {
             .from("profiles").select("id, full_name, role").ilike("email", email).limit(2);
           if (error) throw new Error(authMessage(error));
           if (!rows?.length) {
-            throw new Error(`No account in the HPF database uses ${email}. They need to sign up first, or use "Add administrator" to create the account.`);
+            throw new Error(`No account in the HPF database uses ${email}. They need to sign up first, or use "Add staff member" to create the account.`);
           }
           if (rows.length > 1) throw new Error(`More than one account uses ${email}. Sort that out in the Supabase dashboard first.`);
           const target = rows[0];
-          if (target.role === "admin") throw new Error(`${target.full_name || email} is already an administrator.`);
+          if (target.role === "staff" || target.role === "admin")
+            throw new Error(`${target.full_name || email} is already ${target.role === "admin" ? "an admin" : "staff"}.`);
 
-          await promoteToAdmin(target.id);
+          await promoteToStaff(target.id);
           adminPromoteOpen = false;
           await loadAdmins();
           renderAdmins();
-          toast("Administrator added", `${target.full_name || email} now has full platform access.`, "success");
+          toast("Staff member added", `${target.full_name || email} now has full platform access.`, "success");
         } catch (err) {
           toast("Could not promote", err.message, "error");
-          if (submit) { submit.disabled = false; submit.innerHTML = `${icon("userCheck")} Make administrator`; }
+          if (submit) { submit.disabled = false; submit.innerHTML = `${icon("userCheck")} Make staff`; }
         }
       });
+
+      // Admin-only, one click: raise an existing Staff row to Admin. The
+      // button itself is only ever rendered for an admin viewer (see
+      // adminAccountsPanel), but the real gate is guard_profile_role() — a
+      // staff viewer who forced this call anyway would just get refused.
+      panel.querySelectorAll("[data-promote-to-admin]").forEach((btn) =>
+        btn.addEventListener("click", async () => {
+          const id = btn.dataset.promoteToAdmin;
+          const row = adminsCache.find((a) => a.id === id);
+          btn.disabled = true;
+          try {
+            await promoteToAdmin(id);
+            await loadAdmins();
+            renderAdmins();
+            toast("Promoted to Admin", `${row?.full_name || "This account"} can now promote other staff to Admin too.`, "success");
+          } catch (err) {
+            btn.disabled = false;
+            toast("Could not promote to Admin", err.message, "error");
+          }
+        })
+      );
     }
 
     wireAdminAccounts();
@@ -5830,7 +5892,7 @@ export function wireMyDashboard(user, events) {
     // Real role counts for "Users by role" (both here and the Scorecard's
     // Overview tab) and for computeAdminStats() generally — a full re-render
     // since profilesCache feeds panels in more than one place on this page.
-    if (!profilesLoaded) loadProfiles().then(() => renderRole("admin"));
+    if (!profilesLoaded) loadProfiles().then(() => renderRole(role));
 
     /* --- Field officer assignments: who covers which school --- */
     function renderAssignments() {
@@ -5904,9 +5966,9 @@ export function wireMyDashboard(user, events) {
 
     // --- edit a user's full credentials (incl. password) ---
     body.querySelectorAll("[data-edit-user]").forEach((btn) =>
-      btn.addEventListener("click", () => { editUserId = btn.dataset.editUser; renderRole("admin"); })
+      btn.addEventListener("click", () => { editUserId = btn.dataset.editUser; renderRole(role); })
     );
-    const closeEdit = () => { editUserId = null; renderRole("admin"); };
+    const closeEdit = () => { editUserId = null; renderRole(role); };
     body.querySelector("[data-edit-overlay]")?.addEventListener("click", (e) => { if (e.target.hasAttribute("data-edit-overlay")) closeEdit(); });
     body.querySelectorAll("[data-edit-close]").forEach((b) => b.addEventListener("click", closeEdit));
     body.querySelector("[data-editpw-toggle]")?.addEventListener("click", (e) => {
@@ -5925,32 +5987,41 @@ export function wireMyDashboard(user, events) {
         return toast("Weak password", "Password must be at least 6 characters.", "error");
 
       const uid = form.dataset.uid;
-      let role = data.role;
-      if ((data.email || "").trim().toLowerCase().endsWith("@" + ORG_DOMAIN)) role = "admin";
+      // Named to avoid shadowing wireAdmin's own `role` (the dashboard tab
+      // being viewed) — they are different things, and re-rendering the page
+      // as the *edited* user's new role would throw the viewer out of their
+      // own workspace.
+      let newRole = data.role;
+      // An org email means HPF staff. Not admin: admin is only ever granted
+      // deliberately, one row at a time, by an existing admin (patch-14).
+      if ((data.email || "").trim().toLowerCase().endsWith("@" + ORG_DOMAIN) &&
+          newRole !== "admin") newRole = "staff";
 
       const patch = {
         full_name: data.fullName.trim(),
         email: (data.email || "").trim() || null,
         username: (data.username || "").trim() || null,
-        role,
+        role: newRole,
         project: data.project || null,
         county: data.region || null,
         school: data.school || null,
       };
 
-      /* Write to Postgres when this is a real account. RLS lets an admin update
-         any profile, and guard_profile_role exempts is_admin(), so an admin can
-         change roles here — including demoting themselves, which is why the
-         confirm below exists. A local-only account has no row and falls through
-         to the localStorage path unchanged. */
+      /* Write to Postgres when this is a real account. RLS lets staff/admin
+         update any profile, and guard_profile_role exempts is_staff() for every
+         role change except granting admin, which needs is_admin() — so a staff
+         viewer setting someone to "admin" here is silently reverted by the
+         database rather than failing loudly. A local-only account has no row and
+         falls through to the localStorage path unchanged. */
       const { data: authUser } = await supabase.auth.getUser();
       let wroteRemote = false;
       if (authUser?.user) {
         const me = authUser.user.id;
-        if (uid === me && role !== "admin") {
+        if (uid === me && newRole !== "admin" && newRole !== "staff") {
           const ok = confirm(
-            "This removes your own administrator access. You will lose the admin dashboard " +
-            "as soon as the page reloads, and only another admin can restore it. Continue?"
+            "This removes your own staff access. You will lose the staff dashboard " +
+            "as soon as the page reloads, and only another staff member or admin can " +
+            "restore it. Continue?"
           );
           if (!ok) return;
         }
@@ -5966,7 +6037,7 @@ export function wireMyDashboard(user, events) {
       if (u) {
         Object.assign(u, {
           fullName: patch.full_name, email: patch.email || "", username: patch.username || "",
-          role, project: patch.project || "", region: patch.county || "", school: patch.school || "",
+          role: newRole, project: patch.project || "", region: patch.county || "", school: patch.school || "",
         });
         if (data.password) u.password = data.password;
         write(K_USERS, users);
@@ -5975,7 +6046,7 @@ export function wireMyDashboard(user, events) {
       if (sess && sess.id === uid) {
         Object.assign(sess, {
           fullName: patch.full_name, email: patch.email || "", username: patch.username || "",
-          role, project: patch.project || "", region: patch.county || "",
+          role: newRole, project: patch.project || "", region: patch.county || "",
           county: patch.county || "", school: patch.school || "",
         });
         write(K_SESSION, sess);
@@ -5986,7 +6057,7 @@ export function wireMyDashboard(user, events) {
         wroteRemote ? `${patch.full_name} saved to the HPF database.`
                     : `${patch.full_name} saved in this browser only — no database account matches.`,
         wroteRemote ? "success" : "error");
-      renderRole("admin");
+      renderRole(role);
     });
 
     // --- digital library ---
@@ -5996,11 +6067,11 @@ export function wireMyDashboard(user, events) {
       // lives inside the collapsible body, so open it visibly rather than
       // toggling a form nobody can see.
       if (adminLibOpen) collapsedPanels.library = false;
-      renderRole("admin");
+      renderRole(role);
     });
     body.querySelector("[data-lib-cancel]")?.addEventListener("click", () => {
       adminLibOpen = false;
-      renderRole("admin");
+      renderRole(role);
     });
     body.querySelectorAll("[data-lib-open]").forEach((b) =>
       b.addEventListener("click", () => openResource(getLibrary().find((r) => r.id === b.dataset.libOpen) || {}))
@@ -6010,7 +6081,7 @@ export function wireMyDashboard(user, events) {
         const lib = getLibrary();
         const r = lib.find((x) => x.id === b.dataset.libPublish);
         if (r) { r.published = !r.published; saveLibrary(lib); toast(r.published ? "Published" : "Unpublished", `“${r.title}” is now ${r.published ? "available to teachers" : "hidden"}.`, "success"); }
-        renderRole("admin");
+        renderRole(role);
       })
     );
     body.querySelectorAll("[data-lib-delete]").forEach((b) =>
@@ -6019,7 +6090,7 @@ export function wireMyDashboard(user, events) {
         const r = lib.find((x) => x.id === b.dataset.libDelete);
         saveLibrary(lib.filter((x) => x.id !== b.dataset.libDelete));
         toast("Deleted", r ? `“${r.title}” removed from the library.` : "", "success");
-        renderRole("admin");
+        renderRole(role);
       })
     );
     body.querySelector("#libForm")?.addEventListener("submit", (e) => {
@@ -6041,7 +6112,7 @@ export function wireMyDashboard(user, events) {
         saveLibrary(lib);
         adminLibOpen = false;
         toast("Added to library", `“${title}” is published and available to teachers.`, "success");
-        renderRole("admin");
+        renderRole(role);
       };
 
       if (file) {
@@ -7518,7 +7589,7 @@ export function wireMyDashboard(user, events) {
   function wireBody(role) {
     wireTasks();
     wireRoleActions();
-    if (role === "admin") wireAdmin();
+    if (role === "admin" || role === "staff") wireAdmin(role);
     if (role === "field_officer") wireFieldOfficerDash();
     if (role === "school_leader") wireSchoolReturns(role);
     // "Enter account" buttons live inside the body (admin table, coach learners)
