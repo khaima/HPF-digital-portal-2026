@@ -17,7 +17,7 @@ import { myDashboardMain, wireMyDashboard } from "./dashboards.js";
 import { supabase, adminClient, authMessage } from "./supabase.js";
 import {
   isRecoveryOpen, openRecovery, closeRecovery, openPasswordReset, openEmailConfirm,
-  resumeUsernameRecovery, recoveryOwnsSession,
+  openStaffInvite, resumeUsernameRecovery, recoveryOwnsSession,
   recoveryHtml, recoveryTitle, wireRecovery,
 } from "./recovery.js";
 
@@ -120,6 +120,10 @@ const toUiUser = (row, fallbackEmail = "") => ({
   region: row.county || "",
   project: row.project || "",
   createdAt: row.created_at ? Date.parse(row.created_at) : Date.now(),
+  // Set by an admin invite (patch-15) and cleared once the invitee chooses
+  // their own password (recovery.js "invite" step). Absent pre-patch-15
+  // columns read as undefined, which is falsy here — safe by default.
+  needsPassword: !!row.needs_password,
 });
 
 /* Profile of the signed-in Supabase user, loaded on sign-in and at boot.
@@ -1638,6 +1642,13 @@ window.addEventListener("popstate", () => { render(); });
     // A username-recovery magic link opens a brand new page: pick that intent
     // back up instead of dropping the person on their dashboard.
     if (await resumeUsernameRecovery(data.session)) {
+      history.replaceState({}, "", BASE + "/auth");
+    } else if (supaUser?.needsPassword) {
+      // An admin-invited staff account (patch-15): whichever page the magic
+      // link actually landed on — Supabase falls back to the Site URL when
+      // /auth isn't allow-listed yet — force the password step before
+      // anything else, same as the username-recovery case above.
+      openStaffInvite(supaUser.email);
       history.replaceState({}, "", BASE + "/auth");
     }
   } catch (err) {

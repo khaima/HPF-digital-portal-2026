@@ -97,6 +97,16 @@ export function openPasswordReset(email = "") {
   });
 }
 
+/* Called at boot when an admin-invited account (needs_password, patch-15)
+   lands with a fresh session from its magic link. Same "choose a password"
+   step as a reset, different framing: there is no old password to replace. */
+export function openStaffInvite(email = "") {
+  Object.assign(state, {
+    open: true, step: "newPassword", intent: "invite", email,
+    username: null, busy: false, ownsSession: true,
+  });
+}
+
 /* Called at boot: did this page load come from a username-recovery magic link? */
 export async function resumeUsernameRecovery(session) {
   let flagged = false;
@@ -128,6 +138,8 @@ async function lookupUsername(userId) {
 export function recoveryTitle() {
   if (state.intent === "confirm")
     return { h1: "Confirm your email", sub: "One step left. Your account exists — it just needs the address proved before you can sign in." };
+  if (state.intent === "invite")
+    return { h1: "Welcome to the HPF portal", sub: "An administrator set up your account — choose a password to finish." };
   if (state.step === "newPassword")
     return { h1: "Choose a new password", sub: "Your identity is confirmed — this is the last step." };
   if (state.step === "username")
@@ -242,10 +254,15 @@ function codeStep() {
 }
 
 function newPasswordStep() {
+  const inviting = state.intent === "invite";
   return `
     <div class="notice recover-note">${icon("userCheck")}
-      <span>Identity confirmed${state.email ? ` for <strong>${esc(state.email)}</strong>` : ""}.
-      Choose a new password to finish — it replaces the old one everywhere.</span>
+      ${inviting
+        ? `<span>Your account${state.email ? ` (<strong>${esc(state.email)}</strong>)` : ""} is ready.
+           Choose a password to finish setting it up — clicking this link is what proved the
+           address is really yours.</span>`
+        : `<span>Identity confirmed${state.email ? ` for <strong>${esc(state.email)}</strong>` : ""}.
+           Choose a new password to finish — it replaces the old one everywhere.</span>`}
     </div>
     <form id="recoverPwForm" novalidate>
       <div class="field">
@@ -487,7 +504,26 @@ function savePassword(password, btn) {
   return guard(btn, "Saving…", async () => {
     const { error } = await supabase.auth.updateUser({ password });
     if (error) throw new Error(authMessage(error));
-    toast("Password updated", "Use your new password next time you sign in.", "success");
+
+    // Clear needs_password on the caller's own row (patch-15). Unconditional
+    // rather than gated on state.intent === "invite": it's already false for
+    // every other intent, so this is a harmless no-op there, and swallowed
+    // rather than thrown — a missing pre-patch-15 column shouldn't block
+    // someone from finishing setting their password.
+    try {
+      const { data } = await supabase.auth.getUser();
+      if (data?.user) {
+        await supabase.from("profiles").update({ needs_password: false }).eq("id", data.user.id);
+      }
+    } catch (err) {
+      console.warn("Could not clear needs_password:", err.message);
+    }
+
+    toast(
+      state.intent === "invite" ? "Password set" : "Password updated",
+      state.intent === "invite" ? "You're all set — welcome to the HPF portal." : "Use your new password next time you sign in.",
+      "success"
+    );
     await finish();
   });
 }

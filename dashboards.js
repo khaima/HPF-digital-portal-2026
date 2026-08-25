@@ -307,6 +307,15 @@ async function promoteToRole(id, role) {
 const promoteToAdmin = (id) => promoteToRole(id, "admin");
 const promoteToStaff = (id) => promoteToRole(id, "staff");
 
+/* Shared by "Add staff member" (must find nothing) and "Promote existing
+   account" (must find exactly one) — same query, different expectations. */
+async function findProfileByEmail(email) {
+  const { data, error } = await supabase
+    .from("profiles").select("id, full_name, role").ilike("email", email).limit(2);
+  if (error) throw new Error(authMessage(error));
+  return data || [];
+}
+
 /* ---------------------------------------------------------- officer -> school assignments
    Gives "Field Officer: assigned schools" a real, admin-managed mechanism
    (school_officer_assignments) instead of an officer only ever seeing reports
@@ -368,15 +377,27 @@ async function loadDeviceIssues() {
 
 /* Creates the account as Staff, not Admin — matching the panel's own
    "Add staff member" framing (patch-14): Staff is the entry tier, Admin is
-   reached by promoting an existing Staff account, one row at a time. */
-async function createStaffAccount({ fullName, email, password }) {
+   reached by promoting an existing Staff account, one row at a time.
+
+   No password from the admin: signInWithOtp() emails a magic link instead,
+   and the invitee sets their own password on first sign-in (see app.js's
+   boot check for needs_password, and recovery.js's "invite" step). A link
+   only ever grants a session when the recipient clicks it, so this is what
+   actually proves the address belongs to them — a typed-in password handed
+   over "in person" never did. */
+async function createStaffAccount({ fullName, email }) {
+  const existing = await findProfileByEmail(email);
+  if (existing.length) {
+    throw new Error(`${email} already has an account. Use "Promote existing account" instead — inviting again would just re-email them.`);
+  }
+
   // No role in the metadata on purpose: patch-01 clamps whatever is sent here to
   // the self-serve roles, so the row always lands as a learner and step 2 is
   // what actually appoints them. Sending "staff" would only look like it worked.
-  const { data: res, error } = await adminClient().auth.signUp({
+  const { error } = await adminClient().auth.signInWithOtp({
     email,
-    password,
     options: {
+      shouldCreateUser: true,
       data: {
         full_name: fullName,
         username: null, school: null, county: null, org_type: null, project: null,
@@ -384,19 +405,31 @@ async function createStaffAccount({ fullName, email, password }) {
     },
   });
   if (error) throw new Error(authMessage(error));
-  const id = res.user?.id;
-  if (!id) throw new Error("Supabase reported no error but returned no account. Please try again.");
+
+  // signInWithOtp() never returns the new user's id — the account isn't
+  // "logged into" yet, just created and emailed. Find it the same way
+  // "Promote existing account" finds any other row.
+  const [row] = await findProfileByEmail(email);
+  if (!row) {
+    throw new Error(`${email} was invited but the profile row hasn't appeared yet. Refresh in a moment and promote them from this list.`);
+  }
 
   try {
-    await promoteToStaff(id);
+    await promoteToStaff(row.id);
   } catch (err) {
     // The auth user exists from here on and the browser cannot delete it (that
     // needs the service_role key), so don't pretend this failed cleanly.
-    throw new Error(`${email} was created but is still an ordinary account. ${err.message}`);
+    throw new Error(`${email} was invited but is still an ordinary account. ${err.message}`);
   }
-  // With "Confirm email" on, signUp returns no session and the new staff
-  // member has to click the emailed link before their first sign-in.
-  return { id, needsConfirm: !res.session };
+
+  // Best-effort: lets patch-15 (the needs_password column) land after this
+  // code without breaking "Add staff member" in the meantime — the invite
+  // still works, it just won't force a password step until the column exists.
+  const { error: flagErr } = await supabase
+    .from("profiles").update({ needs_password: true }).eq("id", row.id);
+  if (flagErr) console.warn("Could not set needs_password (has patch-15 been applied?):", flagErr.message);
+
+  return { id: row.id };
 }
 
 /* Staff and Admin, one combined list (patch-14): the database, not this
@@ -462,18 +495,14 @@ function adminAccountsPanel(currentUser) {
         <div class="field"><label>HPF email</label>
           <input class="input" name="email" type="email" required placeholder="name@${ORG_DOMAIN}"></div>
       </div>
-      <div class="form-row">
-        <div class="field"><label>Temporary password</label>
-          <input class="input" name="password" type="password" minlength="6" required placeholder="min. 6 characters"></div>
-        <div class="field"><label>Confirm password</label>
-          <input class="input" name="confirm" type="password" minlength="6" required></div>
-      </div>
       <p class="hint">Must be an <strong>@${ORG_DOMAIN}</strong> address. Creates the account as
-        <strong>Staff</strong> — promote to Admin afterwards if that's what they need. Give them
-        the password in person — they can change it themselves with
-        <strong>Forgot password?</strong> on the login page.</p>
+        <strong>Staff</strong> and emails them a link to set their own password and sign in —
+        promote to Admin afterwards if that's what they need. No password to hand over: clicking
+        the link is what proves the address is really theirs. Delivery depends on the SMTP setup
+        described in <strong>supabase/AUTH-RECOVERY.md</strong> — if an invite doesn't arrive,
+        that's the first thing to check.</p>
       <div class="add-user-actions">
-        <button class="btn btn-primary" type="submit">${icon("shield")} Create staff member</button>
+        <button class="btn btn-primary" type="submit">${icon("shield")} Send invite</button>
         <button class="btn btn-outline" type="button" data-admin-add-cancel>Cancel</button>
       </div>
     </form>` : "";
@@ -5812,28 +5841,22 @@ export function wireMyDashboard(user, events) {
         if (!fullName) return toast("Name required", "Enter the person's full name.", "error");
         if (!email.endsWith("@" + ORG_DOMAIN))
           return toast("HPF email required", `A staff account must use an @${ORG_DOMAIN} address.`, "error");
-        if ((d.password || "").length < 6)
-          return toast("Weak password", "Password must be at least 6 characters.", "error");
-        if (d.password !== d.confirm)
-          return toast("Passwords don't match", "This is someone else's account — a typo would lock them out.", "error");
 
         const submit = form.querySelector("[type=submit]");
-        if (submit) { submit.disabled = true; submit.textContent = "Creating…"; }
+        if (submit) { submit.disabled = true; submit.textContent = "Sending…"; }
         try {
-          const { needsConfirm } = await createStaffAccount({ fullName, email, password: d.password });
+          await createStaffAccount({ fullName, email });
           adminFormOpen = false;
           await loadAdmins();
           renderAdmins();
           toast(
-            "Staff member added",
-            needsConfirm
-              ? `${fullName} is HPF staff. They must click the confirmation link emailed to ${email} before their first sign-in.`
-              : `${fullName} can now sign in as HPF staff.`,
+            "Invite sent",
+            `${fullName} will get an email at ${email} with a link to set their password and sign in as HPF staff.`,
             "success"
           );
         } catch (err) {
-          toast("Could not add staff member", err.message, "error");
-          if (submit) { submit.disabled = false; submit.innerHTML = `${icon("shield")} Create staff member`; }
+          toast("Could not send invite", err.message, "error");
+          if (submit) { submit.disabled = false; submit.innerHTML = `${icon("shield")} Send invite`; }
         }
       });
 
@@ -5846,10 +5869,8 @@ export function wireMyDashboard(user, events) {
         const submit = form.querySelector("[type=submit]");
         if (submit) { submit.disabled = true; submit.textContent = "Promoting…"; }
         try {
-          const { data: rows, error } = await supabase
-            .from("profiles").select("id, full_name, role").ilike("email", email).limit(2);
-          if (error) throw new Error(authMessage(error));
-          if (!rows?.length) {
+          const rows = await findProfileByEmail(email);
+          if (!rows.length) {
             throw new Error(`No account in the HPF database uses ${email}. They need to sign up first, or use "Add staff member" to create the account.`);
           }
           if (rows.length > 1) throw new Error(`More than one account uses ${email}. Sort that out in the Supabase dashboard first.`);
