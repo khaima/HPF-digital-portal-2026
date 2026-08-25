@@ -3,24 +3,66 @@
 The portal now handles **Forgot password?**, **Forgot username?**, and **new
 signups that need email confirmation** on the login page. The code is done; the
 flows only deliver once the Supabase project is configured to send the emails.
-That is all dashboard work — no SQL to run.
+Steps 1–3 are dashboard-only settings — no SQL runs them, and nothing in this
+codebase can apply them by itself either. See the checklist below for exactly
+what's ready versus what still needs a person in the dashboard.
 
-**If you only do one thing, do [step 0](#0-decide-whether-new-signups-must-confirm-their-email).**
-Right now every new account is created but cannot sign in until its address is
-confirmed, and confirmation emails aren't being delivered — so nobody but you
-can get in.
+## Checklist
+
+- [x] **Step 0 — Email-confirmation policy: decided and documented** (2026-08-25,
+  see below). *Applying* it (below) is blocked on step 3.
+- [ ] **Step 1 — Redirect URLs registered** *(dashboard action needed — values
+  below are confirmed correct against the deployed code)*
+- [ ] **Step 2 — `{{ .Token }}` added to all three email templates**
+  *(dashboard action needed — exact snippet below)*
+- [ ] **Step 3 — Real SMTP provider configured, rate limit raised**
+  *(dashboard action needed, and needs your own Resend/SendGrid account —
+  see below)*
+- [ ] **Step 0b — Retire the auto-confirm trigger, once step 3 is live**
+  *(this part I can do — SQL, not dashboard — but only after real email
+  delivery works, see below)*
+
+Tell me once you've clicked through 1, 2, or 3 in the dashboard and I'll tick
+it off here with the date. I cannot click them myself — no tool this session
+has reaches Supabase's Auth dashboard settings (only the database), and step 3
+specifically needs an account and an API key from a mail provider that has to
+be yours, not something I should ever hold or paste in on your behalf.
 
 Everything below is in your project at
 <https://supabase.com/dashboard/project/zptupvyrwoeabncxabgj>.
 
 ## 0. Decide whether new signups must confirm their email
 
-**Authentication → Sign In / Providers → Email → Confirm email**
+**Decision (2026-08-25): yes, once step 3 is live. Until then, no — and that "no"
+is not the dashboard toggle's doing.**
 
-It is currently **on**. That means `signUp()` creates the account but returns no
-session: the person is registered and locked out at the same time, and they stay
-locked out until they open a confirmation email — which, until step 3 below is
-done, never arrives.
+**Authentication → Sign In / Providers → Email → Confirm email** may say "on" in
+the dashboard, but it has had no practical effect since `patch-11-open-signup.sql`
+(2026-08-17): a database trigger, `on_auth_user_auto_confirm`, stamps every new
+`auth.users` row as confirmed *before* Supabase's own signup logic checks the
+column — the account gets a working session immediately, whatever the toggle
+says. Checked directly against the live project today: every account that
+exists, including one created three days after that patch shipped, is
+confirmed. The toggle is currently decorative.
+
+That trigger existed for a real reason — before it, confirmation email delivery
+didn't work at all (no SMTP, step 3), so "must confirm" meant "can never sign
+in." It should **stay in place until step 3 is actually done**. Turning it off
+first reopens exactly the lockout it was built to fix.
+
+**Once step 3 is live, drop the trigger** so the dashboard toggle starts
+meaning something again and a real confirmation flow (link or code) gates first
+login, matching the "on" behaviour described below. That's a small, reversible
+SQL change — ask me to run it once you've confirmed test emails are actually
+arriving; I'll do it as its own migration rather than folding it into step 3
+itself, so it's easy to roll back if delivery turns out to be flaky.
+
+**Why require it at all, rather than leave signup open:** accounts here are
+self-serve — `4a7c0b0` made school optional at signup, and nothing today proves
+a new teacher account's email address actually belongs to that teacher.
+Confirmation closes that gap for the cost of one click in an email a real SMTP
+setup will actually deliver. If that's not the tradeoff you want, override this
+here and I'll update the recommendation.
 
 | | Confirm email **off** | Confirm email **on** |
 |---|---|---|
@@ -44,6 +86,12 @@ their row. They can sign in the moment it's done.
 
 ## 1. Allow the portal's return address (required)
 
+**Status: not yet applied.** Values below re-derived from the live code today
+(`recovery.js`, `app.js`, `util.js`'s `BASE`, and `.github/workflows/deploy.yml` —
+no custom domain configured, so the GitHub Pages default applies) and confirmed
+correct. Paste them into the dashboard field below and tell me — I can't reach
+this screen myself.
+
 **Authentication → URL Configuration**
 
 | Field | Value |
@@ -58,6 +106,9 @@ people on the Site URL instead, so a reset link that lands on the home page
 rather than the "choose a new password" screen means this step is missing.
 
 ## 2. Put the code in the emails (required for the code option)
+
+**Status: not yet applied.** The snippet below is exact — paste it into each
+template and tell me, so I can tick it off here.
 
 Supabase's stock templates only contain a link. The portal offers a 6-digit code
 as well, for anyone reading mail on a different phone from the one they're
@@ -84,19 +135,37 @@ through the same email, and the portal supports both.
 
 **This is the step that decides whether teachers actually receive anything.**
 
+**Status: not yet applied — and this one needs more than a dashboard click.**
+Registering redirect URLs or pasting a template snippet is UI-only; this step
+needs an account with a real mail provider, which has to be yours. I won't
+create that account or ever hold its API key, even if I could reach this
+screen — that's exactly the kind of credential I should never touch. Concretely:
+
+1. **Pick a provider and make the account yourself:** Resend and SendGrid both
+   work, per your note — either is fine for a few hundred staff. If you want a
+   lean towards one: **Resend** tends to be the faster setup (API-key-based SMTP
+   relay, generous free tier, no legacy dashboard to fight with), so it's the
+   default unless HPF already has SendGrid for something else.
+2. **Verify a sending domain** you control — `humanpractice.org` — via the
+   SPF/DKIM DNS records the provider gives you. Skipping this is the single
+   most common reason these emails land in spam.
+3. **Generate SMTP credentials** (host, port, username, password) from the
+   provider once the domain is verified.
+4. **Paste them into Supabase:** *Project Settings → Authentication → SMTP
+   Settings* → enable custom SMTP → fill in the four values above plus a sender
+   address on the verified domain, e.g. `no-reply@humanpractice.org`.
+5. **Raise the rate limit:** *Authentication → Rate Limits* still defaults to
+   the development ceiling even after SMTP is on. Something like 30 emails/hour
+   suits a few hundred staff; raise it further later if needed.
+
+Tell me once mail is actually arriving (the test below is the way to check) —
+I'll tick this off, and then run the SQL to retire the auto-confirm trigger
+from step 0.
+
 The built-in email service is for development only: it sends **at most a couple
 of messages an hour**, and only to addresses belonging to your Supabase
 organisation. A teacher who asks for a reset simply never gets an email, and
 nothing in the portal or the dashboard says why.
-
-Fix it under **Project Settings → Authentication → SMTP Settings**: switch on
-custom SMTP and point it at whatever sends HPF's mail (Google Workspace,
-Microsoft 365, Resend, Brevo, Mailgun…). Use a sender address on a domain you
-control — `no-reply@humanpractice.org` — or the mail lands in spam.
-
-Then raise the ceiling under **Authentication → Rate Limits**, which still
-defaults to the development limit after SMTP is configured. Something like 30
-emails/hour suits a few hundred staff; you can raise it later.
 
 ## 4. Check it end to end
 
@@ -122,6 +191,11 @@ emails/hour suits a few hundred staff; you can raise it later.
 
 **Authentication → Logs** shows every send and every failure, and is the first
 place to look when an email doesn't arrive.
+
+**The test that actually proves step 3 worked** uses an address that isn't a
+member of your Supabase organisation — the built-in dev mailer would happily
+deliver to a colleague's address and make step 3 look done when it isn't. See
+[`TESTING.md`](../TESTING.md) for the exact script.
 
 ## What the portal does and doesn't do
 
