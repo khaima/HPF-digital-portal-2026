@@ -5184,8 +5184,12 @@ export function myDashboardMain(user, events) {
   const switcher = allowed.length > 1 ? `<div class="role-switch">${tabs}</div>` : "";
   const firstName = (user.fullName || user.username || "there").split(" ")[0];
 
-  // where this user belongs — "in Narok · Ololomei School"
-  const place = [user.region, user.school].filter(Boolean);
+  // Where this user belongs — "in Narok · Ololomei School". Staff and admin
+  // work across every school, so naming one would be wrong: a leftover school
+  // on the profile (from before they were promoted, or picked at signup) is
+  // not where they work. Region still reads true for them, so keep it.
+  const orgWide = user.role === "admin" || user.role === "staff";
+  const place = (orgWide ? [user.region] : [user.region, user.school]).filter(Boolean);
   const placeBit = place.length ? ` in <strong>${place.map(esc).join(" · ")}</strong>` : "";
   const intro =
     allowed.length > 1

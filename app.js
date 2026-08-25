@@ -823,9 +823,37 @@ function authShell(main) {
 // just fetched instead of repeating the same Postgres round trip a moment
 // later for the same page load.
 let dashboardEventsCache = [];
+
+/* Re-read this account's own role from Postgres. Without this, a promotion or
+   demotion made by someone else stays invisible until the next sign-in: the
+   role is cached in supaUser at boot and never re-checked, so a staff member
+   promoted to admin would keep seeing the staff dashboard.
+
+   Only ever touches a real Supabase session. A learner, a legacy account, and
+   an admin impersonating someone all live in K_SESSION, which stays
+   authoritative for them — re-reading a profile row would either find nothing
+   or, worse, quietly end an impersonation. Returns whether the role actually
+   changed, so the caller can say so rather than swapping the UI silently. */
+async function syncRoleFromDb() {
+  if (read(K_SESSION, null)) return null; // learner / legacy / impersonating
+  const before = supaUser?.role;
+  if (!before) return null;
+  const { data } = await supabase.auth.getSession();
+  if (!data?.session) return null;
+  await refreshProfile(data.session);
+  const after = supaUser?.role;
+  return after && after !== before ? after : null;
+}
+
 async function pageDashboard() {
+  if (!Auth.current()) return pageAuth("login");
+  const newRole = await syncRoleFromDb();
   const user = Auth.current();
   if (!user) return pageAuth("login");
+  if (newRole) {
+    const label = ROLES.find((r) => r.value === newRole)?.label || newRole;
+    toast("Your access changed", `You are now signed in as ${label}.`, "success");
+  }
   dashboardEventsCache = await Repo.allEvents(user);
   return shell("/dashboard", myDashboardMain(user, dashboardEventsCache));
 }
