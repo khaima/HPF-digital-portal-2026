@@ -18,6 +18,19 @@
 -- to -- which is exactly the distinction needed: promoting a teacher up to
 -- Staff still works (their old role isn't staff/admin), touching an
 -- existing Staff/Admin row now doesn't, unless the viewer is Admin.
+--
+-- WITH CHECK is required, not optional: a policy with a USING clause and no
+-- explicit WITH CHECK has Postgres reuse USING as the check on the RESULTING
+-- row too. That silently broke the one thing this patch was designed to
+-- preserve -- a Staff member promoting a teacher to Staff -- because the row
+-- that results FROM that promotion (role now 'staff') no longer satisfies a
+-- Staff actor's own USING clause, and Postgres then rejects the write it had
+-- just allowed. Caught by testing against the live database with a rolled-
+-- back transaction before this shipped, not assumed. The WITH CHECK here
+-- deliberately omits the old-role condition -- that check's job belongs to
+-- USING (which row can be touched), not to WITH CHECK (what the actor is
+-- allowed to write), and guard_profile_role() (patch-14) is still the
+-- trigger that stops a Staff actor granting 'admin', independent of this.
 -- ============================================================
 
 drop policy if exists "update own" on profiles;
@@ -26,4 +39,9 @@ create policy "update own" on profiles for update to authenticated
     id = (select auth.uid())
     or (select is_admin())
     or ((select is_staff()) and role not in ('admin', 'staff'))
+  )
+  with check (
+    id = (select auth.uid())
+    or (select is_admin())
+    or (select is_staff())
   );

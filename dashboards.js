@@ -443,6 +443,21 @@ async function createStaffAccount({ fullName, email }) {
     throw new Error(`${email} was invited but the profile row hasn't appeared yet. Refresh in a moment and promote them from this list.`);
   }
 
+  // Order matters here (patch-16): once this row's role becomes staff/admin,
+  // a Staff-tier actor can no longer touch it at all — only Admin can. So the
+  // needs_password flag has to be set FIRST, while the row is still a plain
+  // learner and any staff/admin viewer can still write to it. Flipping this
+  // order would silently leave needs_password false whenever a Staff (not
+  // Admin) member does the inviting, since the row would already be
+  // off-limits to them by the time the second call ran.
+  //
+  // Best-effort: lets patch-15 (the needs_password column) land after this
+  // code without breaking "Add staff member" in the meantime — the invite
+  // still works, it just won't force a password step until the column exists.
+  const { error: flagErr } = await supabase
+    .from("profiles").update({ needs_password: true }).eq("id", row.id);
+  if (flagErr) console.warn("Could not set needs_password (has patch-15 been applied?):", flagErr.message);
+
   try {
     await promoteToStaff(row.id);
   } catch (err) {
@@ -450,13 +465,6 @@ async function createStaffAccount({ fullName, email }) {
     // needs the service_role key), so don't pretend this failed cleanly.
     throw new Error(`${email} was invited but is still an ordinary account. ${err.message}`);
   }
-
-  // Best-effort: lets patch-15 (the needs_password column) land after this
-  // code without breaking "Add staff member" in the meantime — the invite
-  // still works, it just won't force a password step until the column exists.
-  const { error: flagErr } = await supabase
-    .from("profiles").update({ needs_password: true }).eq("id", row.id);
-  if (flagErr) console.warn("Could not set needs_password (has patch-15 been applied?):", flagErr.message);
 
   return { id: row.id };
 }
