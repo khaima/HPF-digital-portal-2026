@@ -270,20 +270,10 @@ export const RESOURCE_TYPES = {
   reading: { label: "Reading", icon: "book" },
 };
 
-export const LIBRARY_SEED = [
-  { title: "HPF Teacher Training Manual", category: "Teacher Training", type: "document",
-    description: "Comprehensive facilitator guide for HPF's core teacher training programme.",
-    url: "https://humanpracticefoundation.org/" },
-  { title: "Foundational Literacy Pack", category: "Literacy", type: "reading",
-    description: "Early-grade reading and phonics materials aligned to CBC.",
-    url: "https://globaldigitallibrary.org/" },
-  { title: "Numeracy Games & Activities", category: "Numeracy", type: "video",
-    description: "Hands-on activities that make number sense stick.",
-    url: "https://www.khanacademy.org/" },
-  { title: "Intro to Digital Skills", category: "ICT Skills", type: "video",
-    description: "Getting started with laptops, typing, and the internet — for the IT Academy.",
-    url: "https://www.khanacademy.org/computing" },
-];
+/* The digital library's starting catalogue used to be seeded from here into
+   each browser's localStorage. It is real HPF reference data, so it now lives
+   in the patch sequence (patch-21) alongside patch-02's schools — one
+   catalogue in the database, not one per browser. */
 
 /* HPF-supported schools (teachers pick one when creating a class) */
 /* HPF regions → the schools in each. Signup picks a region, then the

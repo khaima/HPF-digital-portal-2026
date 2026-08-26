@@ -187,13 +187,32 @@ Real client code reads and writes: `profiles`, `schools`, `school_returns`
 `device_maintenance`, `learners`, `attendance_records`, `me_indicators`,
 `me_indicator_values`, `me_targets`, `school_facilities`,
 `school_programmes`, `devices`, `teachers`, `field_officers`,
-`interventions`, `action_items`, and `evidence` — 29 tables (up from 15,
-across the four wiring phases this pass added).
+`interventions`, `action_items`, `evidence`, and `digital_learning` — 30
+tables.
 
-The remaining 12 — `roles`, `teacher_training`, `subjects`, `field_visits` +
-`field_visit_findings`, `digital_learning`, `kolibri_activity`,
-`library_activity`, `learning_activity`, `notifications`, `audit_logs`,
-`kobo_submissions` — are real, RLS-complete schema with zero client
-wiring. `school_returns.attendance_rate` also still stands alone; nothing
-yet computes it from the now-real `attendance_records` rows. Building UI
+The remaining 11 — `roles`, `teacher_training`, `subjects`, `field_visits` +
+`field_visit_findings`, `kolibri_activity`, `library_activity`,
+`learning_activity`, `notifications`, `audit_logs`, `kobo_submissions` —
+are real, RLS-complete schema with zero client wiring.
+`school_returns.attendance_rate` also still stands alone; nothing yet
+computes it from the now-real `attendance_records` rows. Building UI
 against any of these is a separate, future decision.
+
+## What the browser still stores, and why
+
+Not everything belongs in Postgres, and a few things structurally cannot be
+there — a learner has no email, so no Supabase Auth account, so no JWT, and
+every RLS policy is granted `to authenticated`. Which browser-held data is
+deliberate (session state, caches, the offline queue) and which was a bug
+that has since been migrated is audited in full, key by key, in
+[`STORAGE-AUDIT.md`](STORAGE-AUDIT.md).
+
+## Changes from patch-21
+
+`login_events` gains `source` (`supabase` | `local`) and the
+`record_local_login()` SECURITY DEFINER function — the narrow, anon-callable
+path that lets a learner's sign-in be recorded at all. `digital_learning`
+gains `file_name` + `updated_at` and is now the Digital Library's only home.
+`me_indicators` gains `scorecard_pillar`, a nullable, finer-grained pillar
+for the admin Scorecard's own four programme pillars, kept separate from the
+coarse M&E `pillar` vocabulary rather than collapsed into it.

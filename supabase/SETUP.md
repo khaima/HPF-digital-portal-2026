@@ -37,6 +37,7 @@ frontend static (it still deploys on GitHub Pages).
    | 20 | [`patch-18-attendance.sql`](patch-18-attendance.sql) | `attendance_records` — per-learner, per-class, per-day attendance |
    | 21 | [`patch-19-me-indicators-targets.sql`](patch-19-me-indicators-targets.sql) | `me_indicators`, `me_indicator_values`, `me_targets` — M&E data model |
    | 22 | [`patch-20-evidence.sql`](patch-20-evidence.sql) | `evidence` — generic supporting attachment, linked to any other row |
+   | 23 | [`patch-21-single-source-of-truth.sql`](patch-21-single-source-of-truth.sql) | Gives learner logins, the digital library, and scorecard activities a real database home — see [`STORAGE-AUDIT.md`](STORAGE-AUDIT.md) |
 
    **Do not run [`seed-dev.sql`](seed-dev.sql) against this project.** It's fake
    data for local/branch testing only — see its own header comment.

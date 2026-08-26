@@ -5,7 +5,7 @@
 
 import { icon } from "./icons.js";
 import { DASH, ROLES, ORG_TYPES, COUNTIES, KOLIBRI, CONTENT_KINDS, SCHOOLS,
-  LIBRARY_CATEGORIES, RESOURCE_TYPES, LIBRARY_SEED, REGIONS, PROJECTS, KPI_TARGETS } from "./data.js";
+  LIBRARY_CATEGORIES, RESOURCE_TYPES, REGIONS, PROJECTS, KPI_TARGETS } from "./data.js";
 import { esc, timeAgo, runCounters, read, write, toast, uid } from "./util.js";
 import { supabase, adminClient, authMessage } from "./supabase.js";
 
@@ -384,7 +384,9 @@ let profilesAuthed = false; // same "local account, DB never saw it" check loadA
 async function loadProfiles() {
   const { data: sess } = await supabase.auth.getSession();
   profilesAuthed = !!sess?.session;
-  const { data, error } = await supabase.from("profiles").select("id, full_name, email, role, county, school, created_at");
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("id, full_name, email, username, role, county, school, project, needs_password, created_at");
   profilesLoaded = true;
   if (error) { profilesError = authMessage(error); return profilesCache; }
   profilesError = null;
@@ -454,7 +456,11 @@ let meIndicatorsLoaded = false;
 async function loadMeIndicators() {
   const [indRes, valRes, tgtRes] = await Promise.all([
     supabase.from("me_indicators").select("*").order("name"),
-    supabase.from("me_indicator_values").select("*").is("school_id", null).order("period_year", { ascending: false }),
+    // period_year first, then created_at: a scorecard activity's score is
+    // re-recorded as a new row in the same year each time it's edited, so
+    // "latest" has to break the year tie by when it was written.
+    supabase.from("me_indicator_values").select("*").is("school_id", null)
+      .order("period_year", { ascending: false }).order("created_at", { ascending: false }),
     supabase.from("me_targets").select("*").is("school_id", null).order("period_year", { ascending: false }),
   ]);
   meIndicatorsLoaded = true;
@@ -473,8 +479,11 @@ function meIndicatorsPanel() {
     // indicator is its latest org-wide figure.
     const value = meIndicatorValuesCache.find((v) => v.indicator_id === ind.id);
     const target = meTargetsCache.find((t) => t.indicator_id === ind.id);
-    if (!value && !target) return "";
-    return hbar(ind.name, value?.value ?? 0, target?.target_value || value?.value || 1, "var(--primary)", ind.unit ? ` ${ind.unit}` : "");
+    // No target means there is nothing to show progress *against*. Falling
+    // back to the value as its own target drew every such indicator as a
+    // full bar, which reads as "target met" when nothing was ever set.
+    if (!target) return "";
+    return hbar(ind.name, value?.value ?? 0, target.target_value, "var(--primary)", ind.unit ? ` ${ind.unit}` : "");
   }).filter(Boolean).join("");
 
   return bars || notTracked("no measurements have been recorded against these indicators yet.");
@@ -490,7 +499,7 @@ function meIndicatorsPanel() {
    only ever grants a session when the recipient clicks it, so this is what
    actually proves the address belongs to them — a typed-in password handed
    over "in person" never did. */
-async function createStaffAccount({ fullName, email }) {
+async function createStaffAccount({ fullName, email, role = "staff", school = null, county = null, project = null }) {
   const existing = await findProfileByEmail(email);
   if (existing.length) {
     throw new Error(`${email} already has an account. Use "Promote existing account" instead — inviting again would just re-email them.`);
@@ -505,7 +514,7 @@ async function createStaffAccount({ fullName, email }) {
       shouldCreateUser: true,
       data: {
         full_name: fullName,
-        username: null, school: null, county: null, org_type: null, project: null,
+        username: null, school, county, org_type: null, project,
       },
     },
   });
@@ -534,8 +543,12 @@ async function createStaffAccount({ fullName, email }) {
     .from("profiles").update({ needs_password: true }).eq("id", row.id);
   if (flagErr) console.warn("Could not set needs_password (has patch-15 been applied?):", flagErr.message);
 
+  // A learner-role invite would be a contradiction — the row already IS a
+  // learner, and the whole point of an invite is an email-backed account.
+  if (role === LOCAL_ONLY_ROLE) return { id: row.id };
+
   try {
-    await promoteToStaff(row.id);
+    await promoteToRole(row.id, role);
   } catch (err) {
     // The auth user exists from here on and the browser cannot delete it (that
     // needs the service_role key), so don't pretend this failed cleanly.
@@ -1017,9 +1030,44 @@ function interventionsPanel() {
   return wrap(`${addForm}${rows}`);
 }
 
-/* ---------------------------------------------------------- user management */
+/* ---------------------------------------------------------- user management
+
+   The account list, with `profiles` (Postgres) as the source of truth.
+
+   This panel used to read `hpf_users` — a browser-local array — as if it were
+   the user directory. It wasn't: it showed only the accounts created in
+   *this* browser, and its edit form could set any row's role to "admin"
+   locally, which no database check ever saw. Two admins on two laptops had
+   two different, both-wrong pictures of who had access.
+
+   `hpf_users` still exists and is still read here, but for exactly one thing
+   it is genuinely the right home: learners. A learner has no email, so no
+   Supabase Auth account, so no JWT — and every RLS policy is granted `to
+   authenticated`. They structurally cannot live in `profiles`. Those rows are
+   labelled as device-local in the table so the distinction is visible rather
+   than implied. Everyone else comes from the database. */
+const LOCAL_ONLY_ROLE = "learner";
+
+/* One row shape for the table, whichever store it came from. `local: true`
+   means this browser is the only place it exists. */
+function directoryUsers() {
+  const remote = profilesCache.map((p) => ({
+    id: p.id, fullName: p.full_name, email: p.email, username: p.username,
+    role: p.role, project: p.project, region: p.county, school: p.school,
+    needsPassword: p.needs_password, local: false,
+  }));
+  const local = read(K_USERS, [])
+    .filter((u) => u.role === LOCAL_ONLY_ROLE)
+    .map((u) => ({
+      id: u.id, fullName: u.fullName, email: u.email, username: u.username,
+      role: LOCAL_ONLY_ROLE, project: u.project, region: u.region, school: u.school,
+      local: true,
+    }));
+  return [...remote, ...local];
+}
+
 function userManagementPanel(currentUser) {
-  const users = read(K_USERS, []);
+  const users = directoryUsers();
   const roleTally = users.reduce((m, u) => ((m[u.role] = (m[u.role] || 0) + 1), m), {});
   const roleOpts = (selected) =>
     ROLES.map(
@@ -1034,11 +1082,12 @@ function userManagementPanel(currentUser) {
   else visible.sort(byName);
 
   const dash = (v) => (v ? esc(v) : "—");
-  const rows = visible.length
+  const rows = !profilesLoaded
+    ? `<div class="empty-state">Loading accounts…</div>`
+    : visible.length
     ? visible
         .map((u) => {
           const isSelf = u.id === currentUser.id;
-          const pw = u.password || "";
           return `<div class="utx-row">
             <div class="utx-cell utx-user">
               <span class="avatar-sm">${esc((u.fullName || u.username || "U").slice(0, 1).toUpperCase())}</span>
@@ -1046,17 +1095,20 @@ function userManagementPanel(currentUser) {
                 <div class="utx-email">${dash(u.email)}</div></div>
             </div>
             <div class="utx-cell">${dash(u.username)}</div>
-            <div class="utx-cell utx-pw">
-              <span data-pw="${esc(pw)}" class="pw-mask">${pw ? "••••••••" : "—"}</span>
-              ${pw ? `<button class="icon-btn pw-eye" data-pw-toggle title="Show/hide">${icon("eye")}</button>` : ""}
+            <div class="utx-cell">
+              ${u.local
+                ? `<span class="pill" title="Learner accounts have no email, so no database account — this one exists only in this browser">${icon("info")} This device</span>`
+                : u.needsPassword
+                ? `<span class="pill">Invite sent</span>`
+                : `<span class="pill synced">${icon("check")} Database</span>`}
             </div>
             <div class="utx-cell"><span class="pill role-pill">${esc(ROLE_LABEL[u.role] || u.role || "—")}</span></div>
             <div class="utx-cell">${dash(u.project)}</div>
             <div class="utx-cell">${dash(u.region)}</div>
             <div class="utx-cell">${dash(u.school)}</div>
             <div class="utx-cell utx-actions">
-              <button class="icon-btn" data-edit-user="${u.id}" title="Edit credentials">${icon("pen")}</button>
-              <button class="icon-btn" data-enter-account="${u.id}" title="Enter account" ${isSelf ? "disabled" : ""}>${icon("login")}</button>
+              <button class="icon-btn" data-edit-user="${u.id}" title="Edit details">${icon("pen")}</button>
+              ${u.local ? `<button class="icon-btn" data-enter-account="${u.id}" title="Enter account" ${isSelf ? "disabled" : ""}>${icon("login")}</button>` : ""}
               <button class="icon-btn danger" data-remove-user="${u.id}" title="Remove" ${isSelf ? "disabled" : ""}>${icon("trash")}</button>
             </div>
           </div>`;
@@ -1073,7 +1125,7 @@ function userManagementPanel(currentUser) {
       <div class="panel-head-row">
         <div>
           <h2>${icon("users")} User management</h2>
-          <p class="panel-sub" style="margin-bottom:0">${users.length} account${users.length === 1 ? "" : "s"} · full details · edit credentials, passwords &amp; roles</p>
+          <p class="panel-sub" style="margin-bottom:0">${users.length} account${users.length === 1 ? "" : "s"} from the HPF database, plus any learner accounts held on this device</p>
         </div>
         <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
           <select class="select select-sm" data-users-role aria-label="Filter by role">
@@ -1098,19 +1150,19 @@ function userManagementPanel(currentUser) {
           <div class="field"><label>Full name</label>
             <input class="input" name="fullName" type="text" required placeholder="e.g. Grace Achieng"></div>
           <div class="field"><label>Role</label>
-            <select class="select" name="role">${roleOpts("teacher")}</select></div>
+            <select class="select" name="role" data-newuser-role>${roleOpts("teacher")}</select></div>
         </div>
-        <div class="form-row">
+        <div class="form-row" data-newuser-email>
           <div class="field"><label>Email</label>
             <input class="input" name="email" type="email" placeholder="name@example.org"></div>
-          <div class="field"><label>Username</label>
-            <input class="input" name="username" type="text" placeholder="optional (required for learners)"></div>
-        </div>
-        <div class="form-row">
-          <div class="field"><label>Password</label>
-            <input class="input" name="password" type="password" minlength="6" placeholder="min. 6 characters" required></div>
           <div class="field"><label>Project / department</label>
             <select class="select" name="project">${projectOpts}</select></div>
+        </div>
+        <div class="form-row" data-newuser-learner hidden>
+          <div class="field"><label>Username</label>
+            <input class="input" name="username" type="text" placeholder="how the learner signs in"></div>
+          <div class="field"><label>Password</label>
+            <input class="input" name="password" type="password" minlength="6" placeholder="min. 6 characters"></div>
         </div>
         <div class="form-row">
           <div class="field"><label>Region</label>
@@ -1118,6 +1170,7 @@ function userManagementPanel(currentUser) {
           <div class="field"><label>School</label>
             <select class="select" name="school">${schoolOpts}</select></div>
         </div>
+        <p class="hint" data-newuser-hint>Everyone except learners is created in the HPF database and emailed a link to set their own password — no password is typed here, and the account works on every device.</p>
         <div class="add-user-actions">
           <button class="btn btn-primary" type="submit">Create account</button>
           <button class="btn btn-outline" type="button" data-add-user-cancel>Cancel</button>
@@ -1130,7 +1183,7 @@ function userManagementPanel(currentUser) {
               <div class="utx-row utx-head">
                 <div class="utx-cell">Name</div>
                 <div class="utx-cell">Username</div>
-                <div class="utx-cell">Password</div>
+                <div class="utx-cell">Stored in</div>
                 <div class="utx-cell">Role</div>
                 <div class="utx-cell">Department</div>
                 <div class="utx-cell">Region</div>
@@ -1146,37 +1199,63 @@ function userManagementPanel(currentUser) {
     ${editUserId ? editUserModal(users.find((u) => u.id === editUserId), currentUser) : ""}`;
 }
 
-/* full-detail edit modal — admin can change every credential incl. password */
+/* Edit one account. Two genuinely different forms behind one button, because
+   the two stores allow different things:
+
+   - A database account (profiles): name, role, school/region/department. No
+     password field — the browser cannot set someone else's Supabase password,
+     and the old form's field only ever wrote to a localStorage copy that no
+     sign-in consulted, so it read as working while doing nothing. Password
+     recovery is the emailed reset link.
+   - A local learner: name, username, password, school. The role select is
+     omitted entirely rather than disabled — a learner is the only role this
+     store can hold, and offering the others was how a local row could be
+     marked "admin" with no database check anywhere in the path. */
 function editUserModal(u, currentUser) {
   if (!u) return "";
-  const roleOpts = ROLES.map((r) => `<option value="${r.value}" ${r.value === u.role ? "selected" : ""}>${r.label}</option>`).join("");
   const regionOpts = `<option value="">— none —</option>` + Object.keys(REGIONS).map((r) => `<option ${r === u.region ? "selected" : ""}>${esc(r)}</option>`).join("");
   const schoolOpts = `<option value="">— none —</option>` + SCHOOLS.map((s) => `<option ${s === u.school ? "selected" : ""}>${esc(s)}</option>`).join("");
   const projectOpts = `<option value="">— none —</option>` + PROJECTS.map((p) => `<option ${p === u.project ? "selected" : ""}>${esc(p)}</option>`).join("");
+
+  // Admin is the one grant reserved to an existing admin (patch-14), so a
+  // Staff-tier viewer never sees it offered. The database refuses it either
+  // way — this only avoids offering an action that would silently fail.
+  const assignable = ROLES.filter((r) => r.value !== LOCAL_ONLY_ROLE && (r.value !== "admin" || currentUser.role === "admin"));
+  const roleOpts = assignable.map((r) => `<option value="${r.value}" ${r.value === u.role ? "selected" : ""}>${r.label}</option>`).join("");
+
+  const localFields = `
+    <div class="form-row">
+      <div class="field"><label>Username</label><input class="input" name="username" value="${esc(u.username || "")}" required></div>
+      <div class="field"><label>Password</label>
+        <div class="pw-edit"><input class="input" name="password" type="password" value="" minlength="6" placeholder="leave blank to keep the current one">
+          <button class="btn btn-outline btn-xs" type="button" data-editpw-toggle>${icon("eye")} Show</button></div></div>
+    </div>
+    <div class="field"><label>School</label><select class="select" name="school">${schoolOpts}</select></div>`;
+
+  const remoteFields = `
+    <div class="form-row">
+      <div class="field"><label>Email</label><input class="input" value="${esc(u.email || "")}" disabled>
+        <p class="hint">Changing a sign-in address is done by the account holder, from their own profile.</p></div>
+      <div class="field"><label>Role</label><select class="select" name="role">${roleOpts}</select></div>
+    </div>
+    <div class="form-row">
+      <div class="field"><label>Project / department</label><select class="select" name="project">${projectOpts}</select></div>
+      <div class="field"><label>Region</label><select class="select" name="region">${regionOpts}</select></div>
+    </div>
+    <div class="field"><label>School</label><select class="select" name="school">${schoolOpts}</select></div>
+    <p class="hint">${icon("info")} Saved to the HPF database — the change applies on every device. To reset this person's password, ask them to use <strong>Forgot password?</strong> on the sign-in page.</p>`;
+
   return `
     <div class="modal-overlay" data-edit-overlay>
       <div class="modal" role="dialog" aria-modal="true">
         <div class="modal-head">
-          <div><h2>Edit user</h2><p class="panel-sub" style="margin:0">${esc(u.fullName || u.username || "")} · full credentials</p></div>
+          <div><h2>Edit ${u.local ? "learner" : "account"}</h2>
+            <p class="panel-sub" style="margin:0">${esc(u.fullName || u.username || "")} · ${u.local ? "this device only" : "HPF database"}</p></div>
           <button class="icon-btn" data-edit-close aria-label="Close">✕</button>
         </div>
-        <form id="editUserForm" class="modal-body" data-uid="${u.id}">
-          <div class="form-row">
-            <div class="field"><label>Full name</label><input class="input" name="fullName" value="${esc(u.fullName || "")}" required></div>
-            <div class="field"><label>Role</label><select class="select" name="role">${roleOpts}</select></div>
-          </div>
-          <div class="form-row">
-            <div class="field"><label>Email</label><input class="input" name="email" type="email" value="${esc(u.email || "")}"></div>
-            <div class="field"><label>Username</label><input class="input" name="username" value="${esc(u.username || "")}"></div>
-          </div>
-          <div class="field"><label>Password</label>
-            <div class="pw-edit"><input class="input" name="password" type="password" value="${esc(u.password || "")}" minlength="6">
-              <button class="btn btn-outline btn-xs" type="button" data-editpw-toggle>${icon("eye")} Show</button></div></div>
-          <div class="form-row">
-            <div class="field"><label>Project / department</label><select class="select" name="project">${projectOpts}</select></div>
-            <div class="field"><label>Region</label><select class="select" name="region">${regionOpts}</select></div>
-          </div>
-          <div class="field"><label>School</label><select class="select" name="school">${schoolOpts}</select></div>
+        <form id="editUserForm" class="modal-body" data-uid="${u.id}" data-local="${u.local ? "1" : "0"}">
+          <div class="field"><label>Full name</label><input class="input" name="fullName" value="${esc(u.fullName || "")}" required></div>
+          ${u.local ? localFields : remoteFields}
         </form>
         <div class="modal-foot">
           <button class="btn btn-primary" data-edit-save>${icon("check")} Save changes</button>
@@ -1239,7 +1318,6 @@ function sideNav(tabs, active, attr) {
    (users, classes, assessments, assignments, field reports, logins)
    ============================================================ */
 const K_EVENTS = "hpf_login_events"; // login / signup inbox
-const K_LIBRARY = "hpf_library";     // admin-curated digital library
 
 /* Field officer visit reports — real Postgres table (field_reports), RLS
    scoped so an admin's read returns every officer's rows. Same async-cache
@@ -1282,21 +1360,59 @@ let editUserId = null;               // user open in the admin edit modal
 const ADMIN_EMAIL = "patrick@humanpractice.org";
 const ORG_DOMAIN = "humanpractice.org"; // org email → admin
 
-/* the shared digital library — seeded once, then admin-managed */
-function getLibrary() {
-  let lib = read(K_LIBRARY, null);
-  if (!lib) {
-    lib = LIBRARY_SEED.map((r) => ({ id: uid(), published: true, createdAt: Date.now(), ...r }));
-    write(K_LIBRARY, lib);
-  }
-  return lib;
-}
-const saveLibrary = (lib) => write(K_LIBRARY, lib);
-const publishedLibrary = () => getLibrary().filter((r) => r.published);
+/* The shared digital library. Authoritative in Postgres (digital_learning),
+   not in this browser: a resource an admin publishes has to be visible to
+   every teacher on every device, which localStorage could never do.
 
-/* open a library/shared resource — a data URL (upload) or a normal link */
-function openResource(res) {
-  const href = res.dataUrl || res.url;
+   Same async-cache shape as schools/returns/classes — the dashboard renders
+   synchronously, so getLibrary() stays a plain array read and loadLibrary()
+   fills it on mount, followed by one re-render.
+
+   `url` is deliberately excluded from the list query: a small upload is kept
+   as a data: URL in that column, so selecting it would pull up to 800 KB per
+   row into every dashboard render. openResource() fetches the one row's url
+   on demand instead. */
+let libraryCache = [];
+let libraryLoaded = false;
+let libraryError = null;
+
+const LIB_COLUMNS = "id, title, kind, category, description, file_name, published, created_at";
+const libFromRow = (r) => ({
+  id: r.id,
+  title: r.title,
+  type: r.kind || "document",
+  category: r.category || "Other",
+  description: r.description || "",
+  fileName: r.file_name || "",
+  published: r.published,
+  createdAt: Date.parse(r.created_at) || Date.now(),
+});
+
+async function loadLibrary() {
+  const { data, error } = await supabase
+    .from("digital_learning").select(LIB_COLUMNS).order("created_at", { ascending: false });
+  libraryLoaded = true;
+  libraryError = error ? authMessage(error) : null;
+  if (!error) libraryCache = (data || []).map(libFromRow);
+  return libraryCache;
+}
+const getLibrary = () => libraryCache;
+const publishedLibrary = () => libraryCache.filter((r) => r.published);
+
+/* Open a resource — either a library row or a class-shared one. A teacher's
+   class-shared resource carries its own href; a library row (and anything
+   shared *from* the library, which stores only libId) keeps its href in the
+   one column the list query skips, so that gets fetched by id on demand. */
+async function openResource(res) {
+  if (!res) return toast("No file", "This resource has no link or file attached.", "error");
+  let href = res.dataUrl || res.url;
+  const libId = res.libId || (res.libId === undefined && libraryCache.some((r) => r.id === res.id) ? res.id : null);
+  if (!href && libId) {
+    const { data, error } = await supabase
+      .from("digital_learning").select("url").eq("id", libId).maybeSingle();
+    if (error) return toast("Could not open", authMessage(error), "error");
+    href = data?.url;
+  }
   if (!href) return toast("No file", "This resource has no link or file attached.", "error");
   window.open(href, "_blank", "noopener");
 }
@@ -1315,7 +1431,11 @@ function digitalLibraryPanel() {
     .join("");
   const catOpts = LIBRARY_CATEGORIES.map((c) => `<option>${esc(c)}</option>`).join("");
 
-  const rows = lib.length
+  const rows = !libraryLoaded
+    ? `<div class="empty-state">Loading the library…</div>`
+    : libraryError
+    ? `<div class="empty-state">Could not load the library — ${esc(libraryError)} <button class="btn btn-outline btn-xs" data-lib-retry>Retry</button></div>`
+    : lib.length
     ? lib
         .map((r) => {
           const { t, sub } = resourceMeta(r);
@@ -1351,7 +1471,7 @@ function digitalLibraryPanel() {
           <input class="input" name="description" maxlength="200" placeholder="One line on what this resource is"></div>
         <div class="field"><label>${icon("upload")} …or upload a file <span style="font-weight:400;color:var(--muted-foreground)">(optional, under 800 KB)</span></label>
           <input class="input" name="file" type="file" data-lib-file>
-          <p class="hint">Small files are stored in the browser. For large files (videos, big PDFs), paste a link instead.</p></div>
+          <p class="hint">Small files are stored in the HPF database and are available to every teacher. For large files (videos, big PDFs), paste a link instead.</p></div>
         <div class="add-user-actions">
           <button class="btn btn-primary" type="submit">${icon("check")} Add to library</button>
           <button class="btn btn-outline" type="button" data-lib-cancel>Cancel</button>
@@ -1929,19 +2049,6 @@ let mapEditing = false; // story editor open?
 let editSchoolId = null;   // school open in the admin editor
 let schoolFormOpen = false;
 let schoolManageOpen = false; // show edit/delete controls on the map pins
-
-/* ---------------------------------------------------------- editable chart titles */
-const K_TITLES = "hpf_chart_titles";
-const getTitles = () => read(K_TITLES, {});
-const chartTitle = (id, fallback) => getTitles()[id] || fallback;
-let editTitleId = null;    // chart whose title is being renamed
-
-/* ---------------------------------------------------------- custom activity charts
-   [{ id, title, type: bar|hbar|pie|line, activityIds: [] }] */
-const K_CHARTS = "hpf_custom_charts";
-const getCustomCharts = () => read(K_CHARTS, []);
-const saveCustomCharts = (c) => write(K_CHARTS, c);
-let chartFormOpen = false;
 
 function schoolForm(existing) {
   const countyOpts = COUNTIES.map(
@@ -2689,11 +2796,66 @@ function ringGauge(score, label, animate = true) {
 }
 
 /* compute every pillar score from live signals + M&E baselines */
-/* activities the admin adds themselves — stored, editable, charted alongside
-   the built-in indicators. { id, pillar, name, value, history:[{at,value}] } */
-const K_ACTIVITIES = "hpf_activities";
-const getActivities = () => read(K_ACTIVITIES, []);
-const saveActivities = (a) => write(K_ACTIVITIES, a);
+/* Activities the admin adds themselves — charted and averaged into the
+   pillar score alongside the built-in indicators.
+
+   Authoritative in Postgres (me_indicators + me_indicator_values, patch-19),
+   not in this browser. These feed an *org-wide* pillar score, so a
+   localStorage home meant two admins on two devices saw two different
+   "org-wide" numbers with nothing on screen to say why. The indicator row
+   carries the definition (name + which scorecard pillar it belongs to);
+   its score is the me_indicator_values row for the current period.
+
+   Editing a score UPDATES that period's row rather than inserting another:
+   me_indicator_values is unique on (indicator_id, school_id, period_year,
+   period_term), i.e. one value per indicator per period by design. An
+   org-wide row has both school_id and period_term null, and Postgres treats
+   nulls as distinct in a unique index, so appends would in fact have been
+   accepted — silently, against the constraint's whole intent, leaving two
+   rows for one period and the displayed one decided by a created_at
+   tiebreak. History still accrues the way the schema means it to: a new
+   year or term is a new row.
+
+   Read off the same cache loadMeIndicators() already fills, so this adds no
+   extra round trip. */
+const CUSTOM_ACT_PREFIX = "scorecard_";
+// The scorecard's four pillars are a finer set than me_indicators' own coarse
+// M&E vocabulary, so patch-21 gave them their own column; this maps a
+// scorecard pillar onto the nearest coarse one for the M&E-side reporting.
+const PILLAR_TO_ME = { education: "learning", infrastructure: "infrastructure", mep: "economic_empowerment", ict: "general" };
+
+function getActivities() {
+  return meIndicatorsCache
+    .filter((ind) => ind.scorecard_pillar)
+    .map((ind) => {
+      const v = meIndicatorValuesCache.find((x) => x.indicator_id === ind.id);
+      return { id: ind.id, pillar: ind.scorecard_pillar, name: ind.name, value: +(v?.value ?? 0) };
+    });
+}
+
+/* Set an activity's score for the current period: update this period's row if
+   it exists, insert it if it doesn't. Returns an error object or null.
+   Deliberately not an upsert — onConflict can't target this table's unique
+   index, whose org-wide rows have nulls in two of its four columns. */
+async function recordActivityScore(indicatorId, value, actorId) {
+  const period_year = new Date().getFullYear();
+  const { data: updated, error: updErr } = await supabase
+    .from("me_indicator_values")
+    .update({ value, source: "manual", recorded_by: actorId })
+    .eq("indicator_id", indicatorId)
+    .is("school_id", null)
+    .eq("period_year", period_year)
+    .is("period_term", null)
+    .select();
+  if (updErr) return updErr;
+  if (updated && updated.length) return null;
+
+  const { error: insErr } = await supabase.from("me_indicator_values").insert({
+    indicator_id: indicatorId, school_id: null, period_year, period_term: null,
+    value, source: "manual", recorded_by: actorId,
+  });
+  return insErr || null;
+}
 
 function computeScorecard(s) {
   const total = s.comp.done + s.comp.prog + s.comp.none;
@@ -6305,35 +6467,63 @@ export function wireMyDashboard(user, events) {
       }
 
       // --- editable activities: add / update score / delete ---
-      body.querySelector("#actForm")?.addEventListener("submit", (e) => {
+      body.querySelector("#actForm")?.addEventListener("submit", async (e) => {
         e.preventDefault();
-        const d = Object.fromEntries(new FormData(e.currentTarget).entries());
+        const form = e.currentTarget;
+        const d = Object.fromEntries(new FormData(form).entries());
         const name = (d.name || "").trim();
         if (!name) return toast("Name required", "Give the activity a name.", "error");
         const value = Math.max(0, Math.min(100, +d.value || 0));
-        const acts = getActivities();
-        acts.push({ id: uid(), pillar: d.pillar, name, value, createdAt: Date.now() });
-        saveActivities(acts);
+        const submit = form.querySelector("[type=submit]");
+        if (submit) submit.disabled = true;
+
+        // Definition first, then its first measurement — two rows, because
+        // me_indicators says *what* is measured and me_indicator_values says
+        // what it currently reads. Keeping them apart is what makes an edit
+        // append history instead of overwriting it.
+        const { data: ind, error: indErr } = await supabase.from("me_indicators").insert({
+          code: CUSTOM_ACT_PREFIX + d.pillar + "_" + Date.now().toString(36),
+          name,
+          pillar: PILLAR_TO_ME[d.pillar] || "general",
+          scorecard_pillar: d.pillar,
+          unit: "%",
+        }).select().maybeSingle();
+        if (indErr || !ind) {
+          if (submit) submit.disabled = false;
+          return toast("Could not add activity", authMessage(indErr || {}), "error");
+        }
+        const valErr = await recordActivityScore(ind.id, value, ctx.user.id);
+        if (submit) submit.disabled = false;
+        if (valErr) return toast("Could not record score", authMessage(valErr), "error");
+
+        await loadMeIndicators();
         scPillar = d.pillar; // jump to the pillar you just added to
         toast("Activity added", `“${name}” is now scored and charted.`, "success");
         renderAnalytics();
       });
       body.querySelectorAll("[data-act-val]").forEach((inp) =>
-        inp.addEventListener("change", () => {
-          const acts = getActivities();
-          const a = acts.find((x) => x.id === inp.dataset.actVal);
+        inp.addEventListener("change", async () => {
+          const a = getActivities().find((x) => x.id === inp.dataset.actVal);
           if (!a) return;
-          a.value = Math.max(0, Math.min(100, +inp.value || 0));
-          saveActivities(acts);
-          toast("Score updated", `“${a.name}” set to ${a.value}.`, "success");
+          const value = Math.max(0, Math.min(100, +inp.value || 0));
+          inp.disabled = true;
+          const error = await recordActivityScore(a.id, value, ctx.user.id);
+          inp.disabled = false;
+          if (error) return toast("Could not update", authMessage(error), "error");
+          await loadMeIndicators();
+          toast("Score updated", `“${a.name}” set to ${value}.`, "success");
           renderAnalytics();
         })
       );
       body.querySelectorAll("[data-act-del]").forEach((btn) =>
-        btn.addEventListener("click", () => {
-          const acts = getActivities();
-          const a = acts.find((x) => x.id === btn.dataset.actDel);
-          saveActivities(acts.filter((x) => x.id !== btn.dataset.actDel));
+        btn.addEventListener("click", async () => {
+          const a = getActivities().find((x) => x.id === btn.dataset.actDel);
+          btn.disabled = true;
+          // me_indicator_values.indicator_id cascades, so this takes the
+          // measurements with it — no orphaned scores left behind.
+          const { error } = await supabase.from("me_indicators").delete().eq("id", btn.dataset.actDel);
+          if (error) { btn.disabled = false; return toast("Could not remove", authMessage(error), "error"); }
+          await loadMeIndicators();
           toast("Activity removed", a ? `“${a.name}” deleted.` : "", "success");
           renderAnalytics();
         })
@@ -6420,63 +6610,104 @@ export function wireMyDashboard(user, events) {
     body.querySelector("[data-add-user-cancel]")?.addEventListener("click", () => {
       if (form) { form.reset(); form.hidden = true; }
     });
-    form?.addEventListener("submit", (e) => {
+    // Show the fields that actually apply: a learner gets username+password
+    // (there is no email to invite), everyone else gets email and no password
+    // field at all — they set their own from the emailed link.
+    const newUserRole = body.querySelector("[data-newuser-role]");
+    newUserRole?.addEventListener("change", () => {
+      const learner = newUserRole.value === LOCAL_ONLY_ROLE;
+      body.querySelector("[data-newuser-email]").hidden = learner;
+      body.querySelector("[data-newuser-learner]").hidden = !learner;
+      body.querySelector("[data-newuser-hint]").textContent = learner
+        ? "Learners have no email address, so they cannot hold a database account. This one is created on this device only, and signs in here with a username."
+        : "Created in the HPF database and emailed a link to set their own password — no password is typed here, and the account works on every device.";
+    });
+
+    form?.addEventListener("submit", async (e) => {
       e.preventDefault();
       const data = Object.fromEntries(new FormData(form).entries());
       data.role = data.role || "teacher";
-      if (!(data.fullName || "").trim()) return toast("Name required", "", "error");
-      if (data.role === "learner") {
-        if (!data.username) return toast("Username required", "Learners sign in with a username.", "error");
-        delete data.email;
-      } else {
-        if (!data.email) return toast("Email required", "Enter an email for this account.", "error");
-      }
-      // anyone with an organisation email belongs to HPF staff, not this table
-      if ((data.email || "").trim().toLowerCase().endsWith("@" + ORG_DOMAIN)) data.role = "staff";
-      // This table is this browser's localStorage, so a staff/admin account
-      // created here could not sign in anywhere else. Hand both tiers to the
-      // panel that makes real ones.
-      if (data.role === "staff" || data.role === "admin") {
-        adminFormOpen = true;
-        adminPromoteOpen = false;
-        toast(
-          "Staff accounts are created in the database",
-          "A staff or admin account has to work on every device, so it can't live in this table. Use the HPF Staff & Admins panel, just above."
-        );
+      const fullName = (data.fullName || "").trim();
+      if (!fullName) return toast("Name required", "", "error");
+
+      // ---- learner: the one role that genuinely belongs on this device ----
+      if (data.role === LOCAL_ONLY_ROLE) {
+        const username = (data.username || "").trim();
+        if (username.length < 3) return toast("Username required", "Learners sign in with a username (3+ characters).", "error");
+        if ((data.password || "").length < 6) return toast("Weak password", "Min. 6 characters.", "error");
+        const users = read(K_USERS, []);
+        if (users.some((u) => (u.username || "").toLowerCase() === username.toLowerCase()))
+          return toast("Duplicate username", "That username is already taken on this device.", "error");
+        users.push({
+          id: uid(), fullName, role: LOCAL_ONLY_ROLE, username, password: data.password,
+          project: data.project || "", region: data.region || "", school: data.school || "",
+          createdAt: Date.now(),
+        });
+        write(K_USERS, users);
+        toast("Learner added", `${fullName} can sign in on this device.`, "success");
         return renderRole(role);
       }
-      if ((data.password || "").length < 6) return toast("Weak password", "Min. 6 characters.", "error");
 
-      const users = read(K_USERS, []);
-      const key = (data.email || data.username || "").toLowerCase();
-      if (users.some((u) => (u.email || u.username || "").toLowerCase() === key))
-        return toast("Duplicate account", "An account with those details already exists.", "error");
+      // ---- every other role: a real database account, or nothing ----
+      // An org email means HPF staff regardless of what was picked.
+      const email = (data.email || "").trim().toLowerCase();
+      if (!email) return toast("Email required", "Every role except Learner signs in with an email.", "error");
+      if (email.endsWith("@" + ORG_DOMAIN)) data.role = "staff";
+      // Admin is the one role the database reserves for an existing admin to
+      // grant (patch-14's guard_profile_role). Inviting straight to it would
+      // be refused server-side after the auth account already existed, which
+      // is a worse outcome than saying so here — the Staff & Admins panel
+      // promotes an existing account instead.
+      if (data.role === "admin") {
+        adminFormOpen = true;
+        adminPromoteOpen = false;
+        toast("Invite as Staff first", "Admin is granted by promoting an existing account, in the HPF Staff & Admins panel above.");
+        return renderRole(role);
+      }
 
-      users.push({ ...data, id: uid(), createdAt: Date.now() });
-      write(K_USERS, users);
-      toast("User added", `${data.fullName} created as ${ROLE_LABEL[data.role]}.`, "success");
-      renderRole(role);
+      const submit = form.querySelector("[type=submit]");
+      if (submit) submit.disabled = true;
+      try {
+        await createStaffAccount({
+          fullName, email, role: data.role,
+          school: data.school || null, county: data.region || null, project: data.project || null,
+        });
+        await loadProfiles();
+        form.reset();
+        form.hidden = true;
+        toast("Invite sent", `${fullName} has been emailed a link to set their password, and can sign in on any device as ${ROLE_LABEL[data.role]}.`, "success");
+        renderRole(role);
+      } catch (err) {
+        toast("Could not create account", err.message, "error");
+      } finally {
+        if (submit) submit.disabled = false;
+      }
     });
 
-    // Remove a user
+    // Remove a user. A local learner is deleted outright; a database account
+    // is demoted to learner, which is all the browser can do — deleting an
+    // auth user needs the service_role key, which must never reach a client.
     body.querySelectorAll("[data-remove-user]").forEach((btn) =>
-      btn.addEventListener("click", () => {
+      btn.addEventListener("click", async () => {
         const id = btn.dataset.removeUser;
-        const users = read(K_USERS, []);
-        const u = users.find((x) => x.id === id);
-        write(K_USERS, users.filter((x) => x.id !== id));
-        toast("User removed", u ? `${u.fullName || u.username} deleted.` : "", "success");
-        renderRole(role);
-      })
-    );
-
-    // reveal / hide a password in the table
-    body.querySelectorAll("[data-pw-toggle]").forEach((btn) =>
-      btn.addEventListener("click", () => {
-        const span = btn.parentElement.querySelector(".pw-mask");
-        const shown = span.dataset.shown === "1";
-        span.textContent = shown ? "••••••••" : span.dataset.pw;
-        span.dataset.shown = shown ? "0" : "1";
+        const u = directoryUsers().find((x) => x.id === id);
+        if (!u) return;
+        if (u.local) {
+          const users = read(K_USERS, []);
+          write(K_USERS, users.filter((x) => x.id !== id));
+          toast("Learner removed", `${u.fullName || u.username} deleted from this device.`, "success");
+          return renderRole(role);
+        }
+        btn.disabled = true;
+        try {
+          await removeStaffMember(id);
+          await loadProfiles();
+          toast("Access removed", `${u.fullName || u.email} no longer has a portal role. Their sign-in still exists — give them a role again to restore access.`, "success");
+          renderRole(role);
+        } catch (err) {
+          btn.disabled = false;
+          toast("Could not remove", err.message, "error");
+        }
       })
     );
 
@@ -7006,7 +7237,7 @@ export function wireMyDashboard(user, events) {
     }
     wireInterventions();
 
-    // --- edit a user's full credentials (incl. password) ---
+    // --- edit an account (database) or a local learner (this device) ---
     body.querySelectorAll("[data-edit-user]").forEach((btn) =>
       btn.addEventListener("click", () => { editUserId = btn.dataset.editUser; renderRole(role); })
     );
@@ -7028,77 +7259,86 @@ export function wireMyDashboard(user, events) {
       if (data.password && data.password.length < 6)
         return toast("Weak password", "Password must be at least 6 characters.", "error");
 
-      const uid = form.dataset.uid;
+      const targetId = form.dataset.uid;
+      const fullName = data.fullName.trim();
+
+      // ---- local learner: this device is genuinely where they live ----
+      if (form.dataset.local === "1") {
+        const username = (data.username || "").trim();
+        if (username.length < 3) return toast("Username required", "Learners sign in with a username (3+ characters).", "error");
+        const users = read(K_USERS, []);
+        const u = users.find((x) => x.id === targetId);
+        if (!u) return toast("Learner not found", "", "error");
+        if (users.some((x) => x.id !== targetId && (x.username || "").toLowerCase() === username.toLowerCase()))
+          return toast("Duplicate username", "That username is already taken on this device.", "error");
+        // Role is deliberately absent from this patch: `learner` is the only
+        // role this store can hold, so there is nothing to change and no way
+        // to mark a local row as staff or admin.
+        Object.assign(u, { fullName, username, school: data.school || "" });
+        if (data.password) u.password = data.password;
+        write(K_USERS, users);
+        const lsess = read(K_SESSION, null);
+        if (lsess && lsess.id === targetId) {
+          Object.assign(lsess, { fullName, username, school: data.school || "" });
+          write(K_SESSION, lsess);
+        }
+        editUserId = null;
+        toast("Learner updated", `${fullName} saved on this device.`, "success");
+        return renderRole(role);
+      }
+
+      // ---- database account: Postgres is the only place this is written ----
       // Named to avoid shadowing wireAdmin's own `role` (the dashboard tab
       // being viewed) — they are different things, and re-rendering the page
       // as the *edited* user's new role would throw the viewer out of their
       // own workspace.
-      let newRole = data.role;
+      const target = directoryUsers().find((x) => x.id === targetId);
+      let newRole = data.role || target?.role;
       // An org email means HPF staff. Not admin: admin is only ever granted
       // deliberately, one row at a time, by an existing admin (patch-14).
-      if ((data.email || "").trim().toLowerCase().endsWith("@" + ORG_DOMAIN) &&
-          newRole !== "admin") newRole = "staff";
+      if ((target?.email || "").toLowerCase().endsWith("@" + ORG_DOMAIN) && newRole !== "admin") newRole = "staff";
 
       const patch = {
-        full_name: data.fullName.trim(),
-        email: (data.email || "").trim() || null,
-        username: (data.username || "").trim() || null,
+        full_name: fullName,
         role: newRole,
         project: data.project || null,
         county: data.region || null,
         school: data.school || null,
       };
 
-      /* Write to Postgres when this is a real account. RLS lets staff/admin
-         update any profile, and guard_profile_role exempts is_staff() for every
-         role change except granting admin, which needs is_admin() — so a staff
-         viewer setting someone to "admin" here is silently reverted by the
-         database rather than failing loudly. A local-only account has no row and
-         falls through to the localStorage path unchanged. */
-      const { data: authUser } = await supabase.auth.getUser();
-      let wroteRemote = false;
-      if (authUser?.user) {
-        const me = authUser.user.id;
-        if (uid === me && newRole !== "admin" && newRole !== "staff") {
-          const ok = confirm(
-            "This removes your own staff access. You will lose the staff dashboard " +
-            "as soon as the page reloads, and only another staff member or admin can " +
-            "restore it. Continue?"
-          );
-          if (!ok) return;
-        }
-        const { error, count } = await supabase
-          .from("profiles").update(patch, { count: "exact" }).eq("id", uid).select("id");
-        if (error) return toast("Could not save", authMessage(error), "error");
-        wroteRemote = (count || 0) > 0;
+      /* RLS is what actually decides this, not the form. guard_profile_role
+         exempts is_staff() for every role change except granting admin, which
+         needs is_admin() — so a staff viewer setting someone to "admin" is
+         reverted by the database rather than refused. The read-back below is
+         what catches that, instead of reporting a success that didn't happen. */
+      if (targetId === ctx.user.id && newRole !== "admin" && newRole !== "staff") {
+        const ok = confirm(
+          "This removes your own staff access. You will lose the staff dashboard " +
+          "as soon as the page reloads, and only another staff member or admin can " +
+          "restore it. Continue?"
+        );
+        if (!ok) return;
+      }
+      const { data: saved, error } = await supabase
+        .from("profiles").update(patch).eq("id", targetId).select("role").maybeSingle();
+      if (error) return toast("Could not save", authMessage(error), "error");
+      if (!saved) {
+        return toast("Could not save", "The database has no account with that id, and this panel does not keep a second copy.", "error");
+      }
+      if (saved.role !== newRole) {
+        await loadProfiles();
+        editUserId = null;
+        renderRole(role);
+        return toast(
+          "Role change refused",
+          `Everything else was saved, but only an HPF admin can grant ${ROLE_LABEL[newRole] || newRole}. ${fullName} is still ${ROLE_LABEL[saved.role] || saved.role}.`,
+          "error"
+        );
       }
 
-      // Mirror locally so legacy accounts and the open session stay consistent.
-      const users = read(K_USERS, []);
-      const u = users.find((x) => x.id === uid);
-      if (u) {
-        Object.assign(u, {
-          fullName: patch.full_name, email: patch.email || "", username: patch.username || "",
-          role: newRole, project: patch.project || "", region: patch.county || "", school: patch.school || "",
-        });
-        if (data.password) u.password = data.password;
-        write(K_USERS, users);
-      }
-      const sess = read(K_SESSION, null);
-      if (sess && sess.id === uid) {
-        Object.assign(sess, {
-          fullName: patch.full_name, email: patch.email || "", username: patch.username || "",
-          role: newRole, project: patch.project || "", region: patch.county || "",
-          county: patch.county || "", school: patch.school || "",
-        });
-        write(K_SESSION, sess);
-      }
-
+      await loadProfiles();
       editUserId = null;
-      toast("User updated",
-        wroteRemote ? `${patch.full_name} saved to the HPF database.`
-                    : `${patch.full_name} saved in this browser only — no database account matches.`,
-        wroteRemote ? "success" : "error");
+      toast("Account updated", `${fullName} saved to the HPF database — the change applies on every device.`, "success");
       renderRole(role);
     });
 
@@ -7118,19 +7358,32 @@ export function wireMyDashboard(user, events) {
     body.querySelectorAll("[data-lib-open]").forEach((b) =>
       b.addEventListener("click", () => openResource(getLibrary().find((r) => r.id === b.dataset.libOpen) || {}))
     );
+    body.querySelector("[data-lib-retry]")?.addEventListener("click", () => {
+      libraryLoaded = false;
+      renderRole(role);
+      loadLibrary().then(() => renderRole(role));
+    });
     body.querySelectorAll("[data-lib-publish]").forEach((b) =>
-      b.addEventListener("click", () => {
-        const lib = getLibrary();
-        const r = lib.find((x) => x.id === b.dataset.libPublish);
-        if (r) { r.published = !r.published; saveLibrary(lib); toast(r.published ? "Published" : "Unpublished", `“${r.title}” is now ${r.published ? "available to teachers" : "hidden"}.`, "success"); }
+      b.addEventListener("click", async () => {
+        const r = getLibrary().find((x) => x.id === b.dataset.libPublish);
+        if (!r) return;
+        b.disabled = true;
+        const next = !r.published;
+        const { error } = await supabase
+          .from("digital_learning").update({ published: next }).eq("id", r.id);
+        if (error) { b.disabled = false; return toast("Could not update", authMessage(error), "error"); }
+        await loadLibrary();
+        toast(next ? "Published" : "Unpublished", `“${r.title}” is now ${next ? "available to teachers" : "hidden"}.`, "success");
         renderRole(role);
       })
     );
     body.querySelectorAll("[data-lib-delete]").forEach((b) =>
-      b.addEventListener("click", () => {
-        const lib = getLibrary();
-        const r = lib.find((x) => x.id === b.dataset.libDelete);
-        saveLibrary(lib.filter((x) => x.id !== b.dataset.libDelete));
+      b.addEventListener("click", async () => {
+        const r = getLibrary().find((x) => x.id === b.dataset.libDelete);
+        b.disabled = true;
+        const { error } = await supabase.from("digital_learning").delete().eq("id", b.dataset.libDelete);
+        if (error) { b.disabled = false; return toast("Could not delete", authMessage(error), "error"); }
+        await loadLibrary();
         toast("Deleted", r ? `“${r.title}” removed from the library.` : "", "success");
         renderRole(role);
       })
@@ -7143,15 +7396,23 @@ export function wireMyDashboard(user, events) {
       if (!title) return toast("Title required", "Give the resource a title.", "error");
       const fileInput = form.querySelector("[data-lib-file]");
       const file = fileInput?.files?.[0];
+      const submit = form.querySelector("[type=submit]");
 
-      const add = (extra) => {
-        const lib = getLibrary();
-        lib.unshift({
-          id: uid(), title, category: data.category || "Other", type: data.type || "document",
-          description: (data.description || "").trim(), url: (data.url || "").trim(),
-          published: true, createdAt: Date.now(), ...extra,
+      const add = async (href, fileName) => {
+        if (submit) submit.disabled = true;
+        const { error } = await supabase.from("digital_learning").insert({
+          title,
+          kind: data.type || "document",
+          category: data.category || "Other",
+          description: (data.description || "").trim() || null,
+          url: href,
+          file_name: fileName || null,
+          published: true,
+          created_by: ctx.user.id,
         });
-        saveLibrary(lib);
+        if (submit) submit.disabled = false;
+        if (error) return toast("Could not add resource", authMessage(error), "error");
+        await loadLibrary();
         adminLibOpen = false;
         toast("Added to library", `“${title}” is published and available to teachers.`, "success");
         renderRole(role);
@@ -7160,12 +7421,12 @@ export function wireMyDashboard(user, events) {
       if (file) {
         if (file.size > 800 * 1024) return toast("File too large", "Keep uploads under 800 KB, or paste a link instead.", "error");
         const reader = new FileReader();
-        reader.onload = () => add({ dataUrl: reader.result, fileName: file.name });
+        reader.onload = () => add(reader.result, file.name);
         reader.readAsDataURL(file);
       } else if (!(data.url || "").trim()) {
         return toast("Add a link or file", "Paste a URL or choose a file to upload.", "error");
       } else {
-        add({});
+        add((data.url || "").trim(), null);
       }
     });
   }
@@ -7535,7 +7796,11 @@ export function wireMyDashboard(user, events) {
       if (data.libId) {
         const lib = getLibrary().find((r) => r.id === data.libId);
         if (!lib) return toast("Resource not found", "", "error");
-        return finish({ libId: lib.id, title: lib.title, type: lib.type, url: lib.url, dataUrl: lib.dataUrl, fileName: lib.fileName, description: lib.description });
+        // Only the reference plus display metadata — never a copy of the href.
+        // The library row in Postgres stays the single source of the actual
+        // file/link, so an admin re-pointing or unpublishing a resource is
+        // reflected everywhere it was shared instead of leaving stale copies.
+        return finish({ libId: lib.id, title: lib.title, type: lib.type, fileName: lib.fileName, description: lib.description });
       }
       // 2) a new resource — title required, plus a link or file
       const title = (data.title || "").trim();
@@ -8704,6 +8969,12 @@ export function wireMyDashboard(user, events) {
         enterAccount(btn.dataset.enterAccount);
       })
     );
+    // The library is read by admin (manage), teacher (share) and learner
+    // (browse) alike, so it loads here rather than in any one role's wiring.
+    // loadLibrary() sets libraryLoaded even on failure, so this fires once per
+    // page load and the re-render below can never re-arm it — the same guard
+    // discipline the programmeDataLoaded render-loop fix established.
+    if (!libraryLoaded) loadLibrary().then(() => renderRole(role));
     runCounters();
   }
 

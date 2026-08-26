@@ -178,6 +178,17 @@ function legacyLogin(id, password) {
    real accounts, in localStorage for learners. */
 const Repo = {
   events: () => read(K_EVENTS, []),
+  /* A learner has no Supabase account, so they cannot satisfy login_events'
+     `to authenticated` insert policy. patch-21's record_local_login() RPC is
+     the narrow, anon-callable exception that gives their sign-ins the same
+     Postgres home every other role's already had — without it, a learner's
+     login existed only in that learner's own browser, and the admin's
+     "Logins this week" chart silently counted only the sign-ins that had
+     happened on the admin's own device.
+
+     The localStorage copy stays, but it is now a cache, not the record: the
+     admin inbox reads Postgres (see allEvents), and this local array only
+     backs the same-device offline case and the cross-tab storage listener. */
   recordLocal(user, type) {
     const events = Repo.events();
     events.unshift({
@@ -191,6 +202,15 @@ const Repo = {
       to: ADMIN_EMAIL,
     });
     write(K_EVENTS, events.slice(0, 200));
+    // Best-effort, same as record(): a failed audit write must never block a
+    // valid sign-in, and offline is the normal case for these accounts.
+    supabase
+      .rpc("record_local_login", {
+        p_type: type,
+        p_name: user.fullName || user.username || "Unknown",
+        p_identifier: user.username || user.email || "",
+      })
+      .then(({ error }) => { if (error) console.warn("record_local_login failed:", error.message); });
   },
   async record(user, type) {
     if (isLearnerRole(user.role)) return Repo.recordLocal(user, type);
@@ -222,14 +242,17 @@ const Repo = {
       console.warn("login_events fetch failed:", error.message);
       return local; // degrade to the partial local picture rather than an empty inbox
     }
-    const remote = (data || []).map((e) => ({
+    // Postgres is the whole picture now: patch-21 gave learner/legacy logins
+    // their own rows (source='local') via record_local_login(), so this no
+    // longer merges in Repo.events(). Merging would double-count every local
+    // sign-in that happened in *this* browser while under-counting every one
+    // that happened in someone else's — the exact asymmetry that made the
+    // admin's login chart device-dependent before this patch.
+    return (data || []).map((e) => ({
       id: e.id, type: e.type, name: e.name, identifier: e.identifier,
       role: e.role, at: Date.parse(e.created_at), status: "delivered", to: e.delivered_to,
+      source: e.source || "supabase",
     }));
-    // Never both for the same event: record() sends a learner to recordLocal
-    // and everyone else to Postgres, never both, so this is a merge of two
-    // disjoint sets, not deduplication.
-    return [...remote, ...local].sort((a, b) => b.at - a.at).slice(0, 200);
   },
 };
 
