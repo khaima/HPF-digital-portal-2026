@@ -404,6 +404,43 @@ async function loadDeviceIssues() {
   return deviceIssuesCache;
 }
 
+/* M&E indicators (patch-19) — org-wide only for this first pass (school_id
+   is null), display only: no admin UI yet to define an indicator or set a
+   target, so an empty result here is a genuinely empty database, not a
+   bug — rendered honestly via notTracked() rather than hidden. */
+let meIndicatorsCache = [];
+let meIndicatorValuesCache = [];
+let meTargetsCache = [];
+let meIndicatorsLoaded = false;
+async function loadMeIndicators() {
+  const [indRes, valRes, tgtRes] = await Promise.all([
+    supabase.from("me_indicators").select("*").order("name"),
+    supabase.from("me_indicator_values").select("*").is("school_id", null).order("period_year", { ascending: false }),
+    supabase.from("me_targets").select("*").is("school_id", null).order("period_year", { ascending: false }),
+  ]);
+  meIndicatorsLoaded = true;
+  if (!indRes.error) meIndicatorsCache = indRes.data || [];
+  if (!valRes.error) meIndicatorValuesCache = valRes.data || [];
+  if (!tgtRes.error) meTargetsCache = tgtRes.data || [];
+  return meIndicatorsCache;
+}
+
+function meIndicatorsPanel() {
+  if (!meIndicatorsLoaded) return `<div class="empty-state">Loading indicators…</div>`;
+  if (!meIndicatorsCache.length) return notTracked("no M&E indicators have been defined yet.");
+
+  const bars = meIndicatorsCache.map((ind) => {
+    // Caches are ordered by period_year descending, so the first match per
+    // indicator is its latest org-wide figure.
+    const value = meIndicatorValuesCache.find((v) => v.indicator_id === ind.id);
+    const target = meTargetsCache.find((t) => t.indicator_id === ind.id);
+    if (!value && !target) return "";
+    return hbar(ind.name, value?.value ?? 0, target?.target_value || value?.value || 1, "var(--primary)", ind.unit ? ` ${ind.unit}` : "");
+  }).filter(Boolean).join("");
+
+  return bars || notTracked("no measurements have been recorded against these indicators yet.");
+}
+
 /* Creates the account as Staff, not Admin — matching the panel's own
    "Add staff member" framing (patch-14): Staff is the entry tier, Admin is
    reached by promoting an existing Staff account, one row at a time.
@@ -2587,6 +2624,10 @@ function adminScorecard(s) {
 
     ${returnsScorecardPanel()}
 
+    ${chartPanel("M&amp;E Indicators",
+      meIndicatorsPanel(), "meindicators",
+      "Org-wide progress against HPF's monitoring &amp; evaluation targets.")}
+
     ${chartPanel("HPF Schools — Satellite Map &amp; Stories",
       schoolMapPanel(s), "schoolmap",
       "Schools grouped by county. Click a school to see its satellite view and add or edit its story.")}
@@ -3345,6 +3386,24 @@ let classesCache = [];         // Postgres classes, this session's RLS-visible s
 let classesLoaded = false;
 let classesError = null;
 let classesAuthed = false;     // real Supabase session at all? (false for local/legacy accounts)
+
+/* ---------------------------------------------------------- attendance (patch-18)
+   One row per learner per class per day. Loaded per-class (not globally) —
+   a coach only ever needs their own class's history, and this keeps the
+   query small as the table grows across a school year. */
+let attendanceCache = [];
+let attendanceLoadedForClassId = null; // which class's rows are currently in attendanceCache
+let attendanceError = null;
+let attendanceDate = new Date().toISOString().slice(0, 10); // YYYY-MM-DD, defaults to today
+
+async function loadAttendance(classId) {
+  const { data, error } = await supabase.from("attendance_records").select("*").eq("class_id", classId);
+  attendanceLoadedForClassId = classId;
+  if (error) { attendanceError = authMessage(error); return attendanceCache; }
+  attendanceError = null;
+  attendanceCache = data || [];
+  return attendanceCache;
+}
 
 // Guards the Programme Overview mount-time load below: without this, its own
 // "re-render once the data lands" was re-entering wireBody, which re-ran the
@@ -4473,6 +4532,78 @@ function simulateAssessment(a, cls) {
     });
 }
 
+/* Attendance (patch-18) — mark present/absent/late/excused per learner for
+   one day at a time. RLS already limits a write to this coach's own class
+   roster (verified against the live database before this shipped), so
+   nothing here re-implements that check client-side.
+
+   Only learners with a REAL learners.id can be marked: a roster entry
+   added before this feature existed (or enrolled via a portal account,
+   which links by name only, not a learners row) has no valid id for
+   attendance_records.learner_id to reference — l.id falls back to the
+   enrollment's own id in that case (see loadClasses()), which is exactly
+   what distinguishes the two: a genuine learner record's id never equals
+   its own _enrollmentId. */
+const ATTENDANCE_STATUSES = [
+  { id: "present", label: "Present", icon: "check" },
+  { id: "late", label: "Late", icon: "clock" },
+  { id: "absent", label: "Absent", icon: "alert" },
+  { id: "excused", label: "Excused", icon: "info" },
+];
+
+function attendancePanel(cls) {
+  const today = new Date().toISOString().slice(0, 10);
+  const head = `
+    <div class="panel-head-row">
+      <div>
+        <h2>${icon("check")} Attendance</h2>
+        <p class="panel-sub" style="margin-bottom:0">Mark who was here for ${esc(cls.name)}, one day at a time</p>
+      </div>
+      <div class="field" style="margin:0"><label style="margin-bottom:.2rem">Session date</label>
+        <input class="input" type="date" data-attendance-date value="${esc(attendanceDate)}" max="${today}"></div>
+    </div>`;
+
+  const wrap = (inner) => `<div class="panel" style="margin-top:1.5rem" data-attendance-panel>${head}${inner}</div>`;
+
+  if (attendanceLoadedForClassId !== cls.id) return wrap(`<div class="empty-state">Loading attendance…</div>`);
+  if (attendanceError) {
+    return wrap(`<div class="empty-state">Could not load attendance — ${esc(attendanceError)}
+      <div style="margin-top:.6rem"><button class="btn btn-outline btn-xs" data-attendance-retry>${icon("refresh")} Try again</button></div>
+    </div>`);
+  }
+  if (!cls.learners.length) {
+    return wrap(`<div class="empty-state">No learners enrolled in ${esc(cls.name)} yet — add some from the Learners tab first.</div>`);
+  }
+
+  const byLearner = new Map(
+    attendanceCache.filter((a) => a.session_date === attendanceDate).map((a) => [a.learner_id, a.status])
+  );
+
+  const rows = cls.learners.map((l) => {
+    const trackable = l.id !== l._enrollmentId; // see header comment
+    if (!trackable) {
+      return `<div class="submission">
+        <span class="avatar-sm">${esc((l.name || "L").slice(0, 1).toUpperCase())}</span>
+        <div style="flex:1;min-width:0"><div class="s-title">${esc(l.name)}</div>
+          <div class="s-meta">Not trackable yet — remove and re-add this learner to enable attendance.</div></div>
+      </div>`;
+    }
+    const current = byLearner.get(l.id);
+    return `<div class="submission">
+      <span class="avatar-sm">${esc((l.name || "L").slice(0, 1).toUpperCase())}</span>
+      <div style="flex:1;min-width:0"><div class="s-title">${esc(l.name)}</div></div>
+      <div style="display:flex;gap:.35rem;flex-wrap:wrap" data-attendance-row="${esc(l.id)}">
+        ${ATTENDANCE_STATUSES.map((s) => `
+          <button type="button" class="btn btn-xs ${current === s.id ? "btn-primary" : "btn-outline"}"
+            data-attendance-mark="${s.id}" data-learner-id="${esc(l.id)}">${icon(s.icon)} ${s.label}</button>
+        `).join("")}
+      </div>
+    </div>`;
+  }).join("");
+
+  return wrap(rows);
+}
+
 /* People — school-scoped list of teachers & learners the teacher may edit,
    filterable by grade, collapsible to save space */
 function coachPeople(cls, scoped) {
@@ -4644,6 +4775,7 @@ function teacherBody() {
       { id: "assignments", label: "Plan & Assign", icon: "clipboard" },
       { id: "assessments", label: "Assessments", icon: "trophy" },
       { id: "learners", label: "Learners", icon: "graduation" },
+      { id: "attendance", label: "Attendance", icon: "check" },
       { id: "people", label: "People", icon: "users" },
       { id: "results", label: "Results", icon: "chartColumn" },
     ],
@@ -4682,6 +4814,7 @@ function teacherBody() {
   let content;
   if (coachState.tab === "assignments") content = coachAssignments(list, learners, cls, classes);
   else if (coachState.tab === "assessments") content = coachAssessments(cls, classes);
+  else if (coachState.tab === "attendance") content = attendancePanel(cls);
   else if (coachState.tab === "people") content = coachPeople(cls, scoped);
   else if (coachState.tab === "results") content = coachResults(list, learners, cls);
   else if (coachState.tab === "learners")
@@ -5719,7 +5852,7 @@ export function wireMyDashboard(user, events) {
     // of the dashboard visibly shaking/blinking non-stop).
     if (!programmeDataLoaded) {
       const classesPromise = classesLoaded ? Promise.resolve(classesCache) : loadClasses();
-      Promise.allSettled([loadSchools(), loadReturns(), loadRevisions(), loadGrades(), loadFieldReports(), classesPromise, loadDeviceIssues()]).then(() => {
+      Promise.allSettled([loadSchools(), loadReturns(), loadRevisions(), loadGrades(), loadFieldReports(), classesPromise, loadDeviceIssues(), loadMeIndicators()]).then(() => {
         programmeDataLoaded = true;
         // Full re-render, not just renderAnalytics(): Programme Overview (a
         // sibling of the analytics panel, not inside it) reads the same
@@ -6428,6 +6561,48 @@ export function wireMyDashboard(user, events) {
       })
     );
 
+    // Attendance: lazy-loaded per class, on entering the tab (or switching
+    // classes while already on it) rather than at every mount — most
+    // coaches never open it in a given session. Idempotent: re-runs on
+    // every wire pass but only actually fetches once the cache no longer
+    // matches the class currently in view.
+    if (coachState.tab === "attendance") {
+      const { cls: attendanceCls } = currentClass();
+      if (attendanceCls && attendanceLoadedForClassId !== attendanceCls.id) {
+        loadAttendance(attendanceCls.id).then(() => renderRole("teacher"));
+      }
+    }
+    body.querySelector("[data-attendance-date]")?.addEventListener("change", (e) => {
+      attendanceDate = e.target.value;
+      renderRole("teacher");
+    });
+    body.querySelector("[data-attendance-retry]")?.addEventListener("click", () => {
+      const { cls: retryCls } = currentClass();
+      if (retryCls) attendanceLoadedForClassId = null; // force loadAttendance to re-run above
+      renderRole("teacher");
+    });
+    body.querySelectorAll("[data-attendance-mark]").forEach((btn) =>
+      btn.addEventListener("click", async () => {
+        const { cls: markCls } = currentClass();
+        if (!markCls) return;
+        const learnerId = btn.dataset.learnerId;
+        const status = btn.dataset.attendanceMark;
+        const row = body.querySelector(`[data-attendance-row="${CSS.escape(learnerId)}"]`);
+        row?.querySelectorAll("button").forEach((b) => (b.disabled = true));
+        const { error } = await supabase.from("attendance_records")
+          .upsert(
+            { learner_id: learnerId, class_id: markCls.id, session_date: attendanceDate, status, recorded_by: ctx.user.id },
+            { onConflict: "learner_id,class_id,session_date" }
+          );
+        if (error) {
+          row?.querySelectorAll("button").forEach((b) => (b.disabled = false));
+          return toast("Could not save attendance", authMessage(error), "error");
+        }
+        await loadAttendance(markCls.id);
+        renderRole("teacher");
+      })
+    );
+
     // --- People tab: filter, collapse, enroll, edit users, reveal password ---
     body.querySelector("[data-people-grade]")?.addEventListener("change", (e) => {
       coachState.peopleGrade = e.target.value;
@@ -6910,9 +7085,30 @@ export function wireMyDashboard(user, events) {
       const btn = form.querySelector("[type=submit]");
       if (btn) { btn.disabled = true; btn.textContent = "Adding…"; }
 
+      // A real learners row per name-only entry, so attendance (patch-18+)
+      // and any future per-learner record has something valid to reference
+      // — learners.id never needed a profiles row, unlike the old reasoning
+      // above assumed before this table existed. Best-effort: learners' RLS
+      // scopes a write by the inserting teacher's OWN profile.school
+      // matching, not by class ownership, so this can fail for a mismatched
+      // profile without that being a reason to block the roster entry
+      // itself — learner_id just stays null then, exactly as it always has.
+      const nameOnlyRows = rows.filter((r) => !r.is_account);
+      if (nameOnlyRows.length) {
+        const { data: school } = await supabase.from("schools").select("id").eq("name", cls.school).maybeSingle();
+        if (school?.id) {
+          const { data: newLearners, error: learnerErr } = await supabase
+            .from("learners")
+            .insert(nameOnlyRows.map((r) => ({ full_name: r.name, school_id: school.id })))
+            .select();
+          if (learnerErr) console.warn("Could not create learners rows (roster entry still added, just without one):", learnerErr.message);
+          else newLearners.forEach((l, i) => { nameOnlyRows[i].learner_id = l.id; });
+        }
+      }
+
       const { data: inserted, error } = await supabase
         .from("enrollments")
-        .insert(rows.map((r) => ({ class_id: cls.id, name: r.name, is_account: r.is_account })))
+        .insert(rows.map((r) => ({ class_id: cls.id, name: r.name, is_account: r.is_account, learner_id: r.learner_id ?? null })))
         .select();
 
       if (error) {
@@ -6923,7 +7119,7 @@ export function wireMyDashboard(user, events) {
       inserted.forEach((e, i) => {
         const src = rows[i];
         cls.learners.push({
-          id: src._localId || e.id, name: e.name, active: e.active_label || "just now",
+          id: src._localId || src.learner_id || e.id, name: e.name, active: e.active_label || "just now",
           account: e.is_account, _enrollmentId: e.id,
         });
       });
