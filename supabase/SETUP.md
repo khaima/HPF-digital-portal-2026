@@ -33,6 +33,13 @@ frontend static (it still deploys on GitHub Pages).
    | 16 | [`patch-14-staff-tier.sql`](patch-14-staff-tier.sql) | Splits Admin into Staff (full access) + Admin (full access, plus the exclusive power to grant Admin) |
    | 17 | [`patch-15-staff-invite.sql`](patch-15-staff-invite.sql) | `profiles.needs_password` — tracks admin-invited staff who still need to set their own password |
    | 18 | [`patch-16-admin-manage-staff.sql`](patch-16-admin-manage-staff.sql) | Only Admin can edit or remove an existing Staff/Admin row — Staff keeps inviting new ones and viewing the list |
+   | 19 | [`patch-17-updated-at.sql`](patch-17-updated-at.sql) | Adds `updated_at` (+ trigger) to every mutable table that only had `created_at` |
+   | 20 | [`patch-18-attendance.sql`](patch-18-attendance.sql) | `attendance_records` — per-learner, per-class, per-day attendance |
+   | 21 | [`patch-19-me-indicators-targets.sql`](patch-19-me-indicators-targets.sql) | `me_indicators`, `me_indicator_values`, `me_targets` — M&E data model |
+   | 22 | [`patch-20-evidence.sql`](patch-20-evidence.sql) | `evidence` — generic supporting attachment, linked to any other row |
+
+   **Do not run [`seed-dev.sql`](seed-dev.sql) against this project.** It's fake
+   data for local/branch testing only — see its own header comment.
 
    **All of them are safe to re-run**, so if you are unsure what state the
    database is in, just run them all in order — that is the reliable way to
