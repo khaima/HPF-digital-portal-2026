@@ -252,7 +252,7 @@ let editAdminId = null; // row currently showing the inline "edit name" form
    identical copies. Default collapsed: these three are the longest panels on
    the dashboard and an admin opens this page daily, so the summary heading is
    what shows first and each expands only on request. */
-let collapsedPanels = { admins: true, library: true, activity: true, assignments: true, devices: true };
+let collapsedPanels = { admins: true, library: true, activity: true, assignments: true, devices: true, peopledetail: true };
 
 /* A header-row collapse button plus the wrapper its body goes in. Call
    collapseBtn(key) inside the panel's header, then wrap the existing body
@@ -384,7 +384,7 @@ let profilesAuthed = false; // same "local account, DB never saw it" check loadA
 async function loadProfiles() {
   const { data: sess } = await supabase.auth.getSession();
   profilesAuthed = !!sess?.session;
-  const { data, error } = await supabase.from("profiles").select("id, role, county, school, created_at");
+  const { data, error } = await supabase.from("profiles").select("id, full_name, email, role, county, school, created_at");
   profilesLoaded = true;
   if (error) { profilesError = authMessage(error); return profilesCache; }
   profilesError = null;
@@ -419,6 +419,29 @@ async function loadDevices() {
 }
 let deviceFormOpen = false;
 let issueFormDeviceId = null; // device currently showing its "report issue" form
+
+/* Teacher/field-officer role-specific detail (patch-13's teachers/
+   field_officers, 1:1 extensions of profiles) — no admin UI reached these
+   before this: the only "edit user" modal in this file (editUserModal,
+   userManagementPanel) operates on the local-only hpf_users array, never
+   real Supabase accounts, so a teacher's or field officer's real profile
+   had nowhere to be edited at all. This is a new, small, self-contained
+   panel rather than extending that dead end. */
+let peopleExtCache = { teachers: [], field_officers: [] };
+let peopleExtLoaded = false;
+async function loadPeopleExt() {
+  const [tRes, fRes] = await Promise.all([
+    supabase.from("teachers").select("*"),
+    supabase.from("field_officers").select("*"),
+  ]);
+  peopleExtLoaded = true;
+  if (!tRes.error) peopleExtCache.teachers = tRes.data || [];
+  if (!fRes.error) peopleExtCache.field_officers = fRes.data || [];
+  return peopleExtCache;
+}
+const teacherExtFor = (id) => peopleExtCache.teachers.find((t) => t.id === id) || null;
+const fieldOfficerExtFor = (id) => peopleExtCache.field_officers.find((f) => f.id === id) || null;
+let peopleDetailEditId = null; // profile id whose extension form is open
 
 /* M&E indicators (patch-19) — org-wide only for this first pass (school_id
    is null), display only: no admin UI yet to define an indicator or set a
@@ -793,6 +816,90 @@ function devicesPanel() {
     </form>` : "";
 
   return wrap(`${addForm}${rows}`);
+}
+
+const TEACHER_EXT_FIELDS = [
+  { key: "tsc_number", label: "TSC number", type: "text" },
+  { key: "subject_specialty", label: "Subject specialty", type: "text" },
+  { key: "employment_type", label: "Employment type", type: "select", options: ["tsc", "non_tsc", "volunteer"] },
+  { key: "date_joined", label: "Date joined", type: "date" },
+];
+const FIELD_OFFICER_EXT_FIELDS = [
+  { key: "employee_number", label: "Employee number", type: "text" },
+  { key: "region", label: "Region", type: "text" },
+  { key: "vehicle_reg", label: "Vehicle registration", type: "text" },
+  { key: "date_joined", label: "Date joined", type: "date" },
+];
+
+function extFieldInput(f, current) {
+  const val = current?.[f.key] ?? "";
+  if (f.type === "select") {
+    return `<select class="select" name="${f.key}"><option value="">—</option>${f.options
+      .map((o) => `<option ${val === o ? "selected" : ""}>${o}</option>`).join("")}</select>`;
+  }
+  return `<input class="input" type="${f.type}" name="${f.key}" value="${esc(String(val))}">`;
+}
+
+function peopleDetailRow(p, ext, fields, table) {
+  const editing = peopleDetailEditId === p.id;
+  const summary = ext
+    ? `<div class="s-meta">${fields.map((f) => `${f.label}: ${esc(String(ext[f.key] ?? "—"))}`).join(" · ")}</div>`
+    : `<div class="s-meta">No details recorded yet.</div>`;
+  const form = editing
+    ? `<form class="add-user-form" data-ext-form="${esc(p.id)}" data-ext-table="${table}" style="margin-top:.5rem">
+         <div class="form-row">
+           ${fields.map((f) => `<div class="field"><label>${esc(f.label)}</label>${extFieldInput(f, ext)}</div>`).join("")}
+         </div>
+         <div class="add-user-actions">
+           <button class="btn btn-primary btn-xs" type="submit">${icon("check")} Save</button>
+           <button class="btn btn-outline btn-xs" type="button" data-ext-cancel>Cancel</button>
+         </div>
+       </form>`
+    : "";
+  return `<div class="submission">
+    <span class="avatar-sm">${esc((p.full_name || p.email || "U").slice(0, 1).toUpperCase())}</span>
+    <div style="flex:1;min-width:0">
+      <div class="s-title">${esc(p.full_name || "—")}</div>
+      <div class="s-meta">${esc(p.email || "—")}${p.school ? " · " + esc(p.school) : ""}</div>
+      ${editing ? form : summary}
+    </div>
+    ${!editing ? `<button class="btn btn-outline btn-xs" data-ext-edit="${esc(p.id)}">${icon("pen")} Edit details</button>` : ""}
+  </div>`;
+}
+
+/* Real teacher/field-officer role detail (patch-13's teachers/
+   field_officers) — no admin UI reached these before this pass; see the
+   cache declaration above for why this is a new panel, not an extension
+   of the existing (local-only) edit-user modal. */
+function peopleDetailPanel() {
+  const head = `
+    <div class="panel-head-row">
+      <div>
+        <h2>${icon("userCheck")} People — role details</h2>
+        <p class="panel-sub" style="margin-bottom:0">TSC number, employment type, vehicle registration and the like — real database accounts only</p>
+      </div>
+      ${collapseBtn("peopledetail")}
+    </div>`;
+  const wrap = (inner) => `<div class="panel" style="margin-top:1.5rem" data-people-detail-panel>${head}${collapseBody("peopledetail", inner)}</div>`;
+
+  if (!profilesLoaded || !peopleExtLoaded) return wrap(`<div class="empty-state">Loading…</div>`);
+  if (!profilesAuthed) {
+    return wrap(`<div class="notice">${icon("info")}<span>Sign in with a staff or admin account that exists in the database to see or edit role details.</span></div>`);
+  }
+
+  const teachers = profilesCache.filter((p) => p.role === "teacher");
+  const officers = profilesCache.filter((p) => p.role === "field_officer");
+
+  const section = (title, rows, fields, table) => rows.length
+    ? `<h4 style="margin:.8rem 0 .4rem">${esc(title)}</h4>${rows.map((p) =>
+        peopleDetailRow(p, table === "teachers" ? teacherExtFor(p.id) : fieldOfficerExtFor(p.id), fields, table)
+      ).join("")}`
+    : "";
+
+  const body = section("Teachers", teachers, TEACHER_EXT_FIELDS, "teachers")
+    + section("Field officers", officers, FIELD_OFFICER_EXT_FIELDS, "field_officers");
+
+  return wrap(body || `<div class="empty-state">No teacher or field officer accounts in the database yet.</div>`);
 }
 
 /* ---------------------------------------------------------- user management */
@@ -3131,6 +3238,7 @@ function adminBody(ctx) {
     ${adminAccountsPanel(ctx.user)}
     ${officerAssignmentsPanel()}
     ${devicesPanel()}
+    ${peopleDetailPanel()}
     ${userManagementPanel(ctx.user)}
     ${digitalLibraryPanel()}
     <div class="panel" style="margin-top:1.5rem">
@@ -6147,7 +6255,7 @@ export function wireMyDashboard(user, events) {
     // of the dashboard visibly shaking/blinking non-stop).
     if (!programmeDataLoaded) {
       const classesPromise = classesLoaded ? Promise.resolve(classesCache) : loadClasses();
-      Promise.allSettled([loadSchools(), loadReturns(), loadRevisions(), loadGrades(), loadFieldReports(), classesPromise, loadDeviceIssues(), loadMeIndicators(), loadSchoolFacilities(), loadDevices()]).then(() => {
+      Promise.allSettled([loadSchools(), loadReturns(), loadRevisions(), loadGrades(), loadFieldReports(), classesPromise, loadDeviceIssues(), loadMeIndicators(), loadSchoolFacilities(), loadDevices(), loadPeopleExt()]).then(() => {
         programmeDataLoaded = true;
         // Full re-render, not just renderAnalytics(): Programme Overview (a
         // sibling of the analytics panel, not inside it) reads the same
@@ -6634,6 +6742,49 @@ export function wireMyDashboard(user, events) {
       );
     }
     wireDevices();
+
+    // --- people role detail: teachers/field_officers (patch-13) ---
+    function renderPeopleDetail() {
+      const holder = body.querySelector("[data-people-detail-panel]");
+      if (!holder) return;
+      holder.outerHTML = peopleDetailPanel();
+      wirePeopleDetail();
+    }
+    function wirePeopleDetail() {
+      const panel = body.querySelector("[data-people-detail-panel]");
+      if (!panel) return;
+      panel.querySelectorAll("[data-ext-edit]").forEach((btn) =>
+        btn.addEventListener("click", () => {
+          peopleDetailEditId = btn.dataset.extEdit;
+          renderPeopleDetail();
+        })
+      );
+      panel.querySelector("[data-ext-cancel]")?.addEventListener("click", () => {
+        peopleDetailEditId = null;
+        renderPeopleDetail();
+      });
+      panel.querySelectorAll("[data-ext-form]").forEach((form) =>
+        form.addEventListener("submit", async (e) => {
+          e.preventDefault();
+          const id = form.dataset.extForm;
+          const table = form.dataset.extTable;
+          const d = Object.fromEntries(new FormData(form).entries());
+          Object.keys(d).forEach((k) => { if (d[k] === "") d[k] = null; });
+          const submit = form.querySelector("[type=submit]");
+          if (submit) submit.disabled = true;
+          const { error } = await supabase.from(table).upsert({ id, ...d }, { onConflict: "id" });
+          if (error) {
+            if (submit) submit.disabled = false;
+            return toast("Could not save", authMessage(error), "error");
+          }
+          peopleDetailEditId = null;
+          await loadPeopleExt();
+          renderPeopleDetail();
+          toast("Details saved", "", "success");
+        })
+      );
+    }
+    wirePeopleDetail();
 
     // --- edit a user's full credentials (incl. password) ---
     body.querySelectorAll("[data-edit-user]").forEach((btn) =>
