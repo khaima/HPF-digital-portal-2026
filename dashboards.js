@@ -1584,6 +1584,28 @@ async function loadSchools() {
 const getSchools = () => schoolsCache;
 const findSchool = (id) => schoolsCache.find((s) => s.id === id) || null;
 
+/* Facilities (patch-13, one row per school) and programmes (many rows per
+   school) — loaded alongside schoolsCache in the same mount-time batch,
+   since the total volume is bounded by school count (a few dozen at most),
+   not per-school lazy-loaded the way per-class attendance is. */
+let schoolFacilitiesCache = [];
+let schoolProgrammesCache = [];
+let facilitiesLoaded = false;
+async function loadSchoolFacilities() {
+  const [facRes, progRes] = await Promise.all([
+    supabase.from("school_facilities").select("*"),
+    supabase.from("school_programmes").select("*").order("started_at", { ascending: false }),
+  ]);
+  facilitiesLoaded = true;
+  if (!facRes.error) schoolFacilitiesCache = facRes.data || [];
+  if (!progRes.error) schoolProgrammesCache = progRes.data || [];
+  return schoolFacilitiesCache;
+}
+const findFacilities = (schoolId) => schoolFacilitiesCache.find((f) => f.school_id === schoolId) || null;
+const programmesFor = (schoolId) => schoolProgrammesCache.filter((p) => p.school_id === schoolId);
+let facilitiesEditing = false;
+let programmeFormOpen = false;
+
 let mapSchool = null;   // id of the school currently open on the map
 let mapEditing = false; // story editor open?
 let editSchoolId = null;   // school open in the admin editor
@@ -1627,6 +1649,114 @@ function schoolForm(existing) {
       <button class="btn btn-outline btn-xs" type="button" data-school-form-cancel>Cancel</button>
     </div>
   </form>`;
+}
+
+/* Facilities (patch-13) — current-state infrastructure inventory, distinct
+   from school_returns' termly historical snapshot of similar fields
+   (returns answer "what did term 2 look like"; this answers "what's true
+   now"). One row per school, upserted on save since a school may not have
+   one yet. Write is admin-only at the RLS layer (already verified) — the
+   edit control itself has no extra client-side role check because of it. */
+const FACILITY_FLAGS = [
+  { key: "library", label: "Library" },
+  { key: "playground", label: "Playground" },
+  { key: "solar", label: "Solar power" },
+  { key: "fence", label: "Perimeter fence" },
+  { key: "dining_hall", label: "Dining hall" },
+];
+
+function schoolFacilitiesPanel(school) {
+  const f = findFacilities(school.id) || {};
+  const opts = (list, selected) => list.map((v) => `<option ${selected === v ? "selected" : ""}>${esc(v)}</option>`).join("");
+
+  if (facilitiesEditing) {
+    return `<div class="smap-story">
+      <div class="smap-story-h"><h4>${icon("school")} Facilities</h4></div>
+      <form id="facilitiesForm" data-school-id="${esc(school.id)}">
+        <div class="form-row">
+          <div class="field"><label>Classrooms</label><input class="input" type="number" min="0" name="classrooms" value="${f.classrooms ?? ""}"></div>
+          <div class="field"><label>Toilets</label><input class="input" type="number" min="0" name="toilets" value="${f.toilets ?? ""}"></div>
+        </div>
+        <div class="form-row">
+          <div class="field"><label>Water source</label><select class="select" name="water_source"><option value="">—</option>${opts(WATER_SOURCES, f.water_source)}</select></div>
+          <div class="field"><label>Electricity</label><select class="select" name="electricity"><option value="">—</option>${opts(POWER_OPTIONS, f.electricity)}</select></div>
+        </div>
+        <div class="form-row">
+          <div class="field"><label>Computers</label><input class="input" type="number" min="0" name="computers" value="${f.computers ?? ""}"></div>
+          <div class="field"><label>Internet</label><select class="select" name="internet_status"><option value="">—</option>${opts(NET_OPTIONS, f.internet_status)}</select></div>
+        </div>
+        <div class="form-row">
+          <div class="field"><label>Dormitories</label><input class="input" type="number" min="0" name="dormitories" value="${f.dormitories ?? ""}"></div>
+          <div class="field"><label>Teachers' houses</label><input class="input" type="number" min="0" name="teachers_houses" value="${f.teachers_houses ?? ""}"></div>
+        </div>
+        <div class="field">
+          ${FACILITY_FLAGS.map((ff) => `<label style="margin-right:1rem;display:inline-flex;align-items:center;gap:.3rem">
+            <input type="checkbox" name="${ff.key}" ${f[ff.key] ? "checked" : ""}> ${esc(ff.label)}</label>`).join("")}
+        </div>
+        <div class="add-user-actions" style="margin-top:.6rem">
+          <button class="btn btn-primary btn-xs" type="submit">${icon("check")} Save facilities</button>
+          <button class="btn btn-outline btn-xs" type="button" data-facilities-cancel>Cancel</button>
+        </div>
+      </form>
+    </div>`;
+  }
+
+  const known = Object.keys(f).length > 0;
+  const tags = FACILITY_FLAGS.filter((ff) => f[ff.key]).map((ff) => `<span class="pill role-pill">${esc(ff.label)}</span>`).join("");
+  return `<div class="smap-story">
+    <div class="smap-story-h">
+      <h4>${icon("school")} Facilities</h4>
+      <button class="btn btn-outline btn-xs" data-facilities-edit>${icon("pen")} ${known ? "Edit" : "Add"} facilities</button>
+    </div>
+    ${known
+      ? `<div class="s-meta" style="margin-bottom:.4rem">
+           ${f.classrooms ?? "—"} classrooms · ${f.toilets ?? "—"} toilets · ${esc(f.water_source || "no water source recorded")} ·
+           ${esc(f.electricity || "no electricity recorded")} · ${f.computers ?? "—"} computers · ${esc(f.internet_status || "no internet status recorded")}
+         </div>
+         <div>${tags || `<span class="s-meta">No library, playground, solar, fence, or dining hall recorded.</span>`}</div>`
+      : `<p class="smap-story-body dim">No facilities recorded yet for ${esc(school.name)}. Click <strong>Add facilities</strong> to record what's there.</p>`}
+  </div>`;
+}
+
+/* Programmes (patch-13) — which HPF programmes run at a school and their
+   status. Simple list + add form; editing an existing programme's status
+   is a fast follow once this proves useful, not blocking the first pass. */
+function schoolProgrammesPanel(school) {
+  const rows = programmesFor(school.id);
+  const list = rows.length
+    ? rows.map((p) => `<div class="submission">
+        <div style="flex:1;min-width:0"><div class="s-title">${esc(p.programme)}</div>
+          ${p.started_at ? `<div class="s-meta">Since ${esc(p.started_at)}</div>` : ""}</div>
+        <span class="pill role-pill">${esc(p.status)}</span>
+      </div>`).join("")
+    : `<p class="smap-story-body dim">No programmes recorded yet for ${esc(school.name)}.</p>`;
+
+  const form = programmeFormOpen ? `
+    <form id="programmeForm" data-school-id="${esc(school.id)}" style="margin-top:.6rem">
+      <div class="form-row">
+        <div class="field"><label>Programme</label><input class="input" name="programme" required placeholder="e.g. Micro Enterprise Programme"></div>
+        <div class="field"><label>Status</label>
+          <select class="select" name="status">
+            <option value="planned">Planned</option>
+            <option value="active" selected>Active</option>
+            <option value="completed">Completed</option>
+            <option value="paused">Paused</option>
+          </select></div>
+      </div>
+      <div class="add-user-actions">
+        <button class="btn btn-primary btn-xs" type="submit">${icon("check")} Add programme</button>
+        <button class="btn btn-outline btn-xs" type="button" data-programme-cancel>Cancel</button>
+      </div>
+    </form>` : "";
+
+  return `<div class="smap-story">
+    <div class="smap-story-h">
+      <h4>${icon("layers")} Programmes</h4>
+      <button class="btn btn-outline btn-xs" data-programme-toggle>${icon("plus")} Add programme</button>
+    </div>
+    ${list}
+    ${form}
+  </div>`;
 }
 
 function schoolMapPanel(s) {
@@ -1704,6 +1834,8 @@ function schoolMapPanel(s) {
               ? `<p class="smap-story-body">${esc(story)}</p>`
               : `<p class="smap-story-body dim">No story yet for ${esc(active.name)}. Click <strong>Add story</strong> to write one.</p>`}
         </div>
+        ${schoolFacilitiesPanel(active)}
+        ${schoolProgrammesPanel(active)}
       </div>`;
   }
 
@@ -5664,6 +5796,72 @@ export function wireMyDashboard(user, events) {
         await refreshSchools();
       });
 
+      // --- facilities (patch-13) ---
+      const refreshFacilities = async () => { await loadSchoolFacilities(); renderAnalytics(); };
+      body.querySelector("[data-facilities-edit]")?.addEventListener("click", () => {
+        facilitiesEditing = true;
+        renderAnalytics();
+      });
+      body.querySelector("[data-facilities-cancel]")?.addEventListener("click", () => {
+        facilitiesEditing = false;
+        renderAnalytics();
+      });
+      body.querySelector("#facilitiesForm")?.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const form = e.currentTarget;
+        const schoolId = form.dataset.schoolId;
+        const d = Object.fromEntries(new FormData(form).entries());
+        const toNum = (v) => (v === "" || v === undefined ? null : Number(v));
+        const patch = {
+          school_id: schoolId,
+          classrooms: toNum(d.classrooms), toilets: toNum(d.toilets), computers: toNum(d.computers),
+          dormitories: toNum(d.dormitories), teachers_houses: toNum(d.teachers_houses),
+          water_source: d.water_source || null, electricity: d.electricity || null, internet_status: d.internet_status || null,
+        };
+        FACILITY_FLAGS.forEach((ff) => { patch[ff.key] = form.querySelector(`[name="${ff.key}"]`)?.checked || false; });
+
+        const btn = form.querySelector("[type=submit]");
+        if (btn) btn.disabled = true;
+        const { error } = await supabase.from("school_facilities").upsert(patch, { onConflict: "school_id" });
+        if (error) {
+          if (btn) btn.disabled = false;
+          return toast("Could not save facilities", authMessage(error), "error");
+        }
+        facilitiesEditing = false;
+        toast("Facilities saved", "", "success");
+        await refreshFacilities();
+      });
+
+      // --- programmes (patch-13) ---
+      body.querySelector("[data-programme-toggle]")?.addEventListener("click", () => {
+        programmeFormOpen = !programmeFormOpen;
+        renderAnalytics();
+      });
+      body.querySelector("[data-programme-cancel]")?.addEventListener("click", () => {
+        programmeFormOpen = false;
+        renderAnalytics();
+      });
+      body.querySelector("#programmeForm")?.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const form = e.currentTarget;
+        const schoolId = form.dataset.schoolId;
+        const d = Object.fromEntries(new FormData(form).entries());
+        if (!d.programme?.trim()) return toast("Programme name required", "", "error");
+
+        const btn = form.querySelector("[type=submit]");
+        if (btn) btn.disabled = true;
+        const { error } = await supabase.from("school_programmes")
+          .insert({ school_id: schoolId, programme: d.programme.trim(), status: d.status });
+        if (error) {
+          if (btn) btn.disabled = false;
+          if (error.code === "23505") return toast("Already recorded", "This school already has a programme by that name.", "error");
+          return toast("Could not add programme", authMessage(error), "error");
+        }
+        programmeFormOpen = false;
+        toast("Programme added", "", "success");
+        await refreshFacilities();
+      });
+
       // --- admin-managed schools (add / edit / delete) ---
       body.querySelector("[data-school-manage-toggle]")?.addEventListener("click", () => {
         schoolManageOpen = !schoolManageOpen;
@@ -5852,7 +6050,7 @@ export function wireMyDashboard(user, events) {
     // of the dashboard visibly shaking/blinking non-stop).
     if (!programmeDataLoaded) {
       const classesPromise = classesLoaded ? Promise.resolve(classesCache) : loadClasses();
-      Promise.allSettled([loadSchools(), loadReturns(), loadRevisions(), loadGrades(), loadFieldReports(), classesPromise, loadDeviceIssues(), loadMeIndicators()]).then(() => {
+      Promise.allSettled([loadSchools(), loadReturns(), loadRevisions(), loadGrades(), loadFieldReports(), classesPromise, loadDeviceIssues(), loadMeIndicators(), loadSchoolFacilities()]).then(() => {
         programmeDataLoaded = true;
         // Full re-render, not just renderAnalytics(): Programme Overview (a
         // sibling of the analytics panel, not inside it) reads the same
