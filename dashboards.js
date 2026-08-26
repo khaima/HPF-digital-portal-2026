@@ -3338,6 +3338,13 @@ let classesLoaded = false;
 let classesError = null;
 let classesAuthed = false;     // real Supabase session at all? (false for local/legacy accounts)
 
+// Guards the Programme Overview mount-time load below: without this, its own
+// "re-render once the data lands" was re-entering wireBody, which re-ran the
+// exact same load-and-render block, which re-rendered again — forever. Every
+// admin/staff view of the dashboard was stuck in a tight render loop, which
+// is what showed up as the whole screen shaking/blinking.
+let programmeDataLoaded = false;
+
 async function loadClasses() {
   const { data: authData } = await supabase.auth.getUser();
   classesAuthed = !!authData?.user;
@@ -5697,16 +5704,21 @@ export function wireMyDashboard(user, events) {
     // (with a retry), so nothing to catch here.
     // Schools, the heads' returns, field reports, and classes all feed panels
     // in here. One re-render once they land, rather than the dashboard
-    // twitching four times. classesLoaded guards this the same way the coach
-    // view's own mount does, so an admin who already opened the coach view
-    // this session (classesLoaded already true) does not re-fetch here.
-    const classesPromise = classesLoaded ? Promise.resolve(classesCache) : loadClasses();
-    Promise.allSettled([loadSchools(), loadReturns(), loadRevisions(), loadGrades(), loadFieldReports(), classesPromise, loadDeviceIssues()]).then(() => {
-      // Full re-render, not just renderAnalytics(): Programme Overview (a
-      // sibling of the analytics panel, not inside it) reads the same
-      // schools/returns/classes/device data and needs the same refresh.
-      if (body.querySelector("[data-programme-overview]")) renderRole(role);
-    });
+    // twitching four times. programmeDataLoaded guards the whole thing —
+    // fetch AND re-render — not just the fetch: the re-render below calls
+    // back into this same wireBody, so without a guard on the re-render too,
+    // every render re-armed another one, forever (this used to be the cause
+    // of the dashboard visibly shaking/blinking non-stop).
+    if (!programmeDataLoaded) {
+      const classesPromise = classesLoaded ? Promise.resolve(classesCache) : loadClasses();
+      Promise.allSettled([loadSchools(), loadReturns(), loadRevisions(), loadGrades(), loadFieldReports(), classesPromise, loadDeviceIssues()]).then(() => {
+        programmeDataLoaded = true;
+        // Full re-render, not just renderAnalytics(): Programme Overview (a
+        // sibling of the analytics panel, not inside it) reads the same
+        // schools/returns/classes/device data and needs the same refresh.
+        if (body.querySelector("[data-programme-overview]")) renderRole(role);
+      });
+    }
     // update automatically when data changes in another tab (keep just one listener)
     // hpf_submissions dropped: field reports moved to Postgres, so nothing
     // writes that key any more — a same-tab reload after a new visit syncs
