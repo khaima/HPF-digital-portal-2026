@@ -98,16 +98,18 @@ export function runCounters() {
   $$(".count").forEach((el) => animateCount(el));
 }
 
-let _tick = null;
-const INTERVAL = 5000;
+let _started = false;
 
-/* Start the global loop: every 5s (while the tab is active) all numbers
-   restart their count-up from zero. Pauses while the tab is hidden and
-   resumes (with an immediate run) when it becomes visible again. */
+/* Run once at boot, and again whenever the tab comes back into view — not on
+   a repeating timer. A 5s auto-repeat used to restart every number on the
+   page from zero forever, which on a stat-dense screen (admin/staff's
+   Programme Overview) reads as the whole dashboard shaking. Every view
+   already re-triggers this itself on load (see app.js), so a background loop
+   never had numbers to catch up on in the first place. */
 export function startGlobalCounters() {
-  if (_tick) return;
+  if (_started) return;
+  _started = true;
   runCounters();
-  _tick = setInterval(runCounters, INTERVAL);
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") runCounters();
   });
