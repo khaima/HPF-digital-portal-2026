@@ -183,13 +183,17 @@ editing a school's name in production.
 Real client code reads and writes: `profiles`, `schools`, `school_returns`
 + grades + revisions, `field_reports`, `login_events`, `classes`,
 `enrollments`, `school_officer_assignments`, `assignments`,
-`assignment_results`, `assessments`, `questions`, `submissions`, and
-(read-only, one KPI badge) `device_maintenance` — 15 tables.
+`assignment_results`, `assessments`, `questions`, `submissions`,
+`device_maintenance`, `learners`, `attendance_records`, `me_indicators`,
+`me_indicator_values`, `me_targets`, `school_facilities`,
+`school_programmes`, `devices`, `teachers`, `field_officers`,
+`interventions`, `action_items`, and `evidence` — 29 tables (up from 15,
+across the four wiring phases this pass added).
 
-Everything else — 25 tables, including all four added by this pass
-(`attendance_records`, `me_indicators`, `me_indicator_values`, `me_targets`,
-`evidence`) — is real, RLS-complete schema with zero client wiring, the
-same "schema now, features later" state `patch-13`'s 21 tables have been in
-since 2026-08-20. Building the UI against any of them is a separate,
-future decision — this document only describes what exists, per "do not
-redesign the dashboard yet."
+The remaining 12 — `roles`, `teacher_training`, `subjects`, `field_visits` +
+`field_visit_findings`, `digital_learning`, `kolibri_activity`,
+`library_activity`, `learning_activity`, `notifications`, `audit_logs`,
+`kobo_submissions` — are real, RLS-complete schema with zero client
+wiring. `school_returns.attendance_rate` also still stands alone; nothing
+yet computes it from the now-real `attendance_records` rows. Building UI
+against any of these is a separate, future decision.

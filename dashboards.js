@@ -252,7 +252,7 @@ let editAdminId = null; // row currently showing the inline "edit name" form
    identical copies. Default collapsed: these three are the longest panels on
    the dashboard and an admin opens this page daily, so the summary heading is
    what shows first and each expands only on request. */
-let collapsedPanels = { admins: true, library: true, activity: true, assignments: true, devices: true, peopledetail: true };
+let collapsedPanels = { admins: true, library: true, activity: true, assignments: true, devices: true, peopledetail: true, interventions: true };
 
 /* A header-row collapse button plus the wrapper its body goes in. Call
    collapseBtn(key) inside the panel's header, then wrap the existing body
@@ -900,6 +900,121 @@ function peopleDetailPanel() {
     + section("Field officers", officers, FIELD_OFFICER_EXT_FIELDS, "field_officers");
 
   return wrap(body || `<div class="empty-state">No teacher or field officer accounts in the database yet.</div>`);
+}
+
+/* ---------------------------------------------------------- interventions (patch-13/20)
+   Case management + evidence — the least-defined area of the four phases:
+   no existing workflow to model this on (per the original schema pass's own
+   note), so this is a best-effort first shape, not a reflection of an
+   established HPF process. List + add for interventions, a nested list +
+   add for their action items, and a minimal "attach a link" control for
+   evidence (ref_table/ref_id pointing at the intervention) rather than a
+   fully generic attachment picker everywhere at once. */
+let interventionsCache = [];
+let actionItemsCache = [];
+let evidenceCache = [];
+let interventionsLoaded = false;
+async function loadInterventions() {
+  const [iRes, aRes, eRes] = await Promise.all([
+    supabase.from("interventions").select("*").order("opened_at", { ascending: false }),
+    supabase.from("action_items").select("*").order("created_at", { ascending: false }),
+    supabase.from("evidence").select("*").eq("ref_table", "interventions"),
+  ]);
+  interventionsLoaded = true;
+  if (!iRes.error) interventionsCache = iRes.data || [];
+  if (!aRes.error) actionItemsCache = aRes.data || [];
+  if (!eRes.error) evidenceCache = eRes.data || [];
+  return interventionsCache;
+}
+let interventionFormOpen = false;
+let actionItemFormForId = null;   // intervention id currently showing "add action" form
+let evidenceFormForId = null;     // intervention id currently showing "attach evidence" form
+const actionItemsFor = (id) => actionItemsCache.filter((a) => a.intervention_id === id);
+const evidenceFor = (id) => evidenceCache.filter((e) => e.ref_id === id);
+
+function interventionsPanel() {
+  const head = `
+    <div class="panel-head-row">
+      <div>
+        <h2>${icon("wrench")} Interventions</h2>
+        <p class="panel-sub" style="margin-bottom:0">Open cases at a school, their action items, and supporting evidence</p>
+      </div>
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
+        <button class="btn btn-primary" data-intervention-add-toggle>${icon("plus")} New intervention</button>
+        ${collapseBtn("interventions")}
+      </div>
+    </div>`;
+  const wrap = (inner) => `<div class="panel" style="margin-top:1.5rem" data-interventions-panel>${head}${collapseBody("interventions", inner)}</div>`;
+
+  if (!interventionsLoaded) return wrap(`<div class="empty-state">Loading interventions…</div>`);
+
+  const schoolName = (id) => getSchools().find((s) => s.id === id)?.name || "Unassigned";
+
+  const rows = interventionsCache.length
+    ? interventionsCache.map((iv) => {
+        const items = actionItemsFor(iv.id);
+        const attachments = evidenceFor(iv.id);
+        return `<div class="submission" style="align-items:flex-start">
+          <div style="flex:1;min-width:0">
+            <div class="s-title">${esc(iv.title)}</div>
+            <div class="s-meta">${esc(schoolName(iv.school_id))}${iv.description ? " · " + esc(iv.description) : ""}</div>
+
+            ${items.length ? `<div style="margin-top:.4rem">${items.map((a) => `
+              <div class="s-meta">— ${esc(a.title)} <span class="pill role-pill">${esc(a.status)}</span>${a.due_date ? ` · due ${esc(a.due_date)}` : ""}</div>
+            `).join("")}</div>` : ""}
+            ${actionItemFormForId === iv.id ? `
+              <form class="add-user-form" data-action-form="${esc(iv.id)}" style="margin-top:.5rem">
+                <div class="form-row">
+                  <div class="field"><input class="input" name="title" required placeholder="Action item"></div>
+                  <div class="field"><input class="input" type="date" name="due_date"></div>
+                </div>
+                <div class="add-user-actions">
+                  <button class="btn btn-primary btn-xs" type="submit">Add</button>
+                  <button class="btn btn-outline btn-xs" type="button" data-action-cancel>Cancel</button>
+                </div>
+              </form>` : ""}
+
+            ${attachments.length ? `<div style="margin-top:.4rem">${attachments.map((e) => `
+              <div class="s-meta">${icon("link")} <a href="${esc(e.file_url)}" target="_blank" rel="noopener">${esc(e.title)}</a></div>
+            `).join("")}</div>` : ""}
+            ${evidenceFormForId === iv.id ? `
+              <form class="add-user-form" data-evidence-form="${esc(iv.id)}" style="margin-top:.5rem">
+                <div class="form-row">
+                  <div class="field"><input class="input" name="title" required placeholder="What is this evidence?"></div>
+                  <div class="field"><input class="input" type="url" name="file_url" required placeholder="https://…"></div>
+                </div>
+                <div class="add-user-actions">
+                  <button class="btn btn-primary btn-xs" type="submit">Attach</button>
+                  <button class="btn btn-outline btn-xs" type="button" data-evidence-cancel>Cancel</button>
+                </div>
+              </form>` : ""}
+
+            <div style="margin-top:.5rem;display:flex;gap:.5rem;flex-wrap:wrap">
+              ${actionItemFormForId !== iv.id ? `<button class="btn btn-outline btn-xs" data-action-toggle="${esc(iv.id)}">${icon("plus")} Add action</button>` : ""}
+              ${evidenceFormForId !== iv.id ? `<button class="btn btn-outline btn-xs" data-evidence-toggle="${esc(iv.id)}">${icon("link")} Attach evidence</button>` : ""}
+            </div>
+          </div>
+          <span class="pill role-pill">${esc(iv.status)}</span>
+        </div>`;
+      }).join("")
+    : `<div class="empty-state">No interventions recorded yet.</div>`;
+
+  const schoolOpts = getSchools().map((s) => `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join("");
+  const addForm = interventionFormOpen ? `
+    <form id="interventionForm" class="add-user-form">
+      <div class="form-row">
+        <div class="field"><label>Title</label><input class="input" name="title" required placeholder="e.g. Low attendance follow-up"></div>
+        <div class="field"><label>School</label><select class="select" name="school_id" required>
+          <option value="" disabled selected>Select a school</option>${schoolOpts}</select></div>
+      </div>
+      <div class="field"><label>Description</label><textarea class="input" name="description" rows="2"></textarea></div>
+      <div class="add-user-actions">
+        <button class="btn btn-primary" type="submit">${icon("check")} Open intervention</button>
+        <button class="btn btn-outline" type="button" data-intervention-cancel>Cancel</button>
+      </div>
+    </form>` : "";
+
+  return wrap(`${addForm}${rows}`);
 }
 
 /* ---------------------------------------------------------- user management */
@@ -3239,6 +3354,7 @@ function adminBody(ctx) {
     ${officerAssignmentsPanel()}
     ${devicesPanel()}
     ${peopleDetailPanel()}
+    ${interventionsPanel()}
     ${userManagementPanel(ctx.user)}
     ${digitalLibraryPanel()}
     <div class="panel" style="margin-top:1.5rem">
@@ -6255,7 +6371,7 @@ export function wireMyDashboard(user, events) {
     // of the dashboard visibly shaking/blinking non-stop).
     if (!programmeDataLoaded) {
       const classesPromise = classesLoaded ? Promise.resolve(classesCache) : loadClasses();
-      Promise.allSettled([loadSchools(), loadReturns(), loadRevisions(), loadGrades(), loadFieldReports(), classesPromise, loadDeviceIssues(), loadMeIndicators(), loadSchoolFacilities(), loadDevices(), loadPeopleExt()]).then(() => {
+      Promise.allSettled([loadSchools(), loadReturns(), loadRevisions(), loadGrades(), loadFieldReports(), classesPromise, loadDeviceIssues(), loadMeIndicators(), loadSchoolFacilities(), loadDevices(), loadPeopleExt(), loadInterventions()]).then(() => {
         programmeDataLoaded = true;
         // Full re-render, not just renderAnalytics(): Programme Overview (a
         // sibling of the analytics panel, not inside it) reads the same
@@ -6785,6 +6901,110 @@ export function wireMyDashboard(user, events) {
       );
     }
     wirePeopleDetail();
+
+    // --- interventions + action items + evidence (patch-13/20) ---
+    function renderInterventions() {
+      const holder = body.querySelector("[data-interventions-panel]");
+      if (!holder) return;
+      holder.outerHTML = interventionsPanel();
+      wireInterventions();
+    }
+    function wireInterventions() {
+      const panel = body.querySelector("[data-interventions-panel]");
+      if (!panel) return;
+      panel.querySelector("[data-intervention-add-toggle]")?.addEventListener("click", () => {
+        interventionFormOpen = !interventionFormOpen;
+        renderInterventions();
+      });
+      panel.querySelector("[data-intervention-cancel]")?.addEventListener("click", () => {
+        interventionFormOpen = false;
+        renderInterventions();
+      });
+      panel.querySelector("#interventionForm")?.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const d = Object.fromEntries(new FormData(e.target).entries());
+        const submit = e.target.querySelector("[type=submit]");
+        if (submit) submit.disabled = true;
+        const { error } = await supabase.from("interventions").insert({
+          title: d.title, school_id: d.school_id, description: d.description || null,
+          status: "open", opened_by: ctx.user.id,
+        });
+        if (error) {
+          if (submit) submit.disabled = false;
+          return toast("Could not open intervention", authMessage(error), "error");
+        }
+        interventionFormOpen = false;
+        await loadInterventions();
+        renderInterventions();
+        toast("Intervention opened", "", "success");
+      });
+      panel.querySelectorAll("[data-action-toggle]").forEach((btn) =>
+        btn.addEventListener("click", () => {
+          actionItemFormForId = btn.dataset.actionToggle;
+          renderInterventions();
+        })
+      );
+      panel.querySelectorAll("[data-action-cancel]").forEach((btn) =>
+        btn.addEventListener("click", () => {
+          actionItemFormForId = null;
+          renderInterventions();
+        })
+      );
+      panel.querySelectorAll("[data-action-form]").forEach((form) =>
+        form.addEventListener("submit", async (e) => {
+          e.preventDefault();
+          const interventionId = form.dataset.actionForm;
+          const d = Object.fromEntries(new FormData(form).entries());
+          const submit = form.querySelector("[type=submit]");
+          if (submit) submit.disabled = true;
+          const { error } = await supabase.from("action_items").insert({
+            intervention_id: interventionId, title: d.title, due_date: d.due_date || null, status: "pending",
+          });
+          if (error) {
+            if (submit) submit.disabled = false;
+            return toast("Could not add action", authMessage(error), "error");
+          }
+          actionItemFormForId = null;
+          await loadInterventions();
+          renderInterventions();
+          toast("Action item added", "", "success");
+        })
+      );
+      panel.querySelectorAll("[data-evidence-toggle]").forEach((btn) =>
+        btn.addEventListener("click", () => {
+          evidenceFormForId = btn.dataset.evidenceToggle;
+          renderInterventions();
+        })
+      );
+      panel.querySelectorAll("[data-evidence-cancel]").forEach((btn) =>
+        btn.addEventListener("click", () => {
+          evidenceFormForId = null;
+          renderInterventions();
+        })
+      );
+      panel.querySelectorAll("[data-evidence-form]").forEach((form) =>
+        form.addEventListener("submit", async (e) => {
+          e.preventDefault();
+          const interventionId = form.dataset.evidenceForm;
+          const d = Object.fromEntries(new FormData(form).entries());
+          const submit = form.querySelector("[type=submit]");
+          if (submit) submit.disabled = true;
+          const { error } = await supabase.from("evidence").insert({
+            title: d.title, file_url: d.file_url, ref_table: "interventions", ref_id: interventionId,
+            uploaded_by: ctx.user.id,
+          });
+          if (error) {
+            if (submit) submit.disabled = false;
+            return toast("Could not attach evidence", authMessage(error), "error");
+          }
+          evidenceFormForId = null;
+          await loadInterventions();
+          renderInterventions();
+          toast("Evidence attached", "", "success");
+        })
+      );
+    }
+    wireInterventions();
 
     // --- edit a user's full credentials (incl. password) ---
     body.querySelectorAll("[data-edit-user]").forEach((btn) =>
