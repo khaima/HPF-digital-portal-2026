@@ -244,6 +244,7 @@ let adminsError = null;
 let adminsAuthed = false;   // is this browser on a real Supabase session at all?
 let adminFormOpen = false;
 let adminPromoteOpen = false;
+let editAdminId = null; // row currently showing the inline "edit name" form
 
 /* Collapse state for the heavier admin panels — HPF administrators, Digital
    Library, Recent activity. Keyed rather than three separate booleans so the
@@ -306,6 +307,34 @@ async function promoteToRole(id, role) {
 }
 const promoteToAdmin = (id) => promoteToRole(id, "admin");
 const promoteToStaff = (id) => promoteToRole(id, "staff");
+
+/* Admin-only from patch-16: touching an EXISTING Staff or Admin row (rename
+   or remove) is no longer something Staff can do, even though Staff can
+   still promote a fresh teacher/field officer up to Staff. Same read-back
+   verification as promoteToRole, but its own message — "the promotion was
+   refused" would be a confusing thing to say about a rename or a removal. */
+async function renameStaffMember(id, fullName) {
+  const { error } = await supabase.from("profiles").update({ full_name: fullName }).eq("id", id);
+  if (error) throw new Error(authMessage(error));
+}
+
+/* Drops someone out of Staff/Admin back to Learner — the only role every
+   account can always be moved to, since nothing records what they were
+   before they were promoted. Doesn't touch their auth account or history;
+   give them a proper role again afterward if they should keep using the
+   portal in another capacity. */
+async function removeStaffMember(id) {
+  const { data, error } = await supabase
+    .from("profiles").update({ role: "learner" }).eq("id", id).select("role").maybeSingle();
+  if (error) throw new Error(authMessage(error));
+  if (data?.role !== "learner") {
+    throw new Error(
+      "The database refused this — only an HPF admin can remove an existing Staff or Admin account. " +
+      "Sign in with an admin account, or run this in the Supabase SQL editor: " +
+      `update profiles set role = 'learner' where id = '${id}';`
+    );
+  }
+}
 
 /* Shared by "Add staff member" (must find nothing) and "Promote existing
    account" (must find exactly one) — same query, different expectations. */
@@ -469,22 +498,43 @@ function adminAccountsPanel(currentUser) {
     </div>`);
   }
 
+  // Editing or removing an EXISTING row is Admin-only (patch-16) — Staff can
+  // still add new Staff (invite) and view this whole list, just not touch a
+  // row that's already Staff or Admin. Never offered on the viewer's own row:
+  // self-removal has no recovery path from this panel.
   const rows = adminsCache.length
-    ? adminsCache.map((a) => `
+    ? adminsCache.map((a) => {
+        const isSelf = a.id === currentUser.id;
+        const canManage = viewerIsAdmin && !isSelf;
+        if (editAdminId === a.id) {
+          return `
+        <form class="submission" data-edit-admin-form="${a.id}">
+          <span class="avatar-sm">${esc((a.full_name || a.email || "A").slice(0, 1).toUpperCase())}</span>
+          <div style="flex:1;min-width:0;display:flex;gap:.5rem;align-items:center">
+            <input class="input" name="fullName" type="text" required value="${esc(a.full_name || "")}" style="max-width:16rem">
+            <button class="btn btn-primary btn-xs" type="submit">Save</button>
+            <button class="btn btn-outline btn-xs" type="button" data-edit-admin-cancel>Cancel</button>
+          </div>
+        </form>`;
+        }
+        return `
         <div class="submission">
           <span class="avatar-sm">${esc((a.full_name || a.email || "A").slice(0, 1).toUpperCase())}</span>
           <div style="flex:1;min-width:0">
-            <div class="s-title">${esc(a.full_name || "—")}${
-              a.id === currentUser.id ? ' <span class="ut-you">you</span>' : ""
-            }</div>
+            <div class="s-title">${esc(a.full_name || "—")}${isSelf ? ' <span class="ut-you">you</span>' : ""}</div>
             <div class="s-meta">${esc(a.email || "—")}${a.username ? " · " + esc(a.username) : ""}
               · added ${new Date(a.created_at).toLocaleDateString()}</div>
           </div>
           ${viewerIsAdmin && a.role === "staff"
             ? `<button class="btn btn-outline btn-xs" data-promote-to-admin="${a.id}" style="margin-right:.5rem">${icon("shield")} Promote to Admin</button>`
             : ""}
+          ${canManage
+            ? `<button class="icon-btn" data-edit-admin="${a.id}" title="Edit name">${icon("pen")}</button>
+               <button class="icon-btn danger" data-remove-admin="${a.id}" data-name="${esc(a.full_name || a.email || "this account")}" title="Remove from Staff/Admin">${icon("trash")}</button>`
+            : ""}
           <span class="pill role-pill">${a.role === "admin" ? "Admin" : "Staff"}</span>
-        </div>`).join("")
+        </div>`;
+      }).join("")
     : `<div class="empty-state">No staff or admin rows in the database yet.</div>`;
 
   const addForm = adminFormOpen ? `
@@ -5804,6 +5854,7 @@ export function wireMyDashboard(user, events) {
       panel.querySelector("[data-admin-add-toggle]")?.addEventListener("click", () => {
         adminFormOpen = !adminFormOpen;
         adminPromoteOpen = false;
+        editAdminId = null;
         // The form lives inside the collapsible body, so opening it while the
         // panel is collapsed would click-and-nothing-visibly-happens.
         if (adminFormOpen) collapsedPanels.admins = false;
@@ -5817,6 +5868,7 @@ export function wireMyDashboard(user, events) {
       panel.querySelector("[data-admin-promote-toggle]")?.addEventListener("click", () => {
         adminPromoteOpen = !adminPromoteOpen;
         adminFormOpen = false;
+        editAdminId = null;
         if (adminPromoteOpen) collapsedPanels.admins = false;
         renderAdmins();
         body.querySelector("#promoteAdminForm [name=email]")?.focus();
@@ -5906,6 +5958,65 @@ export function wireMyDashboard(user, events) {
           } catch (err) {
             btn.disabled = false;
             toast("Could not promote to Admin", err.message, "error");
+          }
+        })
+      );
+
+      // Admin-only (patch-16): rename or remove an existing Staff/Admin row.
+      // Both buttons are only ever rendered for an admin viewer on someone
+      // else's row (see adminAccountsPanel); the real gate is the "update
+      // own" RLS policy — a staff viewer who forced either call anyway would
+      // just get refused.
+      panel.querySelectorAll("[data-edit-admin]").forEach((btn) =>
+        btn.addEventListener("click", () => {
+          editAdminId = btn.dataset.editAdmin;
+          renderAdmins();
+          panel.querySelector(`[data-edit-admin-form="${editAdminId}"] [name=fullName]`)?.focus();
+        })
+      );
+      panel.querySelector("[data-edit-admin-cancel]")?.addEventListener("click", () => {
+        editAdminId = null;
+        renderAdmins();
+      });
+      panel.querySelectorAll("[data-edit-admin-form]").forEach((form) =>
+        form.addEventListener("submit", async (e) => {
+          e.preventDefault();
+          const id = form.dataset.editAdminForm;
+          const fullName = (new FormData(form).get("fullName") || "").trim();
+          if (!fullName) return toast("Name required", "Enter the person's full name.", "error");
+          const submit = form.querySelector("[type=submit]");
+          if (submit) { submit.disabled = true; submit.textContent = "Saving…"; }
+          try {
+            await renameStaffMember(id, fullName);
+            editAdminId = null;
+            await loadAdmins();
+            renderAdmins();
+            toast("Name updated", `${fullName} is saved.`, "success");
+          } catch (err) {
+            toast("Could not save", err.message, "error");
+            if (submit) { submit.disabled = false; submit.textContent = "Save"; }
+          }
+        })
+      );
+      panel.querySelectorAll("[data-remove-admin]").forEach((btn) =>
+        btn.addEventListener("click", async () => {
+          const id = btn.dataset.removeAdmin;
+          const name = btn.dataset.name;
+          const ok = confirm(
+            `Remove ${name} from Staff/Admin? This revokes their platform access — it does not ` +
+            "delete their account or history. They'll land on Learner and need a proper role " +
+            "assigned again if they should keep using the portal in another capacity."
+          );
+          if (!ok) return;
+          btn.disabled = true;
+          try {
+            await removeStaffMember(id);
+            await loadAdmins();
+            renderAdmins();
+            toast("Removed", `${name} is no longer Staff or Admin.`, "success");
+          } catch (err) {
+            btn.disabled = false;
+            toast("Could not remove", err.message, "error");
           }
         })
       );

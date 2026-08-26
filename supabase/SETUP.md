@@ -32,6 +32,7 @@ frontend static (it still deploys on GitHub Pages).
    | 15 | [`patch-14a-staff-role-enum.sql`](patch-14a-staff-role-enum.sql) | Adds the `staff` role value — must run and commit on its own, before patch-14 |
    | 16 | [`patch-14-staff-tier.sql`](patch-14-staff-tier.sql) | Splits Admin into Staff (full access) + Admin (full access, plus the exclusive power to grant Admin) |
    | 17 | [`patch-15-staff-invite.sql`](patch-15-staff-invite.sql) | `profiles.needs_password` — tracks admin-invited staff who still need to set their own password |
+   | 18 | [`patch-16-admin-manage-staff.sql`](patch-16-admin-manage-staff.sql) | Only Admin can edit or remove an existing Staff/Admin row — Staff keeps inviting new ones and viewing the list |
 
    **All of them are safe to re-run**, so if you are unsure what state the
    database is in, just run them all in order — that is the reliable way to
