@@ -252,7 +252,7 @@ let editAdminId = null; // row currently showing the inline "edit name" form
    identical copies. Default collapsed: these three are the longest panels on
    the dashboard and an admin opens this page daily, so the summary heading is
    what shows first and each expands only on request. */
-let collapsedPanels = { admins: true, library: true, activity: true, assignments: true };
+let collapsedPanels = { admins: true, library: true, activity: true, assignments: true, devices: true };
 
 /* A header-row collapse button plus the wrapper its body goes in. Call
    collapseBtn(key) inside the panel's header, then wrap the existing body
@@ -398,11 +398,27 @@ async function loadProfiles() {
 let deviceIssuesCache = [];
 let deviceIssuesLoaded = false;
 async function loadDeviceIssues() {
-  const { data, error } = await supabase.from("device_maintenance").select("id, status").neq("status", "resolved");
+  // device_id + issue broadened in (patch-2, Phase 2b) so the devices panel
+  // can show which device has what open ticket, not just a bare count.
+  const { data, error } = await supabase.from("device_maintenance").select("id, device_id, issue, status").neq("status", "resolved");
   deviceIssuesLoaded = true;
   if (!error) deviceIssuesCache = data || [];
   return deviceIssuesCache;
 }
+
+/* Devices (patch-13) — the physical inventory itself, distinct from
+   deviceIssuesCache above (open maintenance tickets only, for the KPI
+   badge). Loaded together at mount since both feed the same panel. */
+let devicesCache = [];
+let devicesLoaded = false;
+async function loadDevices() {
+  const { data, error } = await supabase.from("devices").select("*").order("created_at", { ascending: false });
+  devicesLoaded = true;
+  if (!error) devicesCache = data || [];
+  return devicesCache;
+}
+let deviceFormOpen = false;
+let issueFormDeviceId = null; // device currently showing its "report issue" form
 
 /* M&E indicators (patch-19) — org-wide only for this first pass (school_id
    is null), display only: no admin UI yet to define an indicator or set a
@@ -693,6 +709,86 @@ function officerAssignmentsPanel() {
       <div class="add-user-actions">
         <button class="btn btn-primary" type="submit">${icon("check")} Assign</button>
         <button class="btn btn-outline" type="button" data-assign-cancel>Cancel</button>
+      </div>
+    </form>` : "";
+
+  return wrap(`${addForm}${rows}`);
+}
+
+/* ---------------------------------------------------------- devices (patch-13)
+   Physical inventory + open maintenance tickets. Extends the read-only KPI
+   badge (deviceIssuesCache, above) into a real management panel — same
+   load/cache/render/wire shape as officerAssignmentsPanel. */
+const DEVICE_TYPES = ["laptop", "tablet", "desktop", "projector", "router", "server", "other"];
+
+function devicesPanel() {
+  const head = `
+    <div class="panel-head-row">
+      <div>
+        <h2>${icon("laptop")} Devices</h2>
+        <p class="panel-sub" style="margin-bottom:0">Inventory and open maintenance tickets, by school</p>
+      </div>
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
+        <button class="btn btn-primary" data-device-add-toggle>${icon("plus")} Add device</button>
+        ${collapseBtn("devices")}
+      </div>
+    </div>`;
+  const wrap = (inner) => `<div class="panel" style="margin-top:1.5rem" data-devices-panel>${head}${collapseBody("devices", inner)}</div>`;
+
+  if (!devicesLoaded) return wrap(`<div class="empty-state">Loading devices…</div>`);
+
+  const schoolName = (id) => getSchools().find((s) => s.id === id)?.name || "Unassigned";
+  const issuesFor = (deviceId) => deviceIssuesCache.filter((i) => i.device_id === deviceId);
+
+  const rows = devicesCache.length
+    ? devicesCache.map((d) => {
+        const openIssues = issuesFor(d.id);
+        return `<div class="submission">
+          <span class="s-icon">${icon("laptop")}</span>
+          <div style="flex:1;min-width:0">
+            <div class="s-title">${esc(d.device_type)}${d.asset_tag ? ` · ${esc(d.asset_tag)}` : ""}</div>
+            <div class="s-meta">${esc(schoolName(d.school_id))}${d.serial_number ? ` · SN ${esc(d.serial_number)}` : ""}</div>
+            ${openIssues.length
+              ? openIssues.map((i) => `<div class="notice" style="margin-top:.4rem">${icon("alert")}
+                  <span>${esc(i.issue)}</span>
+                  <button class="btn btn-outline btn-xs" style="margin-left:.5rem" data-issue-resolve="${esc(i.id)}">${icon("check")} Resolve</button>
+                </div>`).join("")
+              : ""}
+            ${issueFormDeviceId === d.id
+              ? `<form class="add-user-form" data-issue-form="${esc(d.id)}" style="margin-top:.5rem">
+                   <div class="field"><input class="input" name="issue" required placeholder="What's wrong?"></div>
+                   <div class="add-user-actions">
+                     <button class="btn btn-primary btn-xs" type="submit">Report</button>
+                     <button class="btn btn-outline btn-xs" type="button" data-issue-cancel>Cancel</button>
+                   </div>
+                 </form>`
+              : ""}
+          </div>
+          <span class="pill role-pill">${esc(d.status)}</span>
+          ${issueFormDeviceId !== d.id
+            ? `<button class="btn btn-outline btn-xs" style="margin-left:.5rem" data-issue-toggle="${esc(d.id)}">${icon("alert")} Report issue</button>`
+            : ""}
+        </div>`;
+      }).join("")
+    : `<div class="empty-state">No devices recorded yet.</div>`;
+
+  const schoolOpts = getSchools().map((s) => `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join("");
+  const typeOpts = DEVICE_TYPES.map((t) => `<option value="${t}">${t[0].toUpperCase()}${t.slice(1)}</option>`).join("");
+
+  const addForm = deviceFormOpen ? `
+    <form id="deviceForm" class="add-user-form">
+      <div class="form-row">
+        <div class="field"><label>Type</label><select class="select" name="device_type" required>${typeOpts}</select></div>
+        <div class="field"><label>School</label><select class="select" name="school_id" required>
+          <option value="" disabled selected>Select a school</option>${schoolOpts}</select></div>
+      </div>
+      <div class="form-row">
+        <div class="field"><label>Serial number</label><input class="input" name="serial_number" placeholder="optional"></div>
+        <div class="field"><label>Asset tag</label><input class="input" name="asset_tag" placeholder="optional"></div>
+      </div>
+      <div class="add-user-actions">
+        <button class="btn btn-primary" type="submit">${icon("check")} Add device</button>
+        <button class="btn btn-outline" type="button" data-device-cancel>Cancel</button>
       </div>
     </form>` : "";
 
@@ -3034,6 +3130,7 @@ function adminBody(ctx) {
     </div>
     ${adminAccountsPanel(ctx.user)}
     ${officerAssignmentsPanel()}
+    ${devicesPanel()}
     ${userManagementPanel(ctx.user)}
     ${digitalLibraryPanel()}
     <div class="panel" style="margin-top:1.5rem">
@@ -6050,7 +6147,7 @@ export function wireMyDashboard(user, events) {
     // of the dashboard visibly shaking/blinking non-stop).
     if (!programmeDataLoaded) {
       const classesPromise = classesLoaded ? Promise.resolve(classesCache) : loadClasses();
-      Promise.allSettled([loadSchools(), loadReturns(), loadRevisions(), loadGrades(), loadFieldReports(), classesPromise, loadDeviceIssues(), loadMeIndicators(), loadSchoolFacilities()]).then(() => {
+      Promise.allSettled([loadSchools(), loadReturns(), loadRevisions(), loadGrades(), loadFieldReports(), classesPromise, loadDeviceIssues(), loadMeIndicators(), loadSchoolFacilities(), loadDevices()]).then(() => {
         programmeDataLoaded = true;
         // Full re-render, not just renderAnalytics(): Programme Overview (a
         // sibling of the analytics panel, not inside it) reads the same
@@ -6450,6 +6547,93 @@ export function wireMyDashboard(user, events) {
 
     wireOfficerAssignments();
     loadAssignments().then(renderAssignments);
+
+    // --- devices (patch-13) ---
+    function renderDevices() {
+      const holder = body.querySelector("[data-devices-panel]");
+      if (!holder) return;
+      holder.outerHTML = devicesPanel();
+      wireDevices();
+    }
+    function wireDevices() {
+      const panel = body.querySelector("[data-devices-panel]");
+      if (!panel) return;
+
+      panel.querySelector("[data-device-add-toggle]")?.addEventListener("click", () => {
+        deviceFormOpen = !deviceFormOpen;
+        if (deviceFormOpen) collapsedPanels.devices = false;
+        renderDevices();
+      });
+      panel.querySelector("[data-device-cancel]")?.addEventListener("click", () => {
+        deviceFormOpen = false;
+        renderDevices();
+      });
+      panel.querySelector("#deviceForm")?.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const form = e.currentTarget;
+        const d = Object.fromEntries(new FormData(form).entries());
+        const submit = form.querySelector("[type=submit]");
+        if (submit) { submit.disabled = true; submit.textContent = "Adding…"; }
+        const { error } = await supabase.from("devices").insert({
+          device_type: d.device_type, school_id: d.school_id,
+          serial_number: d.serial_number || null, asset_tag: d.asset_tag || null,
+        });
+        if (error) {
+          if (submit) { submit.disabled = false; submit.innerHTML = `${icon("check")} Add device`; }
+          return toast("Could not add device", authMessage(error), "error");
+        }
+        deviceFormOpen = false;
+        await loadDevices();
+        renderDevices();
+        toast("Device added", "", "success");
+      });
+
+      panel.querySelectorAll("[data-issue-toggle]").forEach((btn) =>
+        btn.addEventListener("click", () => {
+          issueFormDeviceId = btn.dataset.issueToggle;
+          renderDevices();
+        })
+      );
+      panel.querySelector("[data-issue-cancel]")?.addEventListener("click", () => {
+        issueFormDeviceId = null;
+        renderDevices();
+      });
+      panel.querySelectorAll("[data-issue-form]").forEach((form) =>
+        form.addEventListener("submit", async (e) => {
+          e.preventDefault();
+          const deviceId = form.dataset.issueForm;
+          const issue = (new FormData(form).get("issue") || "").toString().trim();
+          if (!issue) return;
+          const submit = form.querySelector("[type=submit]");
+          if (submit) submit.disabled = true;
+          const { error } = await supabase.from("device_maintenance").insert({ device_id: deviceId, issue });
+          if (error) {
+            if (submit) submit.disabled = false;
+            return toast("Could not report issue", authMessage(error), "error");
+          }
+          issueFormDeviceId = null;
+          await loadDeviceIssues();
+          renderDevices();
+          toast("Issue reported", "", "success");
+        })
+      );
+      panel.querySelectorAll("[data-issue-resolve]").forEach((btn) =>
+        btn.addEventListener("click", async () => {
+          btn.disabled = true;
+          const { error } = await supabase.from("device_maintenance")
+            .update({ status: "resolved", resolved_at: new Date().toISOString() })
+            .eq("id", btn.dataset.issueResolve);
+          if (error) {
+            btn.disabled = false;
+            return toast("Could not resolve", authMessage(error), "error");
+          }
+          await loadDeviceIssues();
+          renderDevices();
+          toast("Issue resolved", "", "success");
+        })
+      );
+    }
+    wireDevices();
 
     // --- edit a user's full credentials (incl. password) ---
     body.querySelectorAll("[data-edit-user]").forEach((btn) =>
