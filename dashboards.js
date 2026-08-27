@@ -1730,6 +1730,7 @@ function mdmTable(moduleKey, canWrite) {
     const cells = cfg.renderRow(r).map((c) => `<div class="utx-cell">${c}</div>`).join("");
     const actions = `
       ${moduleKey === "schools" ? `<button class="icon-btn" data-s360-open="${esc(key)}" title="Open 360 profile">${icon("layers")}</button>` : ""}
+      ${moduleKey === "teachers" ? `<button class="icon-btn" data-t360-open="${esc(key)}" title="Open 360 profile">${icon("layers")}</button>` : ""}
       <button class="icon-btn" data-mdm-view="${esc(key)}" title="View">${icon("eye")}</button>
       ${canWrite ? `<button class="icon-btn" data-mdm-edit="${esc(key)}" title="Edit">${icon("pen")}</button>` : ""}
       ${canWrite && !cfg.noArchive ? (active
@@ -2038,6 +2039,9 @@ function wireMasterData() {
   panel.querySelectorAll("[data-s360-open]").forEach((btn) =>
     btn.addEventListener("click", () => openSchool360(btn.dataset.s360Open))
   );
+  panel.querySelectorAll("[data-t360-open]").forEach((btn) =>
+    btn.addEventListener("click", () => openTeacher360(btn.dataset.t360Open))
+  );
 }
 
 /* ============================================================
@@ -2225,7 +2229,7 @@ async function loadSchool360(schoolId) {
 // calendar window the query didn't specifically enforce — "12 Jun – 20 Aug
 // 2026" is a true statement about what was fetched; "last 30 days" would
 // not be, since these tables are read without a date filter.
-function s360Period(rows, dateKeys) {
+function x360Period(rows, dateKeys) {
   const keys = Array.isArray(dateKeys) ? dateKeys : [dateKeys];
   // Each row is checked against every key, not just the first — needed for
   // a merged set like kolibri+library+learning activity, where different
@@ -2242,13 +2246,13 @@ function s360Period(rows, dateKeys) {
   const fmt = (d) => d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
   return min.getTime() === max.getTime() ? fmt(min) : `${fmt(min)} – ${fmt(max)}`;
 }
-function s360MaxDate(rows, ...keys) {
+function x360MaxDate(rows, ...keys) {
   let max = null;
   rows.forEach((r) => keys.forEach((k) => { const t = r[k] ? new Date(r[k]).getTime() : NaN; if (!isNaN(t) && (max === null || t > max)) max = t; }));
   return max;
 }
 
-function s360MetricCard(m) {
+function x360MetricCard(m) {
   return `<article class="kpi-card">
     <div class="kpi-top"><span class="kpi-label">${icon(m.icon)} ${esc(m.label)}</span></div>
     <div class="kpi-figures">
@@ -2261,26 +2265,28 @@ function s360MetricCard(m) {
   </article>`;
 }
 
-function s360Section(title, icon_, bodyHtml) {
+function x360Section(title, icon_, bodyHtml) {
   return `<div class="panel" style="margin-top:1.25rem"><h3 style="display:flex;align-items:center;gap:.5rem;margin-bottom:.75rem">${icon(icon_)} ${esc(title)}</h3>${bodyHtml}</div>`;
 }
 
-const s360EmptyRow = (msg) => `<div class="empty-state">${esc(msg)}</div>`;
+const x360EmptyRow = (msg) => `<div class="empty-state">${esc(msg)}</div>`;
 
-/* Every tab after Overview shares this shell: loading while the whole
-   profile is still fetching, the shared load error if the school itself
-   failed to load, or the tab's own content. Kept as one gate here rather
-   than repeated in each of the ten tab functions. */
-function s360Gate(renderContent) {
-  const c = school360Cache;
-  if (!c || !c.loaded) return `<div class="empty-state">Loading this school's records…</div>`;
-  if (c.error) return `<div class="empty-state">Could not load everything for this school — ${esc(c.error)} <button class="btn btn-outline btn-xs" data-s360-retry>${icon("refresh")} Retry</button></div>`;
-  return renderContent(c);
+/* Every tab after Overview, on every "360" profile (School, Teacher, and
+   whatever's next), shares this shell: loading while the whole profile is
+   still fetching, the shared load error if the record itself failed to
+   load, or the tab's own content. One gate, parameterized by which cache
+   and which retry button belongs to this entity, rather than either
+   repeating it in every tab function or copy-pasting a school-specific
+   version for every new entity this pattern gets applied to. */
+function x360Gate(cache, opts, renderContent) {
+  if (!cache || !cache.loaded) return `<div class="empty-state">Loading ${esc(opts.noun)}'s records…</div>`;
+  if (cache.error) return `<div class="empty-state">Could not load everything for ${esc(opts.noun)} — ${esc(cache.error)} <button class="btn btn-outline btn-xs" data-${opts.retryAttr}-retry>${icon("refresh")} Retry</button></div>`;
+  return renderContent(cache);
 }
 
 /* ---------------------------------------------------------- School 360: Overview */
 function school360Overview() {
-  return s360Gate((c) => {
+  return x360Gate(school360Cache, { noun: "this school", retryAttr: "s360" }, (c) => {
     const activeLearners = c.learners.filter((l) => l.active !== false);
     const activeTeachers = c.teachers.filter((t) => t.active !== false);
     const trainedIds = new Set(c.training.map((t) => t.teacher_id));
@@ -2298,24 +2304,24 @@ function school360Overview() {
     const metrics = [
       { icon: "graduation", label: "Learner population",
         value: `${activeLearners.length}${c.learners.length !== activeLearners.length ? ` (+${c.learners.length - activeLearners.length} archived)` : ""}`,
-        empty: !c.learners.length, period: "Current roster", updated: s360MaxDate(c.learners, "updated_at"), source: "learners" },
+        empty: !c.learners.length, period: "Current roster", updated: x360MaxDate(c.learners, "updated_at"), source: "learners" },
       { icon: "users", label: "Teacher population",
         value: `${activeTeachers.length}`,
-        empty: !c.teachers.length, period: "Current roster", updated: s360MaxDate(c.teachers, "updated_at"), source: "profiles (teachers)" },
+        empty: !c.teachers.length, period: "Current roster", updated: x360MaxDate(c.teachers, "updated_at"), source: "profiles (teachers)" },
       { icon: "school", label: "Programme participation",
         value: c.programmes.length ? c.programmes.filter((p) => p.status === "active").map((p) => p.programme).join(", ") || `${c.programmes.length} recorded` : "",
-        empty: !c.programmes.length, period: "Current", updated: s360MaxDate(c.programmes, "updated_at"), source: "school_programmes" },
+        empty: !c.programmes.length, period: "Current", updated: x360MaxDate(c.programmes, "updated_at"), source: "school_programmes" },
       { icon: "award", label: "Teacher training progress",
         value: `${trainedCount}/${activeTeachers.length || 0} teachers trained`,
-        empty: !activeTeachers.length, period: "All-time", updated: s360MaxDate(c.training, "updated_at"), source: "teacher_training" },
+        empty: !activeTeachers.length, period: "All-time", updated: x360MaxDate(c.training, "updated_at"), source: "teacher_training" },
       { icon: "laptop", label: "Digital learning activity",
         value: `${digitalEvents.length} event${digitalEvents.length === 1 ? "" : "s"}`,
         empty: !digitalEvents.length,
-        period: s360Period(digitalEvents, ["synced_at", "occurred_at"]),
-        updated: s360MaxDate(digitalEvents, "synced_at", "occurred_at"), source: "kolibri/library/learning activity" },
+        period: x360Period(digitalEvents, ["synced_at", "occurred_at"]),
+        updated: x360MaxDate(digitalEvents, "synced_at", "occurred_at"), source: "kolibri/library/learning activity" },
       { icon: "smartphone", label: "Device status",
         value: Object.entries(deviceCounts).map(([k, v]) => `${v} ${k}`).join(" · "),
-        empty: !c.devices.length, period: "Current", updated: s360MaxDate(c.devices, "updated_at"), source: "devices" },
+        empty: !c.devices.length, period: "Current", updated: x360MaxDate(c.devices, "updated_at"), source: "devices" },
       { icon: "wrench", label: "Infrastructure status",
         value: c.facilities ? `${FACILITY_FLAGS.filter((f) => c.facilities[f.key]).length}/${FACILITY_FLAGS.length} amenities present` : "",
         empty: !c.facilities, period: "Current", updated: c.facilities?.updated_at ? new Date(c.facilities.updated_at).getTime() : null, source: "school_facilities" },
@@ -2325,14 +2331,14 @@ function school360Overview() {
       { icon: "alert", label: "Open issues",
         value: `${openMaint.length + openInterventions.length} open (${openMaint.length} device, ${openInterventions.length} case)`,
         empty: !(openMaint.length + openInterventions.length), period: "Current",
-        updated: s360MaxDate([...openMaint, ...openInterventions], "updated_at"), source: "device_maintenance · interventions" },
+        updated: x360MaxDate([...openMaint, ...openInterventions], "updated_at"), source: "device_maintenance · interventions" },
       { icon: "target", label: "Key M&E indicators",
         value: `${new Set(c.meValues.map((v) => v.indicator_id)).size} indicator${new Set(c.meValues.map((v) => v.indicator_id)).size === 1 ? "" : "s"} tracked`,
         empty: !c.meValues.length, period: c.meValues[0] ? `${c.meValues[0].period_term || ""} ${c.meValues[0].period_year}`.trim() : null,
-        updated: s360MaxDate(c.meValues, "updated_at"), source: "me_indicator_values" },
+        updated: x360MaxDate(c.meValues, "updated_at"), source: "me_indicator_values" },
     ];
 
-    const grid = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:1rem">${metrics.map(s360MetricCard).join("")}</div>`;
+    const grid = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:1rem">${metrics.map(x360MetricCard).join("")}</div>`;
 
     const meRows = c.meValues.length
       ? c.meValues.map((v) => {
@@ -2342,48 +2348,48 @@ function school360Overview() {
             <div class="s-meta">${v.period_term ? esc(v.period_term) + " " : ""}${v.period_year} · ${esc(v.source)}</div>
           </div><span class="pill role-pill">${v.value}${esc(v.indicator?.unit || "")}${target ? ` / ${target.target_value}${esc(v.indicator?.unit || "")} target` : ""}</span></div>`;
         }).join("")
-      : s360EmptyRow("No M&E indicators recorded for this school yet.");
+      : x360EmptyRow("No M&E indicators recorded for this school yet.");
 
-    return `${grid}${s360Section("M&E snapshot", "target", meRows)}`;
+    return `${grid}${x360Section("M&E snapshot", "target", meRows)}`;
   });
 }
 
 /* ---------------------------------------------------------- School 360: People */
 function school360People() {
-  return s360Gate((c) => {
+  return x360Gate(school360Cache, { noun: "this school", retryAttr: "s360" }, (c) => {
     const person = (p, roleLabel, extra = "") => `<div class="submission">
       <span class="avatar-sm">${esc((p.full_name || p.email || "?").slice(0, 1).toUpperCase())}</span>
       <div style="flex:1;min-width:0"><div class="s-title">${esc(p.full_name || "—")}</div>
         <div class="s-meta">${mdmDash(p.email)}${extra ? " · " + extra : ""}</div></div>
       ${p.active === false ? `<span class="pill danger-pill">Archived</span>` : `<span class="pill role-pill">${esc(roleLabel)}</span>`}
     </div>`;
-    const leaders = c.leaders.length ? c.leaders.map((p) => person(p, p.head_title || "School Leader", p.phone)).join("") : s360EmptyRow("No school leader linked to this school.");
-    const teachers = c.teachers.length ? c.teachers.map((p) => person(p, "Teacher")).join("") : s360EmptyRow("No teachers linked to this school.");
+    const leaders = c.leaders.length ? c.leaders.map((p) => person(p, p.head_title || "School Leader", p.phone)).join("") : x360EmptyRow("No school leader linked to this school.");
+    const teachers = c.teachers.length ? c.teachers.map((p) => person(p, "Teacher")).join("") : x360EmptyRow("No teachers linked to this school.");
     const officers = c.officers.length
       ? c.officers.map((a) => person(a.officer || {}, "Field Officer assigned")).join("")
-      : s360EmptyRow("No field officer currently assigned.");
-    return `${s360Section("School leadership", "userCheck", leaders)}${s360Section("Teachers", "users", teachers)}${s360Section("Field officers", "mapPin", officers)}`;
+      : x360EmptyRow("No field officer currently assigned.");
+    return `${x360Section("School leadership", "userCheck", leaders)}${x360Section("Teachers", "users", teachers)}${x360Section("Field officers", "mapPin", officers)}`;
   });
 }
 
 /* ---------------------------------------------------------- School 360: Learning */
 function school360Learning() {
-  return s360Gate((c) => {
+  return x360Gate(school360Cache, { noun: "this school", retryAttr: "s360" }, (c) => {
     const classes = c.classes.length
       ? c.classes.map((cl) => `<div class="submission"><div style="flex:1;min-width:0"><div class="s-title">${esc(cl.name)}</div>
           <div class="s-meta">${c.assignments.filter((a) => a.class_id === cl.id).length} assignment(s)</div></div></div>`).join("")
-      : s360EmptyRow("No classes recorded at this school yet.");
+      : x360EmptyRow("No classes recorded at this school yet.");
     const assignments = c.assignments.length
       ? c.assignments.map((a) => `<div class="submission"><div style="flex:1;min-width:0"><div class="s-title">${esc(a.title)}</div>
           <div class="s-meta">${esc(a.class?.name || "—")} · ${esc(a.type || "assignment")} · ${new Date(a.created_at).toLocaleDateString()}</div></div></div>`).join("")
-      : s360EmptyRow("No assignments recorded yet.");
-    return `${s360Section("Classes", "layers", classes)}${s360Section("Assignments", "clipboard", assignments)}`;
+      : x360EmptyRow("No assignments recorded yet.");
+    return `${x360Section("Classes", "layers", classes)}${x360Section("Assignments", "clipboard", assignments)}`;
   });
 }
 
 /* ---------------------------------------------------------- School 360: Digital Learning */
 function school360Digital() {
-  return s360Gate((c) => {
+  return x360Gate(school360Cache, { noun: "this school", retryAttr: "s360" }, (c) => {
     const rows = [
       ...c.kolibri.map((k) => ({ when: k.synced_at, label: `Kolibri content, ${k.progress_pct ?? 0}% progress`, extra: k.time_spent_seconds ? Math.round(k.time_spent_seconds / 60) + " min" : "" })),
       ...c.library.map((l) => ({ when: l.occurred_at, label: `Library: ${l.action || "activity"}`, extra: "" })),
@@ -2392,15 +2398,15 @@ function school360Digital() {
     const body = rows.length
       ? rows.map((r) => `<div class="submission"><div style="flex:1;min-width:0"><div class="s-title">${esc(r.label)}</div>
           <div class="s-meta">${new Date(r.when).toLocaleString()}${r.extra ? " · " + esc(r.extra) : ""}</div></div></div>`).join("")
-      : s360EmptyRow("No digital learning activity recorded for this school's learners yet.");
-    return s360Section(`Recent activity (${rows.length})`, "laptop", body);
+      : x360EmptyRow("No digital learning activity recorded for this school's learners yet.");
+    return x360Section(`Recent activity (${rows.length})`, "laptop", body);
   });
 }
 
 /* ---------------------------------------------------------- School 360: Infrastructure */
 function school360Infrastructure() {
-  return s360Gate((c) => {
-    if (!c.facilities) return s360EmptyRow("No infrastructure record for this school yet — add one from Master Data Management → Infrastructure.");
+  return x360Gate(school360Cache, { noun: "this school", retryAttr: "s360" }, (c) => {
+    if (!c.facilities) return x360EmptyRow("No infrastructure record for this school yet — add one from Master Data Management → Infrastructure.");
     const f = c.facilities;
     const rows = [
       ["Classrooms", f.classrooms], ["Toilets", f.toilets], ["Dormitories", f.dormitories],
@@ -2408,14 +2414,14 @@ function school360Infrastructure() {
       ["Water source", f.water_source], ["Electricity", f.electricity], ["Internet", f.internet_status],
     ].map(([l, v]) => `<div class="form-row"><strong style="min-width:9rem;display:inline-block">${esc(l)}</strong><span>${mdmDash(v)}</span></div>`).join("");
     const amenities = FACILITY_FLAGS.map((fl) => `<span class="pill ${f[fl.key] ? "synced" : "role-pill"}">${f[fl.key] ? icon("check") : ""} ${esc(fl.label)}</span>`).join(" ");
-    return `${s360Section("Facilities", "wrench", rows)}${s360Section("Amenities", "star", `<div style="display:flex;flex-wrap:wrap;gap:.5rem">${amenities}</div>`)}
+    return `${x360Section("Facilities", "wrench", rows)}${x360Section("Amenities", "star", `<div style="display:flex;flex-wrap:wrap;gap:.5rem">${amenities}</div>`)}
       <p class="hint" style="margin-top:.5rem">Last updated ${f.updated_at ? esc(timeAgo(new Date(f.updated_at).getTime())) : "never"}.</p>`;
   });
 }
 
 /* ---------------------------------------------------------- School 360: Devices */
 function school360Devices() {
-  return s360Gate((c) => {
+  return x360Gate(school360Cache, { noun: "this school", retryAttr: "s360" }, (c) => {
     const rows = c.devices.length
       ? c.devices.map((d) => {
           const issues = c.maintenance.filter((m) => m.device_id === d.id);
@@ -2425,28 +2431,28 @@ function school360Devices() {
             <div class="s-meta">${d.serial_number ? "SN " + esc(d.serial_number) + " · " : ""}${openCount ? openCount + " open issue(s)" : "No open issues"}</div>
           </div><span class="pill ${{ active: "synced", faulty: "danger-pill", retired: "role-pill" }[d.status] || "role-pill"}">${esc(d.status)}</span></div>`;
         }).join("")
-      : s360EmptyRow("No devices recorded at this school yet.");
-    return s360Section(`Devices (${c.devices.length})`, "smartphone", rows);
+      : x360EmptyRow("No devices recorded at this school yet.");
+    return x360Section(`Devices (${c.devices.length})`, "smartphone", rows);
   });
 }
 
 /* ---------------------------------------------------------- School 360: Field Visits */
 function school360Visits() {
-  return s360Gate((c) => {
+  return x360Gate(school360Cache, { noun: "this school", retryAttr: "s360" }, (c) => {
     const reportRows = c.fieldReports.length
       ? c.fieldReports.map((r) => `<div class="submission"><div style="flex:1;min-width:0">
           <div class="s-title">${esc(r.visit_type || "Visit")}</div>
           <div class="s-meta">${new Date(r.created_at).toLocaleDateString()}${r.teachers != null ? ` · ${r.teachers} teacher(s) seen` : ""}${r.learners != null ? ` · ${r.learners} learner(s) seen` : ""}</div>
           ${r.notes ? `<div class="s-meta">${esc(r.notes)}</div>` : ""}
         </div><span class="pill role-pill">${esc(r.status || "logged")}</span></div>`).join("")
-      : s360EmptyRow("No field visit reports for this school yet.");
-    return s360Section(`Field visits (${c.fieldReports.length})`, "mapPin", reportRows);
+      : x360EmptyRow("No field visit reports for this school yet.");
+    return x360Section(`Field visits (${c.fieldReports.length})`, "mapPin", reportRows);
   });
 }
 
 /* ---------------------------------------------------------- School 360: Assessments */
 function school360Assessments() {
-  return s360Gate((c) => {
+  return x360Gate(school360Cache, { noun: "this school", retryAttr: "s360" }, (c) => {
     const rows = c.assessments.length
       ? c.assessments.map((a) => {
           const subs = c.submissions.filter((s) => s.assessment_id === a.id);
@@ -2456,15 +2462,15 @@ function school360Assessments() {
             <div class="s-meta">${esc(a.class?.name || "—")} · ${subs.length} submission(s)${avg !== null ? ` · avg ${avg}%` : ""}</div>
           </div><span class="pill ${a.published ? "synced" : "role-pill"}">${a.published ? "Published" : "Draft"}</span></div>`;
         }).join("")
-      : s360EmptyRow("No assessments recorded for this school's classes yet.");
-    return s360Section(`Assessments (${c.assessments.length})`, "chartColumn", rows);
+      : x360EmptyRow("No assessments recorded for this school's classes yet.");
+    return x360Section(`Assessments (${c.assessments.length})`, "chartColumn", rows);
   });
 }
 
 /* ---------------------------------------------------------- School 360: Attendance */
 function school360Attendance() {
-  return s360Gate((c) => {
-    if (!c.attendance.length) return s360EmptyRow("No attendance records for this school's learners yet.");
+  return x360Gate(school360Cache, { noun: "this school", retryAttr: "s360" }, (c) => {
+    if (!c.attendance.length) return x360EmptyRow("No attendance records for this school's learners yet.");
     const present = c.attendance.filter((a) => a.status === "present").length;
     const rate = Math.round((present / c.attendance.length) * 100);
     const byDate = new Map();
@@ -2475,15 +2481,15 @@ function school360Attendance() {
         return `<div class="submission"><span class="s-title" style="flex:1">${new Date(date).toLocaleDateString()}</span>
           <span class="s-meta">${p}/${recs.length} present</span></div>`;
       }).join("");
-    return `${s360Section("Attendance rate", "clipboard", `<div class="kpi-value" style="font-size:2rem">${rate}%</div>
-      <p class="s-meta">${present} present of ${c.attendance.length} recorded marks · ${s360Period(c.attendance, "session_date")}</p>`)}
-      ${s360Section("Recent days", "clock", recentDays)}`;
+    return `${x360Section("Attendance rate", "clipboard", `<div class="kpi-value" style="font-size:2rem">${rate}%</div>
+      <p class="s-meta">${present} present of ${c.attendance.length} recorded marks · ${x360Period(c.attendance, "session_date")}</p>`)}
+      ${x360Section("Recent days", "clock", recentDays)}`;
   });
 }
 
 /* ---------------------------------------------------------- School 360: Actions */
 function school360Actions() {
-  return s360Gate((c) => {
+  return x360Gate(school360Cache, { noun: "this school", retryAttr: "s360" }, (c) => {
     const rows = c.interventions.length
       ? c.interventions.map((iv) => {
           const items = c.actionItems.filter((a) => a.intervention_id === iv.id);
@@ -2493,21 +2499,21 @@ function school360Actions() {
             ${items.map((a) => `<div class="s-meta">— ${esc(a.title)} <span class="pill role-pill">${esc(a.status)}</span>${a.assignee?.full_name ? " · " + esc(a.assignee.full_name) : ""}</div>`).join("")}
           </div><span class="pill role-pill">${esc(iv.status)}</span></div>`;
         }).join("")
-      : s360EmptyRow("No interventions or action items open for this school. Open one from the admin dashboard's Interventions panel.");
-    return s360Section(`Interventions (${c.interventions.length})`, "target", rows);
+      : x360EmptyRow("No interventions or action items open for this school. Open one from the admin dashboard's Interventions panel.");
+    return x360Section(`Interventions (${c.interventions.length})`, "target", rows);
   });
 }
 
 /* ---------------------------------------------------------- School 360: Evidence */
 function school360Evidence() {
-  return s360Gate((c) => {
+  return x360Gate(school360Cache, { noun: "this school", retryAttr: "s360" }, (c) => {
     const rows = c.evidence.length
       ? c.evidence.map((e) => `<div class="submission"><div style="flex:1;min-width:0">
           <div class="s-title">${icon("link")} <a href="${esc(e.file_url)}" target="_blank" rel="noopener">${esc(e.title)}</a></div>
           <div class="s-meta">${esc(e.ref_table)} · ${new Date(e.created_at).toLocaleDateString()}</div>
         </div></div>`).join("")
-      : s360EmptyRow("No evidence attached to this school's interventions or M&E records yet.");
-    return s360Section(`Evidence (${c.evidence.length})`, "link", rows);
+      : x360EmptyRow("No evidence attached to this school's interventions or M&E records yet.");
+    return x360Section(`Evidence (${c.evidence.length})`, "link", rows);
   });
 }
 
@@ -2535,7 +2541,9 @@ function school360Modal() {
         ${school.active === false ? `<span class="pill danger-pill">Archived</span>` : ""}</p>`;
 
   const body = !school
-    ? (c?.error ? `<div class="empty-state">${esc(c.error)}</div>` : `<div class="empty-state">Loading this school's profile…</div>`)
+    ? (c?.error
+        ? `<div class="empty-state">${esc(c.error)} <button class="btn btn-outline btn-xs" data-s360-retry>${icon("refresh")} Retry</button></div>`
+        : `<div class="empty-state">Loading this school's profile…</div>`)
     : (SCHOOL360_RENDER[school360Tab] || school360Overview)();
 
   return `<div class="modal-overlay" data-s360-overlay>
@@ -2568,6 +2576,332 @@ function wireSchool360() {
     btn.addEventListener("click", () => { school360Tab = btn.dataset.s360Tab; renderSchool360(); })
   );
   overlay.querySelector("[data-s360-retry]")?.addEventListener("click", () => { if (school360Id) loadSchool360(school360Id).then(renderSchool360); });
+}
+
+/* ============================================================
+   Teacher 360 — a unified, read-only profile for one teacher.
+
+   The same shape as School 360, on purpose: opened from Master Data
+   Management's Teachers module, nothing duplicated (every tab is a fresh
+   query against the same tables the teacher's own dashboard and the
+   Interventions/Digital Library panels already read and write), read-only
+   because every one of those tables already has a real place to create or
+   edit its rows. See School 360's own header for the fuller rationale —
+   it applies here unchanged.
+
+   Lesson Planning and Assignments are deliberately two different slices of
+   the same `assignments` table, split by `type` rather than shown twice:
+   `type = 'lesson'` is what a teacher has prepared to teach; `exercise`/
+   `quiz` is work actually given to learners. Overlap would double-count
+   the same rows under two tabs, which is worse than the alternative of
+   picking a split and being explicit about it.
+
+   "ICT adoption" has no dedicated table of its own — it is computed as
+   digital-learning activity (Kolibri, the library, and general learning
+   activity) among the learners enrolled in this teacher's own classes.
+   That is a real, defensible proxy for "how much this teacher's classroom
+   actually uses digital learning," not a fabricated score; it is labeled
+   as exactly what it is rather than presented as something more precise. */
+
+const TEACHER360_TABS = [
+  ["overview", "Overview", "layers"],
+  ["training", "Training & Certificates", "award"],
+  ["lessons", "Lesson Planning", "bookOpen"],
+  ["ict", "ICT Adoption", "laptop"],
+  ["resources", "Digital Resources", "library"],
+  ["assignments", "Assignments", "clipboard"],
+  ["assessments", "Assessments", "chartColumn"],
+  ["followup", "Follow-up", "target"],
+];
+
+let teacher360Id = null;
+let teacher360Tab = "overview";
+let teacher360LoadToken = 0;
+let teacher360Cache = null;
+
+function freshTeacher360Cache(teacherId) {
+  return {
+    teacherId, loaded: false, error: null, teacher: null, ext: null,
+    training: [], classes: [], resources: [], followUps: [],
+    assignments: [], assessments: [], submissions: [],
+    kolibri: [], library: [], learningActivity: [],
+  };
+}
+
+async function openTeacher360(teacherId) {
+  teacher360Id = teacherId;
+  teacher360Tab = "overview";
+  teacher360Cache = freshTeacher360Cache(teacherId);
+  renderTeacher360();
+  await loadTeacher360(teacherId);
+  if (teacher360Id === teacherId) renderTeacher360();
+}
+
+function closeTeacher360() {
+  teacher360Id = null;
+  teacher360Cache = null;
+  renderTeacher360();
+}
+
+async function loadTeacher360(teacherId) {
+  const token = ++teacher360LoadToken;
+  const set = (patch) => { if (teacher360Cache && teacher360Cache.teacherId === teacherId) Object.assign(teacher360Cache, patch); };
+
+  const [teacherRes, extRes] = await Promise.all([
+    supabase.from("profiles").select("*, school:schools(id,name,county)").eq("id", teacherId).maybeSingle(),
+    supabase.from("teachers").select("*").eq("id", teacherId).maybeSingle(),
+  ]);
+  if (token !== teacher360LoadToken) return;
+  if (teacherRes.error || !teacherRes.data) {
+    set({ loaded: true, error: teacherRes.error ? authMessage(teacherRes.error) : "Teacher not found." });
+    return;
+  }
+  set({ teacher: teacherRes.data, ext: extRes.data || null });
+
+  const [trainingRes, classesRes, resourcesRes, followUpsRes] = await Promise.all([
+    supabase.from("teacher_training").select("*").eq("teacher_id", teacherId).order("completed_at", { ascending: false }),
+    supabase.from("classes").select("*").eq("owner_id", teacherId),
+    supabase.from("digital_learning").select("*").eq("created_by", teacherId).order("created_at", { ascending: false }),
+    supabase.from("action_items").select("*, intervention:interventions(title,status,school_id)").eq("assignee_id", teacherId).order("due_date"),
+  ]);
+  if (token !== teacher360LoadToken) return;
+
+  const classes = classesRes.data || [];
+  set({
+    training: trainingRes.data || [], classes, resources: resourcesRes.data || [],
+    followUps: followUpsRes.data || [],
+  });
+
+  const classIds = classes.map((c) => c.id);
+  const [assignmentsRes, assessmentsRes, enrollmentsRes] = await Promise.all([
+    classIds.length ? supabase.from("assignments").select("*, class:classes(name)").in("class_id", classIds).order("created_at", { ascending: false }) : Promise.resolve({ data: [] }),
+    classIds.length ? supabase.from("assessments").select("*, class:classes(name)").in("class_id", classIds).order("created_at", { ascending: false }) : Promise.resolve({ data: [] }),
+    classIds.length ? supabase.from("enrollments").select("learner_id").in("class_id", classIds).not("learner_id", "is", null) : Promise.resolve({ data: [] }),
+  ]);
+  if (token !== teacher360LoadToken) return;
+
+  const assignments = assignmentsRes.data || [];
+  const assessments = assessmentsRes.data || [];
+  const learnerIds = [...new Set((enrollmentsRes.data || []).map((e) => e.learner_id))];
+  set({ assignments, assessments });
+
+  const assessmentIds = assessments.map((a) => a.id);
+  const [submissionsRes, kolibriRes, libraryRes, learningActRes] = await Promise.all([
+    assessmentIds.length ? supabase.from("submissions").select("*").in("assessment_id", assessmentIds) : Promise.resolve({ data: [] }),
+    learnerIds.length ? supabase.from("kolibri_activity").select("*").in("learner_id", learnerIds).order("synced_at", { ascending: false }).limit(200) : Promise.resolve({ data: [] }),
+    learnerIds.length ? supabase.from("library_activity").select("*").in("learner_id", learnerIds).order("occurred_at", { ascending: false }).limit(200) : Promise.resolve({ data: [] }),
+    learnerIds.length ? supabase.from("learning_activity").select("*").in("learner_id", learnerIds).order("occurred_at", { ascending: false }).limit(200) : Promise.resolve({ data: [] }),
+  ]);
+  if (token !== teacher360LoadToken) return;
+
+  set({
+    loaded: true, error: null,
+    submissions: submissionsRes.data || [], kolibri: kolibriRes.data || [],
+    library: libraryRes.data || [], learningActivity: learningActRes.data || [],
+  });
+}
+
+/* ---------------------------------------------------------- Teacher 360: Overview */
+function teacher360Overview() {
+  return x360Gate(teacher360Cache, { noun: "this teacher", retryAttr: "t360" }, (c) => {
+    const lessons = c.assignments.filter((a) => a.type === "lesson");
+    const givenWork = c.assignments.filter((a) => a.type !== "lesson");
+    const ictEvents = [...c.kolibri, ...c.library, ...c.learningActivity];
+    const openFollowUps = c.followUps.filter((a) => a.status !== "done");
+    const certs = c.training.filter((t) => t.certificate_url);
+    const avgScore = c.submissions.length ? Math.round(c.submissions.reduce((n, s) => n + (s.pct || 0), 0) / c.submissions.length) : null;
+
+    const metrics = [
+      { icon: "award", label: "Training completed",
+        value: `${c.training.length} record${c.training.length === 1 ? "" : "s"}`,
+        empty: !c.training.length, period: "All-time", updated: x360MaxDate(c.training, "updated_at"), source: "teacher_training" },
+      { icon: "shield", label: "Certificates held",
+        value: `${certs.length}/${c.training.length || 0}`,
+        empty: !c.training.length, period: "All-time", updated: x360MaxDate(certs, "updated_at"), source: "teacher_training" },
+      { icon: "bookOpen", label: "Lesson planning",
+        value: `${lessons.length} lesson plan${lessons.length === 1 ? "" : "s"}`,
+        empty: !lessons.length, period: x360Period(lessons, "created_at"), updated: x360MaxDate(lessons, "updated_at", "created_at"), source: "assignments (lesson)" },
+      { icon: "laptop", label: "ICT adoption",
+        value: `${ictEvents.length} event${ictEvents.length === 1 ? "" : "s"} in their classes`,
+        empty: !ictEvents.length, period: x360Period(ictEvents, ["synced_at", "occurred_at"]),
+        updated: x360MaxDate(ictEvents, "synced_at", "occurred_at"), source: "kolibri/library/learning activity" },
+      { icon: "library", label: "Digital resources shared",
+        value: `${c.resources.length} resource${c.resources.length === 1 ? "" : "s"}`,
+        empty: !c.resources.length, period: "All-time", updated: x360MaxDate(c.resources, "updated_at", "created_at"), source: "digital_learning" },
+      { icon: "clipboard", label: "Assignments given",
+        value: `${givenWork.length} assignment${givenWork.length === 1 ? "" : "s"}`,
+        empty: !givenWork.length, period: x360Period(givenWork, "created_at"), updated: x360MaxDate(givenWork, "updated_at", "created_at"), source: "assignments" },
+      { icon: "chartColumn", label: "Assessments given",
+        value: `${c.assessments.length}${avgScore !== null ? ` · avg ${avgScore}%` : ""}`,
+        empty: !c.assessments.length, period: x360Period(c.assessments, "created_at"), updated: x360MaxDate(c.assessments, "updated_at", "created_at"), source: "assessments" },
+      { icon: "target", label: "Open follow-up",
+        value: `${openFollowUps.length} open`,
+        empty: !c.followUps.length, period: "Current", updated: x360MaxDate(c.followUps, "updated_at"), source: "action_items" },
+    ];
+
+    return `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:1rem">${metrics.map(x360MetricCard).join("")}</div>`;
+  });
+}
+
+/* ---------------------------------------------------------- Teacher 360: Training & Certificates */
+function teacher360Training() {
+  return x360Gate(teacher360Cache, { noun: "this teacher", retryAttr: "t360" }, (c) => {
+    const rows = c.training.length
+      ? c.training.map((t) => `<div class="submission"><div style="flex:1;min-width:0">
+          <div class="s-title">${esc(t.title)}</div>
+          <div class="s-meta">${mdmDash(t.provider)} · ${t.completed_at ? new Date(t.completed_at).toLocaleDateString() : "in progress"}${t.hours ? ` · ${t.hours}h` : ""}</div>
+        </div>${t.certificate_url ? `<a class="btn btn-outline btn-xs" href="${esc(t.certificate_url)}" target="_blank" rel="noopener">${icon("externalLink")} Certificate</a>` : `<span class="pill role-pill">No certificate</span>`}</div>`).join("")
+      : x360EmptyRow("No training records for this teacher yet.");
+    return x360Section(`Training (${c.training.length})`, "award", rows);
+  });
+}
+
+/* ---------------------------------------------------------- Teacher 360: Lesson Planning */
+function teacher360Lessons() {
+  return x360Gate(teacher360Cache, { noun: "this teacher", retryAttr: "t360" }, (c) => {
+    const lessons = c.assignments.filter((a) => a.type === "lesson");
+    const rows = lessons.length
+      ? lessons.map((a) => `<div class="submission"><div style="flex:1;min-width:0">
+          <div class="s-title">${esc(a.title)}</div>
+          <div class="s-meta">${esc(a.class?.name || "—")} · ${new Date(a.created_at).toLocaleDateString()}</div>
+          ${a.detail ? `<div class="s-meta">${esc(a.detail)}</div>` : ""}
+        </div></div>`).join("")
+      : x360EmptyRow("No lesson plans recorded for this teacher's classes yet.");
+    return x360Section(`Lesson plans (${lessons.length})`, "bookOpen", rows);
+  });
+}
+
+/* ---------------------------------------------------------- Teacher 360: ICT Adoption */
+function teacher360Ict() {
+  return x360Gate(teacher360Cache, { noun: "this teacher", retryAttr: "t360" }, (c) => {
+    const rows = [
+      ...c.kolibri.map((k) => ({ when: k.synced_at, label: `Kolibri content, ${k.progress_pct ?? 0}% progress` })),
+      ...c.library.map((l) => ({ when: l.occurred_at, label: `Library: ${l.action || "activity"}` })),
+      ...c.learningActivity.map((a) => ({ when: a.occurred_at, label: a.activity_type || "Learning activity" })),
+    ].sort((a, b) => new Date(b.when) - new Date(a.when)).slice(0, 100);
+    const body = rows.length
+      ? rows.map((r) => `<div class="submission"><div style="flex:1;min-width:0"><div class="s-title">${esc(r.label)}</div>
+          <div class="s-meta">${new Date(r.when).toLocaleString()}</div></div></div>`).join("")
+      : x360EmptyRow("No digital learning activity recorded among this teacher's enrolled learners yet.");
+    return `<p class="hint" style="margin-bottom:.75rem">${icon("info")} A proxy, not a direct measurement: digital-learning activity among the learners enrolled in this teacher's classes.</p>${x360Section(`Activity (${rows.length})`, "laptop", body)}`;
+  });
+}
+
+/* ---------------------------------------------------------- Teacher 360: Digital Resources */
+function teacher360Resources() {
+  return x360Gate(teacher360Cache, { noun: "this teacher", retryAttr: "t360" }, (c) => {
+    const rows = c.resources.length
+      ? c.resources.map((r) => `<div class="submission"><div style="flex:1;min-width:0">
+          <div class="s-title">${icon("link")} ${r.url ? `<a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.title)}</a>` : esc(r.title)}</div>
+          <div class="s-meta">${esc(r.kind || "resource")} · ${esc(r.category || "—")} · ${new Date(r.created_at).toLocaleDateString()}</div>
+        </div><span class="pill ${r.published ? "synced" : "role-pill"}">${r.published ? "Published" : "Draft"}</span></div>`).join("")
+      : x360EmptyRow("This teacher hasn't added anything to the digital library yet.");
+    return x360Section(`Shared resources (${c.resources.length})`, "library", rows);
+  });
+}
+
+/* ---------------------------------------------------------- Teacher 360: Assignments */
+function teacher360Assignments() {
+  return x360Gate(teacher360Cache, { noun: "this teacher", retryAttr: "t360" }, (c) => {
+    const given = c.assignments.filter((a) => a.type !== "lesson");
+    const rows = given.length
+      ? given.map((a) => `<div class="submission"><div style="flex:1;min-width:0">
+          <div class="s-title">${esc(a.title)}</div>
+          <div class="s-meta">${esc(a.class?.name || "—")} · ${esc(a.type)} · ${new Date(a.created_at).toLocaleDateString()}</div>
+        </div></div>`).join("")
+      : x360EmptyRow("No exercises or quizzes assigned by this teacher yet.");
+    return x360Section(`Assignments (${given.length})`, "clipboard", rows);
+  });
+}
+
+/* ---------------------------------------------------------- Teacher 360: Assessments */
+function teacher360Assessments() {
+  return x360Gate(teacher360Cache, { noun: "this teacher", retryAttr: "t360" }, (c) => {
+    const rows = c.assessments.length
+      ? c.assessments.map((a) => {
+          const subs = c.submissions.filter((s) => s.assessment_id === a.id);
+          const avg = subs.length ? Math.round(subs.reduce((n, s) => n + (s.pct || 0), 0) / subs.length) : null;
+          return `<div class="submission"><div style="flex:1;min-width:0">
+            <div class="s-title">${esc(a.title)}</div>
+            <div class="s-meta">${esc(a.class?.name || "—")} · ${subs.length} submission(s)${avg !== null ? ` · avg ${avg}%` : ""}</div>
+          </div><span class="pill ${a.published ? "synced" : "role-pill"}">${a.published ? "Published" : "Draft"}</span></div>`;
+        }).join("")
+      : x360EmptyRow("No assessments created by this teacher yet.");
+    return x360Section(`Assessments (${c.assessments.length})`, "chartColumn", rows);
+  });
+}
+
+/* ---------------------------------------------------------- Teacher 360: Follow-up */
+function teacher360FollowUp() {
+  return x360Gate(teacher360Cache, { noun: "this teacher", retryAttr: "t360" }, (c) => {
+    const rows = c.followUps.length
+      ? c.followUps.map((a) => `<div class="submission"><div style="flex:1;min-width:0">
+          <div class="s-title">${esc(a.title)}</div>
+          <div class="s-meta">${esc(a.intervention?.title || "—")}${a.due_date ? " · due " + new Date(a.due_date).toLocaleDateString() : ""}</div>
+        </div><span class="pill role-pill">${esc(a.status)}</span></div>`).join("")
+      : x360EmptyRow("No action items assigned to this teacher.");
+    return x360Section(`Follow-up (${c.followUps.length})`, "target", rows);
+  });
+}
+
+const TEACHER360_RENDER = {
+  overview: teacher360Overview, training: teacher360Training, lessons: teacher360Lessons,
+  ict: teacher360Ict, resources: teacher360Resources, assignments: teacher360Assignments,
+  assessments: teacher360Assessments, followup: teacher360FollowUp,
+};
+
+function teacher360Modal() {
+  const c = teacher360Cache;
+  const teacher = c?.teacher;
+  const tabs = TEACHER360_TABS.map(([key, label, ic]) =>
+    `<button class="ksubtab ${teacher360Tab === key ? "active" : ""}" data-t360-tab="${key}">${icon(ic)} ${esc(label)}</button>`).join("");
+
+  const headBody = !c
+    ? ""
+    : !c.loaded && !c.error
+    ? `<p class="panel-sub" style="margin:0">Loading…</p>`
+    : c.error && !teacher
+    ? `<p class="panel-sub" style="margin:0">${esc(c.error)}</p>`
+    : `<p class="panel-sub" style="margin:0">${mdmDash(teacher.email)} · ${esc(teacher.school?.name || "No school linked")}
+        ${c.ext?.tsc_number ? ` · TSC ${esc(c.ext.tsc_number)}` : ""}
+        ${teacher.active === false ? `<span class="pill danger-pill">Archived</span>` : ""}</p>`;
+
+  const body = !teacher
+    ? (c?.error
+        ? `<div class="empty-state">${esc(c.error)} <button class="btn btn-outline btn-xs" data-t360-retry>${icon("refresh")} Retry</button></div>`
+        : `<div class="empty-state">Loading this teacher's profile…</div>`)
+    : (TEACHER360_RENDER[teacher360Tab] || teacher360Overview)();
+
+  return `<div class="modal-overlay" data-t360-overlay>
+    <div class="modal" style="max-width:1180px;max-height:92vh" role="dialog" aria-modal="true" aria-label="Teacher 360 profile">
+      <div class="modal-head">
+        <div><h2>${icon("layers")} ${esc(teacher?.full_name || "Teacher 360")}</h2>${headBody}</div>
+        <button class="icon-btn" data-t360-close aria-label="Close">✕</button>
+      </div>
+      <div class="modal-body">
+        ${teacher ? `<div class="ksubtabs">${tabs}</div>` : ""}
+        <div data-t360-content>${body}</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderTeacher360() {
+  const holder = document.getElementById("dashBody")?.querySelector("[data-t360-root]");
+  if (!holder) return;
+  holder.innerHTML = teacher360Id ? teacher360Modal() : "";
+  if (teacher360Id) wireTeacher360();
+}
+
+function wireTeacher360() {
+  const overlay = document.getElementById("dashBody")?.querySelector("[data-t360-overlay]");
+  if (!overlay) return;
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) closeTeacher360(); });
+  overlay.querySelector("[data-t360-close]")?.addEventListener("click", closeTeacher360);
+  overlay.querySelectorAll("[data-t360-tab]").forEach((btn) =>
+    btn.addEventListener("click", () => { teacher360Tab = btn.dataset.t360Tab; renderTeacher360(); })
+  );
+  overlay.querySelector("[data-t360-retry]")?.addEventListener("click", () => { if (teacher360Id) loadTeacher360(teacher360Id).then(renderTeacher360); });
 }
 
 /* ---------------------------------------------------------- audit log (patch-24)
@@ -5194,7 +5528,8 @@ function adminBody(ctx) {
             .join("")}</div>`
         : `<div class="empty-state">No activity yet.</div>`)}
     </div>
-    <div data-s360-root>${school360Id ? school360Modal() : ""}</div>`;
+    <div data-s360-root>${school360Id ? safeRender("School 360", () => school360Modal()) : ""}</div>
+    <div data-t360-root>${teacher360Id ? safeRender("Teacher 360", () => teacher360Modal()) : ""}</div>`;
 }
 
 /* Live things a learner can join: active-session assignments (matched by
