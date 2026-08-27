@@ -42,6 +42,7 @@ frontend static (it still deploys on GitHub Pages).
    | 25 | [`patch-22-permission-matrix.sql`](patch-22-permission-matrix.sql) | The permission matrix (`app_modules`, `permissions`, `has_perm()`) — see [`AUTH-RBAC.md`](AUTH-RBAC.md) |
    | 26 | [`patch-23-rbac-policies.sql`](patch-23-rbac-policies.sql) | Rewrites every table's RLS as matrix-backed, per-command (view/create/edit/delete) policies |
    | 27 | [`patch-24-audit-triggers.sql`](patch-24-audit-triggers.sql) | Wires the audit trail to real triggers — it existed since patch-13 but nothing had ever called it |
+   | 28 | [`patch-25-require-email-confirmation.sql`](patch-25-require-email-confirmation.sql) | Reverses patch-11's auto-confirm — **test a real signup immediately after applying** (see the patch's own header and [`AUTH-RBAC.md`](AUTH-RBAC.md)) |
 
    **Do not run [`seed-dev.sql`](seed-dev.sql) against this project.** It's fake
    data for local/branch testing only — see its own header comment.

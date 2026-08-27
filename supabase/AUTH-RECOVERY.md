@@ -10,7 +10,7 @@ what's ready versus what still needs a person in the dashboard.
 ## Checklist
 
 - [x] **Step 0 — Email-confirmation policy: decided and documented** (2026-08-25,
-  see below). *Applying* it (below) is blocked on step 3.
+  see below).
 - [ ] **Step 1 — Redirect URLs registered** *(dashboard action needed — values
   below are confirmed correct against the deployed code)*
 - [ ] **Step 2 — `{{ .Token }}` added to all three email templates**
@@ -18,9 +18,15 @@ what's ready versus what still needs a person in the dashboard.
 - [ ] **Step 3 — Real SMTP provider configured, rate limit raised**
   *(dashboard action needed, and needs your own Resend/SendGrid account —
   see below)*
-- [ ] **Step 0b — Retire the auto-confirm trigger, once step 3 is live**
-  *(this part I can do — SQL, not dashboard — but only after real email
-  delivery works, see below)*
+- [x] **Step 0b — Retire the auto-confirm trigger** (2026-08-27, `patch-25`)
+  — **done ahead of step 3**, at explicit request, with the lockout risk
+  stated up front. The guidance below ("stay in place until step 3 is
+  actually done") was the standing recommendation until that request
+  overrode it. Step 3 is still unconfirmed as of this trigger being
+  dropped — **test a real signup now** (§ below) before relying on
+  self-serve signup with real users; if it strands accounts, re-run
+  `patch-11-open-signup.sql` to restore auto-confirm (see `patch-25`'s own
+  header for the exact rollback).
 
 Tell me once you've clicked through 1, 2, or 3 in the dashboard and I'll tick
 it off here with the date. I cannot click them myself — no tool this session
@@ -36,26 +42,29 @@ Everything below is in your project at
 **Decision (2026-08-25): yes, once step 3 is live. Until then, no — and that "no"
 is not the dashboard toggle's doing.**
 
+**Update (2026-08-27): the trigger was dropped anyway (`patch-25`), ahead of
+step 3, at explicit request during the RBAC/auth production-hardening pass —
+see `AUTH-RBAC.md`. Everything in this section describes the reasoning
+*before* that request; it's kept as-written because the tradeoff it explains
+is still exactly the one now in effect, just resolved the other way. The
+short version: whether that's safe right now depends entirely on whether
+step 3 (below) actually works, which is still unconfirmed — test a real
+signup immediately.**
+
 **Authentication → Sign In / Providers → Email → Confirm email** may say "on" in
-the dashboard, but it has had no practical effect since `patch-11-open-signup.sql`
-(2026-08-17): a database trigger, `on_auth_user_auto_confirm`, stamps every new
-`auth.users` row as confirmed *before* Supabase's own signup logic checks the
-column — the account gets a working session immediately, whatever the toggle
-says. Checked directly against the live project today: every account that
-exists, including one created three days after that patch shipped, is
-confirmed. The toggle is currently decorative.
+the dashboard, but it had no practical effect from `patch-11-open-signup.sql`
+(2026-08-17) until `patch-25` (2026-08-27): a database trigger,
+`on_auth_user_auto_confirm`, stamped every new `auth.users` row as confirmed
+*before* Supabase's own signup logic checks the column — the account got a
+working session immediately, whatever the toggle said. That trigger is now
+dropped, so the dashboard toggle governs behavior for real again.
 
 That trigger existed for a real reason — before it, confirmation email delivery
 didn't work at all (no SMTP, step 3), so "must confirm" meant "can never sign
-in." It should **stay in place until step 3 is actually done**. Turning it off
-first reopens exactly the lockout it was built to fix.
-
-**Once step 3 is live, drop the trigger** so the dashboard toggle starts
-meaning something again and a real confirmation flow (link or code) gates first
-login, matching the "on" behaviour described below. That's a small, reversible
-SQL change — ask me to run it once you've confirmed test emails are actually
-arriving; I'll do it as its own migration rather than folding it into step 3
-itself, so it's easy to roll back if delivery turns out to be flaky.
+in." The standing recommendation was to leave it **until step 3 was actually
+done**, since turning it off first reopens exactly the lockout it was built to
+fix — step 3 is still unchecked above, so that risk is live now, not
+hypothetical.
 
 **Why require it at all, rather than leave signup open:** accounts here are
 self-serve — `4a7c0b0` made school optional at signup, and nothing today proves
@@ -159,8 +168,9 @@ screen — that's exactly the kind of credential I should never touch. Concretel
    suits a few hundred staff; raise it further later if needed.
 
 Tell me once mail is actually arriving (the test below is the way to check) —
-I'll tick this off, and then run the SQL to retire the auto-confirm trigger
-from step 0.
+I'll tick this off. The auto-confirm trigger from step 0 is already retired
+(`patch-25`, ahead of this step being done, at explicit request) — so until
+mail is confirmed arriving, run the test in § 4 below now, not after.
 
 The built-in email service is for development only: it sends **at most a couple
 of messages an hour**, and only to addresses belonging to your Supabase

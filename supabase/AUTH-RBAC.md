@@ -241,19 +241,29 @@ anywhere reachable by the client (`ADMIN_EMAIL` is a real display-only
 address the login-events inbox says mail is "delivered to," not a
 credential).
 
-## Open item — not changed, needs a decision
+## Signups now require real email confirmation (patch-25)
 
-`patch-11-open-signup.sql` auto-confirms every new Supabase Auth signup
-(`email_confirmed_at` set immediately, no click-to-verify). It was added
-because SMTP delivery wasn't reliable and confirmation emails were
-stranding real accounts. Turning it off is the more "production-grade"
-posture — right now anyone can self-register under an email address they
-don't own — but doing so **blindly risks locking out signup again** if SMTP
-still isn't fully delivering (per the prior session's audit, this was left
-partially configured). I did not touch this, since getting it wrong fails
-"do not break existing legitimate authentication functionality" in the
-worst possible way. Confirm SMTP delivery end-to-end first (`TESTING.md` has
-the manual script), then this is one `drop trigger` away from being closed.
+`patch-11-open-signup.sql` auto-confirmed every new Supabase Auth signup
+(`email_confirmed_at` set immediately, no click-to-verify) — added because
+SMTP delivery wasn't reliable and confirmation emails were stranding real
+accounts. **Patch-25 drops that trigger.** Explicitly requested with the
+lockout risk stated up front: whether an unconfirmed account can sign in is
+governed by the **Authentication → Providers → Email → "Confirm email"**
+toggle in the Supabase dashboard, which no migration in this repo can see
+or change. If that toggle is on (patch-11's own header says it was) and
+SMTP still isn't fully delivering, this reproduces the exact lockout
+patch-11 existed to fix.
+
+**Test this immediately** — sign up a fresh test account and confirm the
+email actually arrives and the link works (`TESTING.md` has the manual
+script) — before relying on self-serve signup in front of real users.
+Verified so far: dropping the trigger touched zero existing rows (there
+were no unconfirmed accounts at the time), so nothing already using the
+portal is affected either way.
+
+**Rollback** if signups start getting stranded: re-run
+`patch-11-open-signup.sql` — still safe to re-run, it recreates the trigger
+and releases anything currently stuck unconfirmed.
 
 ## Files
 
