@@ -43,6 +43,8 @@ frontend static (it still deploys on GitHub Pages).
    | 26 | [`patch-23-rbac-policies.sql`](patch-23-rbac-policies.sql) | Rewrites every table's RLS as matrix-backed, per-command (view/create/edit/delete) policies |
    | 27 | [`patch-24-audit-triggers.sql`](patch-24-audit-triggers.sql) | Wires the audit trail to real triggers — it existed since patch-13 but nothing had ever called it |
    | 28 | [`patch-25-require-email-confirmation.sql`](patch-25-require-email-confirmation.sql) | Reverses patch-11's auto-confirm — **test a real signup immediately after applying** (see the patch's own header and [`AUTH-RBAC.md`](AUTH-RBAC.md)) |
+   | 29 | [`patch-26-master-data.sql`](patch-26-master-data.sql) | Master Data Management fields: school code/sub-county/contact/status, a real `profiles.school_id` link, learner grade, and natural-key uniqueness constraints — see [`MDM.md`](MDM.md) |
+   | 30 | [`patch-27-mdm-audit.sql`](patch-27-mdm-audit.sql) | Extends patch-24's audit triggers to `teachers`, `learners`, `field_officers` |
 
    **Do not run [`seed-dev.sql`](seed-dev.sql) against this project.** It's fake
    data for local/branch testing only — see its own header comment.

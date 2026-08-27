@@ -1049,6 +1049,991 @@ function interventionsPanel() {
   return wrap(`${addForm}${rows}`);
 }
 
+/* ============================================================
+   Master Data Management (patch-26/27)
+
+   Six modules — Schools, Teachers, Learners, School Leaders, Devices,
+   Infrastructure — each a real search/filter/sort/paginate/create/edit/
+   view/archive surface over its own Postgres table(s), not a rendering
+   of data.js. One generic list+CRUD engine (below) driven by a small
+   config object per module, following the same load/cache/render/wire
+   shape every other panel in this file already uses — six near-identical
+   admin screens is exactly the case that earns a shared engine instead
+   of six copies of the same pagination and search-debounce code.
+
+   "Archive" everywhere means a status flag flips, never a DELETE — the
+   one exception is Infrastructure's "Reset", which removes a school's
+   single facilities row so a fresh one can be entered; that row is a
+   1:1 profile of current-state data, not a history of anything, so
+   there is no record being destroyed that "do not permanently delete
+   historical programme records" is protecting.
+
+   RLS (patch-22/23) is the real gate on every write below — has_perm()
+   plus a row-scope check, same as everywhere else in this schema. The
+   "can write" flag computed here only decides whether this viewer sees
+   the buttons; M&E, for instance, would have any write refused by the
+   database even if this check were wrong or bypassed. */
+
+const MDM_PAGE_SIZE = 15;
+
+function freshMdmState() {
+  return { page: 0, search: "", sort: null, dir: "asc", filters: {}, formOpen: false, editId: null, viewId: null, dedupeOk: false };
+}
+let mdmTab = "schools";
+let mdmState = {
+  schools: freshMdmState(), teachers: freshMdmState(), learners: freshMdmState(),
+  school_leaders: freshMdmState(), devices: freshMdmState(), infrastructure: freshMdmState(),
+};
+// { rows, total, loaded, error } per module — a fresh query result, not a
+// full-table cache: pagination is real (Postgres .range()), not sliced
+// client-side from something that pretends to scale.
+let mdmCache = {
+  schools: { rows: [], total: 0, loaded: false, error: null },
+  teachers: { rows: [], total: 0, loaded: false, error: null },
+  learners: { rows: [], total: 0, loaded: false, error: null },
+  school_leaders: { rows: [], total: 0, loaded: false, error: null },
+  devices: { rows: [], total: 0, loaded: false, error: null },
+  infrastructure: { rows: [], total: 0, loaded: false, error: null },
+};
+let mdmLoadToken = {}; // per-module counter — guards against a slow, stale request overwriting a newer one
+
+// Every module's row identity is `id`, except Infrastructure's, which is
+// synthesized from `schools` and keyed by `school_id` — see that config's
+// own `rowKey` override and comment.
+const mdmKeyOf = (cfg, r) => (cfg.rowKey ? cfg.rowKey(r) : r.id);
+const mdmDash = (v) => (v === null || v === undefined || v === "" ? "—" : esc(String(v)));
+const mdmOptTag = (value, label, selected) => `<option value="${esc(value)}" ${String(selected) === String(value) ? "selected" : ""}>${esc(label)}</option>`;
+
+/* Builds a Postgres `.or(...)` search filter across several columns, or null
+   if there's nothing to search for. Every module's search box uses this. */
+function mdmSearchOr(term, cols) {
+  const q = (term || "").trim();
+  if (!q) return null;
+  const esc2 = q.replace(/[%,()]/g, (c) => "\\" + c);
+  return cols.map((c) => `${c}.ilike.%${esc2}%`).join(",");
+}
+
+/* ---------------------------------------------------------- module configs */
+const MDM_MODULES = {
+  schools: {
+    label: "Schools", icon: "school", module: "schools",
+    searchPlaceholder: "Search by name, code, county…",
+    filters: [
+      { key: "county", label: "County", column: "county", options: () => COUNTIES.map((c) => ({ value: c, label: c })) },
+      { key: "programme_status", label: "Programme status", column: "programme_status",
+        options: () => [["prospective", "Prospective"], ["active", "Active"], ["paused", "Paused"], ["graduated", "Graduated"], ["closed", "Closed"]].map(([value, label]) => ({ value, label })) },
+    ],
+    sorts: [["name", "Name"], ["code", "Code"], ["county", "County"], ["created_at", "Newest"]],
+    defaultSort: "name",
+    archive: { activeCol: "active" },
+    columns: ["Code", "Name", "County / Sub-county", "Programme", "Contact", "Status"],
+    colWidths: "0.8fr 1.6fr 1.3fr 1fr 1.3fr 0.8fr auto",
+    async load(state) {
+      let q = supabase.from("schools").select("*", { count: "exact" });
+      const or = mdmSearchOr(state.search, ["name", "code", "county", "sub_county", "location"]);
+      if (or) q = q.or(or);
+      if (state.filters.county) q = q.eq("county", state.filters.county);
+      if (state.filters.programme_status) q = q.eq("programme_status", state.filters.programme_status);
+      if (!state.filters.showArchived) q = q.eq("active", true);
+      q = q.order(state.sort || "name", { ascending: state.dir !== "desc" });
+      const from = state.page * MDM_PAGE_SIZE;
+      const { data, error, count } = await q.range(from, from + MDM_PAGE_SIZE - 1);
+      return { rows: data || [], total: count || 0, error };
+    },
+    renderRow(r) {
+      return [
+        `<span style="font-family:monospace">${mdmDash(r.code)}</span>`,
+        `<div><div class="s-title" style="font-size:.85rem">${esc(r.name)}</div>${r.location ? `<div class="s-meta">${esc(r.location)}</div>` : ""}</div>`,
+        `${mdmDash(r.county)}${r.sub_county ? " / " + esc(r.sub_county) : ""}`,
+        `<span class="pill role-pill">${esc(r.programme_status)}</span>`,
+        `${r.contact_name ? esc(r.contact_name) + "<br>" : ""}<span class="s-meta">${mdmDash(r.contact_phone || r.contact_email)}</span>`,
+        r.active ? `<span class="pill synced">Active</span>` : `<span class="pill danger-pill">Archived</span>`,
+      ];
+    },
+    viewFields(r) {
+      return [
+        ["Code", r.code], ["Name", r.name], ["County", r.county], ["Sub-county", r.sub_county],
+        ["Location", r.location], ["GPS", (r.lat && r.lng) ? `${r.lat}, ${r.lng}` : "—"],
+        ["Programme status", r.programme_status], ["Contact name", r.contact_name],
+        ["Contact phone", r.contact_phone], ["Contact email", r.contact_email],
+        ["Status", r.active ? "Active" : "Archived"], ["Created", new Date(r.created_at).toLocaleString()],
+      ];
+    },
+    formFields(r) {
+      const countyOpts = COUNTIES.map((c) => mdmOptTag(c, c, r?.county)).join("");
+      const statusOpts = [["prospective", "Prospective"], ["active", "Active"], ["paused", "Paused"], ["graduated", "Graduated"], ["closed", "Closed"]]
+        .map(([v, l]) => mdmOptTag(v, l, r?.programme_status || "active")).join("");
+      return `
+        <div class="form-row">
+          <div class="field"><label>School name *</label><input class="input" name="name" required value="${esc(r?.name || "")}"></div>
+          <div class="field"><label>School code *</label><input class="input" name="code" required placeholder="e.g. MER-004" value="${esc(r?.code || "")}"></div>
+        </div>
+        <div class="form-row">
+          <div class="field"><label>County *</label><select class="select" name="county" required><option value="" disabled ${r?.county ? "" : "selected"}>Select county</option>${countyOpts}</select></div>
+          <div class="field"><label>Sub-county</label><input class="input" name="sub_county" value="${esc(r?.sub_county || "")}"></div>
+        </div>
+        <div class="field"><label>Location / landmark</label><input class="input" name="location" value="${esc(r?.location || "")}"></div>
+        <div class="form-row">
+          <div class="field"><label>GPS latitude</label><input class="input" name="lat" type="number" step="any" value="${r?.lat ?? ""}"></div>
+          <div class="field"><label>GPS longitude</label><input class="input" name="lng" type="number" step="any" value="${r?.lng ?? ""}"></div>
+        </div>
+        <div class="field"><label>Programme status</label><select class="select" name="programme_status">${statusOpts}</select></div>
+        <div class="form-row">
+          <div class="field"><label>Contact name</label><input class="input" name="contact_name" value="${esc(r?.contact_name || "")}"></div>
+          <div class="field"><label>Contact phone</label><input class="input" name="contact_phone" value="${esc(r?.contact_phone || "")}"></div>
+        </div>
+        <div class="field"><label>Contact email</label><input class="input" name="contact_email" type="email" value="${esc(r?.contact_email || "")}"></div>`;
+    },
+    validate(d) {
+      const errs = [];
+      if (!d.name?.trim()) errs.push("School name is required.");
+      if (!d.code?.trim()) errs.push("School code is required.");
+      if (!d.county) errs.push("County is required.");
+      if (d.contact_email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(d.contact_email)) errs.push("Contact email doesn't look valid.");
+      if (d.lat && (d.lat < -90 || d.lat > 90)) errs.push("Latitude must be between -90 and 90.");
+      if (d.lng && (d.lng < -180 || d.lng > 180)) errs.push("Longitude must be between -180 and 180.");
+      return errs;
+    },
+    toPayload(d) {
+      return {
+        name: d.name.trim(), code: d.code.trim().toUpperCase(), county: d.county,
+        sub_county: d.sub_county?.trim() || null, location: d.location?.trim() || null,
+        lat: d.lat ? +d.lat : null, lng: d.lng ? +d.lng : null,
+        programme_status: d.programme_status || "active",
+        contact_name: d.contact_name?.trim() || null, contact_phone: d.contact_phone?.trim() || null,
+        contact_email: d.contact_email?.trim() || null,
+      };
+    },
+    async findDuplicates(d, excludeId) {
+      const matches = [];
+      const { data: byCode } = await supabase.from("schools").select("id,name,code").eq("code", d.code.trim().toUpperCase());
+      (byCode || []).filter((m) => m.id !== excludeId).forEach((m) => matches.push(`Same code: ${m.name} (${m.code})`));
+      const firstWord = d.name.trim().split(/\s+/)[0];
+      if (firstWord.length > 2) {
+        const { data: byName } = await supabase.from("schools").select("id,name,county").ilike("name", `%${firstWord}%`).eq("county", d.county);
+        (byName || []).filter((m) => m.id !== excludeId).forEach((m) => matches.push(`Similar name in ${d.county}: ${m.name}`));
+      }
+      return matches;
+    },
+  },
+
+  devices: {
+    label: "Devices", icon: "laptop", module: "devices",
+    searchPlaceholder: "Search by serial, asset tag…",
+    filters: [
+      { key: "device_type", label: "Type", column: "device_type",
+        options: () => ["laptop", "tablet", "desktop", "projector", "router", "server", "other"].map((v) => ({ value: v, label: v[0].toUpperCase() + v.slice(1) })) },
+      { key: "school_id", label: "School", column: "school_id", options: () => getSchools().map((s) => ({ value: s.id, label: s.name })) },
+    ],
+    sorts: [["created_at", "Newest"], ["device_type", "Type"], ["status", "Status"]],
+    defaultSort: "created_at", defaultDir: "desc",
+    archive: { activeCol: "status", activeVal: "active", archivedVal: "retired" },
+    columns: ["Device", "School", "Serial / Tag", "Acquired", "Status"],
+    colWidths: "1fr 1.4fr 1.2fr 1fr 0.8fr auto",
+    async load(state) {
+      let q = supabase.from("devices").select("*, school:schools(id,name,county)", { count: "exact" });
+      const or = mdmSearchOr(state.search, ["serial_number", "asset_tag"]);
+      if (or) q = q.or(or);
+      if (state.filters.device_type) q = q.eq("device_type", state.filters.device_type);
+      if (state.filters.school_id) q = q.eq("school_id", state.filters.school_id);
+      if (!state.filters.showArchived) q = q.neq("status", "retired");
+      q = q.order(state.sort || "created_at", { ascending: state.dir === "asc" });
+      const from = state.page * MDM_PAGE_SIZE;
+      const { data, error, count } = await q.range(from, from + MDM_PAGE_SIZE - 1);
+      return { rows: data || [], total: count || 0, error };
+    },
+    renderRow(r) {
+      const statusPill = { active: "synced", faulty: "danger-pill", retired: "role-pill" }[r.status] || "role-pill";
+      return [
+        esc((r.device_type || "other").replace(/^\w/, (c) => c.toUpperCase())),
+        mdmDash(r.school?.name),
+        `${r.serial_number ? "SN " + esc(r.serial_number) : ""}${r.serial_number && r.asset_tag ? " · " : ""}${r.asset_tag ? "Tag " + esc(r.asset_tag) : ""}` || "—",
+        r.acquired_at ? new Date(r.acquired_at).toLocaleDateString() : "—",
+        `<span class="pill ${statusPill}">${esc(r.status)}</span>`,
+      ];
+    },
+    viewFields(r) {
+      return [
+        ["Type", r.device_type], ["School", r.school?.name], ["Serial number", r.serial_number],
+        ["Asset tag", r.asset_tag], ["Status", r.status], ["Acquired", r.acquired_at],
+        ["Added", new Date(r.created_at).toLocaleString()],
+      ];
+    },
+    formFields(r) {
+      const typeOpts = ["laptop", "tablet", "desktop", "projector", "router", "server", "other"]
+        .map((v) => mdmOptTag(v, v[0].toUpperCase() + v.slice(1), r?.device_type)).join("");
+      const schoolOpts = getSchools().map((s) => mdmOptTag(s.id, s.name, r?.school_id)).join("");
+      const statusOpts = ["active", "faulty", "retired"].map((v) => mdmOptTag(v, v[0].toUpperCase() + v.slice(1), r?.status || "active")).join("");
+      return `
+        <div class="form-row">
+          <div class="field"><label>Device type *</label><select class="select" name="device_type" required>${typeOpts}</select></div>
+          <div class="field"><label>School</label><select class="select" name="school_id"><option value="">— none —</option>${schoolOpts}</select></div>
+        </div>
+        <div class="form-row">
+          <div class="field"><label>Serial number</label><input class="input" name="serial_number" value="${esc(r?.serial_number || "")}"></div>
+          <div class="field"><label>Asset tag</label><input class="input" name="asset_tag" value="${esc(r?.asset_tag || "")}"></div>
+        </div>
+        <div class="form-row">
+          <div class="field"><label>Acquired on</label><input class="input" name="acquired_at" type="date" value="${r?.acquired_at || ""}"></div>
+          <div class="field"><label>Status</label><select class="select" name="status">${statusOpts}</select></div>
+        </div>`;
+    },
+    validate(d) {
+      const errs = [];
+      if (!d.device_type) errs.push("Device type is required.");
+      return errs;
+    },
+    toPayload(d) {
+      return {
+        device_type: d.device_type, school_id: d.school_id || null,
+        serial_number: d.serial_number?.trim() || null, asset_tag: d.asset_tag?.trim() || null,
+        acquired_at: d.acquired_at || null, status: d.status || "active",
+      };
+    },
+    async findDuplicates(d, excludeId) {
+      const matches = [];
+      if (d.serial_number?.trim()) {
+        const { data } = await supabase.from("devices").select("id,device_type,serial_number").eq("serial_number", d.serial_number.trim());
+        (data || []).filter((m) => m.id !== excludeId).forEach((m) => matches.push(`Same serial number: ${m.device_type} ${m.serial_number}`));
+      }
+      if (d.asset_tag?.trim()) {
+        const { data } = await supabase.from("devices").select("id,device_type,asset_tag").eq("asset_tag", d.asset_tag.trim());
+        (data || []).filter((m) => m.id !== excludeId).forEach((m) => matches.push(`Same asset tag: ${m.device_type} ${m.asset_tag}`));
+      }
+      return matches;
+    },
+  },
+
+  learners: {
+    label: "Learners", icon: "graduation", module: "learners",
+    searchPlaceholder: "Search by name, admission number…",
+    filters: [
+      { key: "school_id", label: "School", column: "school_id", options: () => getSchools().map((s) => ({ value: s.id, label: s.name })) },
+      { key: "grade", label: "Grade", column: "grade", options: () => LEARNER_GRADES.map((g) => ({ value: g, label: g })) },
+      { key: "gender", label: "Gender", column: "gender", options: () => [{ value: "female", label: "Female" }, { value: "male", label: "Male" }] },
+    ],
+    sorts: [["full_name", "Name"], ["created_at", "Newest"], ["grade", "Grade"]],
+    defaultSort: "full_name",
+    archive: { activeCol: "active" },
+    columns: ["Name", "School", "Grade", "Admission #", "Guardian", "Status"],
+    colWidths: "1.4fr 1.4fr 0.8fr 1fr 1.3fr 0.8fr auto",
+    async load(state) {
+      let q = supabase.from("learners").select("*, school:schools(id,name,county)", { count: "exact" });
+      const or = mdmSearchOr(state.search, ["full_name", "admission_number"]);
+      if (or) q = q.or(or);
+      if (state.filters.school_id) q = q.eq("school_id", state.filters.school_id);
+      if (state.filters.grade) q = q.eq("grade", state.filters.grade);
+      if (state.filters.gender) q = q.eq("gender", state.filters.gender);
+      if (!state.filters.showArchived) q = q.eq("active", true);
+      q = q.order(state.sort || "full_name", { ascending: state.dir !== "desc" });
+      const from = state.page * MDM_PAGE_SIZE;
+      const { data, error, count } = await q.range(from, from + MDM_PAGE_SIZE - 1);
+      return { rows: data || [], total: count || 0, error };
+    },
+    renderRow(r) {
+      return [
+        esc(r.full_name),
+        mdmDash(r.school?.name),
+        mdmDash(r.grade),
+        mdmDash(r.admission_number),
+        `${mdmDash(r.guardian_name)}${r.guardian_phone ? " · " + esc(r.guardian_phone) : ""}`,
+        r.active ? `<span class="pill synced">Active</span>` : `<span class="pill danger-pill">Archived</span>`,
+      ];
+    },
+    viewFields(r) {
+      return [
+        ["Full name", r.full_name], ["School", r.school?.name], ["Grade", r.grade], ["Gender", r.gender],
+        ["Date of birth", r.date_of_birth], ["Admission number", r.admission_number],
+        ["Guardian", r.guardian_name], ["Guardian phone", r.guardian_phone],
+        ["Status", r.active ? "Active" : "Archived"], ["Added", new Date(r.created_at).toLocaleString()],
+      ];
+    },
+    formFields(r) {
+      const schoolOpts = getSchools().map((s) => mdmOptTag(s.id, s.name, r?.school_id)).join("");
+      const gradeOpts = LEARNER_GRADES.map((g) => mdmOptTag(g, g, r?.grade)).join("");
+      const genderOpts = ["female", "male"].map((v) => mdmOptTag(v, v[0].toUpperCase() + v.slice(1), r?.gender)).join("");
+      return `
+        <div class="form-row">
+          <div class="field"><label>Full name *</label><input class="input" name="full_name" required value="${esc(r?.full_name || "")}"></div>
+          <div class="field"><label>School *</label><select class="select" name="school_id" required><option value="" disabled ${r?.school_id ? "" : "selected"}>Select school</option>${schoolOpts}</select></div>
+        </div>
+        <div class="form-row">
+          <div class="field"><label>Grade</label><select class="select" name="grade"><option value="">— none —</option>${gradeOpts}</select></div>
+          <div class="field"><label>Gender</label><select class="select" name="gender"><option value="">— none —</option>${genderOpts}</select></div>
+        </div>
+        <div class="form-row">
+          <div class="field"><label>Date of birth</label><input class="input" name="date_of_birth" type="date" value="${r?.date_of_birth || ""}"></div>
+          <div class="field"><label>Admission number</label><input class="input" name="admission_number" value="${esc(r?.admission_number || "")}"></div>
+        </div>
+        <div class="form-row">
+          <div class="field"><label>Guardian name</label><input class="input" name="guardian_name" value="${esc(r?.guardian_name || "")}"></div>
+          <div class="field"><label>Guardian phone</label><input class="input" name="guardian_phone" value="${esc(r?.guardian_phone || "")}"></div>
+        </div>`;
+    },
+    validate(d) {
+      const errs = [];
+      if (!d.full_name?.trim()) errs.push("Full name is required.");
+      if (!d.school_id) errs.push("School is required.");
+      return errs;
+    },
+    toPayload(d) {
+      return {
+        full_name: d.full_name.trim(), school_id: d.school_id, grade: d.grade || null,
+        gender: d.gender || null, date_of_birth: d.date_of_birth || null,
+        admission_number: d.admission_number?.trim() || null,
+        guardian_name: d.guardian_name?.trim() || null, guardian_phone: d.guardian_phone?.trim() || null,
+      };
+    },
+    async findDuplicates(d, excludeId) {
+      const matches = [];
+      const { data } = await supabase.from("learners").select("id,full_name,school:schools(name)")
+        .ilike("full_name", d.full_name.trim()).eq("school_id", d.school_id);
+      (data || []).filter((m) => m.id !== excludeId).forEach((m) => matches.push(`Same name at ${m.school?.name || "this school"}: ${m.full_name}`));
+      if (d.admission_number?.trim()) {
+        const { data: byAdm } = await supabase.from("learners").select("id,full_name").eq("school_id", d.school_id).eq("admission_number", d.admission_number.trim());
+        (byAdm || []).filter((m) => m.id !== excludeId).forEach((m) => matches.push(`Same admission number at this school: ${m.full_name}`));
+      }
+      return matches;
+    },
+  },
+
+  teachers: {
+    label: "Teachers", icon: "users", module: "people", profileRole: "teacher",
+    searchPlaceholder: "Search by name, email…",
+    filters: [
+      { key: "school_id", label: "School", column: "school_id", options: () => getSchools().map((s) => ({ value: s.id, label: s.name })) },
+    ],
+    sorts: [["full_name", "Name"], ["created_at", "Newest"]],
+    defaultSort: "full_name",
+    archive: { activeCol: "active" },
+    columns: ["Name", "School", "TSC number", "Specialty", "Employment", "Status"],
+    colWidths: "1.4fr 1.4fr 1fr 1.2fr 1fr 0.8fr auto",
+    async load(state) {
+      let q = supabase.from("profiles").select("*, school:schools(id,name,county)", { count: "exact" }).eq("role", "teacher");
+      const or = mdmSearchOr(state.search, ["full_name", "email"]);
+      if (or) q = q.or(or);
+      if (state.filters.school_id) q = q.eq("school_id", state.filters.school_id);
+      if (!state.filters.showArchived) q = q.eq("active", true);
+      q = q.order(state.sort || "full_name", { ascending: state.dir !== "desc" });
+      const from = state.page * MDM_PAGE_SIZE;
+      const { data, error, count } = await q.range(from, from + MDM_PAGE_SIZE - 1);
+      return { rows: data || [], total: count || 0, error };
+    },
+    renderRow(r) {
+      const ext = teacherExtFor(r.id);
+      return [
+        `<div><div class="s-title" style="font-size:.85rem">${esc(r.full_name)}</div><div class="s-meta">${mdmDash(r.email)}</div></div>`,
+        mdmDash(r.school?.name),
+        mdmDash(ext?.tsc_number),
+        mdmDash(ext?.subject_specialty),
+        mdmDash(ext?.employment_type),
+        r.active ? `<span class="pill synced">Active</span>` : `<span class="pill danger-pill">Archived</span>`,
+      ];
+    },
+    viewFields(r) {
+      const ext = teacherExtFor(r.id) || {};
+      return [
+        ["Full name", r.full_name], ["Email", r.email], ["School", r.school?.name],
+        ["TSC number", ext.tsc_number], ["Subject specialty", ext.subject_specialty],
+        ["Employment type", ext.employment_type], ["Date joined", ext.date_joined],
+        ["Status", r.active ? "Active" : "Archived"], ["Account created", new Date(r.created_at).toLocaleString()],
+      ];
+    },
+    formFields(r) {
+      const ext = r ? teacherExtFor(r.id) : null;
+      const schoolOpts = getSchools().map((s) => mdmOptTag(s.id, s.name, r?.school_id)).join("");
+      const extHtml = TEACHER_EXT_FIELDS.map((f) => `<div class="field"><label>${esc(f.label)}</label>${extFieldInput(f, ext)}</div>`).join("");
+      if (r) {
+        // Editing an existing account: name/email are set at signup and not
+        // rewritten from here (email is the sign-in identity); school link
+        // and the teacher-specific fields are what this form manages.
+        return `
+          <div class="field"><label>Full name</label><input class="input" value="${esc(r.full_name)}" disabled></div>
+          <div class="field"><label>School</label><select class="select" name="school_id"><option value="">— none —</option>${schoolOpts}</select></div>
+          <div class="form-row">${extHtml}</div>`;
+      }
+      return `
+        <div class="form-row">
+          <div class="field"><label>Full name *</label><input class="input" name="fullName" required></div>
+          <div class="field"><label>Email *</label><input class="input" name="email" type="email" required></div>
+        </div>
+        <div class="field"><label>School</label><select class="select" name="school_id"><option value="">— none —</option>${schoolOpts}</select></div>
+        <div class="form-row">${extHtml}</div>
+        <p class="hint">${icon("info")} Creates a real database account and emails a link to set a password — no password is typed here.</p>`;
+    },
+    validate(d) {
+      const errs = [];
+      if (!d.editing) {
+        if (!d.fullName?.trim()) errs.push("Full name is required.");
+        if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(d.email || "")) errs.push("A valid email is required.");
+      }
+      return errs;
+    },
+    async findDuplicates(d, excludeId) {
+      if (d.editing) return [];
+      const matches = [];
+      const { data } = await supabase.from("profiles").select("id,full_name,email").ilike("email", d.email.trim());
+      (data || []).filter((m) => m.id !== excludeId).forEach((m) => matches.push(`Account already exists: ${m.full_name || m.email}`));
+      return matches;
+    },
+  },
+
+  school_leaders: {
+    label: "School Leaders", icon: "userCheck", module: "people", profileRole: "school_leader",
+    searchPlaceholder: "Search by name, email…",
+    filters: [
+      { key: "school_id", label: "School", column: "school_id", options: () => getSchools().map((s) => ({ value: s.id, label: s.name })) },
+    ],
+    sorts: [["full_name", "Name"], ["created_at", "Newest"]],
+    defaultSort: "full_name",
+    archive: { activeCol: "active" },
+    columns: ["Name", "School", "Title", "Phone", "Status"],
+    colWidths: "1.5fr 1.5fr 1.2fr 1.1fr 0.8fr auto",
+    async load(state) {
+      let q = supabase.from("profiles").select("*, school:schools(id,name,county)", { count: "exact" }).eq("role", "school_leader");
+      const or = mdmSearchOr(state.search, ["full_name", "email"]);
+      if (or) q = q.or(or);
+      if (state.filters.school_id) q = q.eq("school_id", state.filters.school_id);
+      if (!state.filters.showArchived) q = q.eq("active", true);
+      q = q.order(state.sort || "full_name", { ascending: state.dir !== "desc" });
+      const from = state.page * MDM_PAGE_SIZE;
+      const { data, error, count } = await q.range(from, from + MDM_PAGE_SIZE - 1);
+      return { rows: data || [], total: count || 0, error };
+    },
+    renderRow(r) {
+      return [
+        `<div><div class="s-title" style="font-size:.85rem">${esc(r.full_name)}</div><div class="s-meta">${mdmDash(r.email)}</div></div>`,
+        mdmDash(r.school?.name), mdmDash(r.head_title), mdmDash(r.phone),
+        r.active ? `<span class="pill synced">Active</span>` : `<span class="pill danger-pill">Archived</span>`,
+      ];
+    },
+    viewFields(r) {
+      return [
+        ["Full name", r.full_name], ["Email", r.email], ["School", r.school?.name],
+        ["Title", r.head_title], ["Phone", r.phone],
+        ["Status", r.active ? "Active" : "Archived"], ["Account created", new Date(r.created_at).toLocaleString()],
+      ];
+    },
+    formFields(r) {
+      const schoolOpts = getSchools().map((s) => mdmOptTag(s.id, s.name, r?.school_id)).join("");
+      if (r) {
+        return `
+          <div class="field"><label>Full name</label><input class="input" value="${esc(r.full_name)}" disabled></div>
+          <div class="field"><label>School</label><select class="select" name="school_id"><option value="">— none —</option>${schoolOpts}</select></div>
+          <div class="form-row">
+            <div class="field"><label>Title</label><input class="input" name="head_title" placeholder="e.g. Headteacher" value="${esc(r.head_title || "")}"></div>
+            <div class="field"><label>Phone</label><input class="input" name="phone" value="${esc(r.phone || "")}"></div>
+          </div>`;
+      }
+      return `
+        <div class="form-row">
+          <div class="field"><label>Full name *</label><input class="input" name="fullName" required></div>
+          <div class="field"><label>Email *</label><input class="input" name="email" type="email" required></div>
+        </div>
+        <div class="field"><label>School</label><select class="select" name="school_id"><option value="">— none —</option>${schoolOpts}</select></div>
+        <div class="form-row">
+          <div class="field"><label>Title</label><input class="input" name="head_title" placeholder="e.g. Headteacher"></div>
+          <div class="field"><label>Phone</label><input class="input" name="phone"></div>
+        </div>
+        <p class="hint">${icon("info")} Creates a real database account and emails a link to set a password — no password is typed here.</p>`;
+    },
+    validate(d) {
+      const errs = [];
+      if (!d.editing) {
+        if (!d.fullName?.trim()) errs.push("Full name is required.");
+        if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(d.email || "")) errs.push("A valid email is required.");
+      }
+      return errs;
+    },
+    async findDuplicates(d, excludeId) {
+      if (d.editing) return [];
+      const matches = [];
+      const { data } = await supabase.from("profiles").select("id,full_name,email").ilike("email", d.email.trim());
+      (data || []).filter((m) => m.id !== excludeId).forEach((m) => matches.push(`Account already exists: ${m.full_name || m.email}`));
+      return matches;
+    },
+  },
+
+  infrastructure: {
+    label: "Infrastructure", icon: "wrench", module: "infrastructure",
+    searchPlaceholder: "Search by school name…",
+    filters: [
+      { key: "county", label: "County", column: "county", options: () => COUNTIES.map((c) => ({ value: c, label: c })) },
+    ],
+    sorts: [["name", "School name"]],
+    defaultSort: "name",
+    noArchive: true, // one row per school, PK-enforced — see the file header
+    // Every school already appears in this module's list, recorded or not
+    // (see load(), below) — there is nothing a separate "New" flow would
+    // let someone do that clicking "Edit" on an unrecorded school's row
+    // doesn't already do via upsert. No school-picker create form, either.
+    noCreate: true,
+    // Rows are synthesized from `schools` left-joined to school_facilities
+    // (see load(), below) and so carry a `school_id` scalar the same as
+    // devices/learners rows do from their own FK column — but here it IS
+    // the row's identity, not just a foreign key on it, so this module
+    // alone needs to override the default "identity is `id`" key.
+    rowKey: (r) => r.school_id,
+    columns: ["School", "Classrooms", "Toilets", "Water", "Electricity", "Amenities"],
+    colWidths: "1.6fr 0.8fr 0.8fr 1fr 1fr 1.4fr auto",
+    async load(state) {
+      // Driven from `schools`, left-joined to its (at most one) facilities
+      // row, so a school with nothing entered yet still appears — "no
+      // infrastructure record" is itself something this module should show,
+      // not hide.
+      let q = supabase.from("schools").select("id, name, county, school_facilities(*)", { count: "exact" });
+      const or = mdmSearchOr(state.search, ["name"]);
+      if (or) q = q.or(or);
+      if (state.filters.county) q = q.eq("county", state.filters.county);
+      q = q.order(state.sort || "name", { ascending: state.dir !== "desc" });
+      const from = state.page * MDM_PAGE_SIZE;
+      const { data, error, count } = await q.range(from, from + MDM_PAGE_SIZE - 1);
+      const rows = (data || []).map((s) => ({ school_id: s.id, school: { name: s.name, county: s.county }, ...(s.school_facilities?.[0] || {}) }));
+      return { rows, total: count || 0, error };
+    },
+    renderRow(r) {
+      const has = r.school_id && r.updated_at;
+      if (!has) return [esc(r.school.name), "—", "—", "—", "—", `<span class="hint">Not recorded yet</span>`];
+      const amen = FACILITY_FLAGS.filter((f) => r[f.key]).map((f) => f.label).join(", ") || "—";
+      return [esc(r.school.name), mdmDash(r.classrooms), mdmDash(r.toilets), mdmDash(r.water_source), mdmDash(r.electricity), amen];
+    },
+    viewFields(r) {
+      return [
+        ["School", r.school.name], ["Classrooms", r.classrooms], ["Toilets", r.toilets],
+        ["Dormitories", r.dormitories], ["Teachers' houses", r.teachers_houses], ["Computers", r.computers],
+        ["Water source", r.water_source], ["Electricity", r.electricity], ["Internet", r.internet_status],
+        ...FACILITY_FLAGS.map((f) => [f.label, r[f.key] ? "Yes" : "No"]),
+        ["Last updated", r.updated_at ? new Date(r.updated_at).toLocaleString() : "Never"],
+      ];
+    },
+    formFields(r) {
+      return `
+        <div class="field"><label>School</label><input class="input" value="${esc(r.school.name)}" disabled></div>
+        <div class="form-row">
+          <div class="field"><label>Classrooms</label><input class="input" name="classrooms" type="number" min="0" value="${r.classrooms ?? ""}"></div>
+          <div class="field"><label>Toilets</label><input class="input" name="toilets" type="number" min="0" value="${r.toilets ?? ""}"></div>
+        </div>
+        <div class="form-row">
+          <div class="field"><label>Dormitories</label><input class="input" name="dormitories" type="number" min="0" value="${r.dormitories ?? ""}"></div>
+          <div class="field"><label>Teachers' houses</label><input class="input" name="teachers_houses" type="number" min="0" value="${r.teachers_houses ?? ""}"></div>
+        </div>
+        <div class="form-row">
+          <div class="field"><label>Computers</label><input class="input" name="computers" type="number" min="0" value="${r.computers ?? ""}"></div>
+          <div class="field"><label>Water source</label><input class="input" name="water_source" value="${esc(r.water_source || "")}"></div>
+        </div>
+        <div class="form-row">
+          <div class="field"><label>Electricity</label><input class="input" name="electricity" value="${esc(r.electricity || "")}"></div>
+          <div class="field"><label>Internet</label><input class="input" name="internet_status" value="${esc(r.internet_status || "")}"></div>
+        </div>
+        <div class="field"><label>Amenities</label>
+          <div style="display:flex;flex-wrap:wrap;gap:.75rem">${FACILITY_FLAGS.map((f) => `
+            <label style="display:flex;align-items:center;gap:.35rem;font-size:.85rem">
+              <input type="checkbox" name="${f.key}" ${r[f.key] ? "checked" : ""}> ${esc(f.label)}
+            </label>`).join("")}</div>
+        </div>`;
+    },
+    validate() { return []; },
+    toPayload(d, r) {
+      const p = { school_id: r.school_id, updated_by: null };
+      ["classrooms", "toilets", "dormitories", "teachers_houses", "computers"].forEach((k) => { p[k] = d[k] ? +d[k] : null; });
+      ["water_source", "electricity", "internet_status"].forEach((k) => { p[k] = d[k]?.trim() || null; });
+      FACILITY_FLAGS.forEach((f) => { p[f.key] = d[f.key] === "on"; });
+      return p;
+    },
+    async findDuplicates() { return []; },
+  },
+};
+
+// Free-text on `learners` (no fixed CBC/8-4-4 enum exists elsewhere in this
+// schema), but the dropdown needs *some* option list rather than a bare
+// text box — this is a UI convenience list, not a source of record.
+const LEARNER_GRADES = ["PP1", "PP2", "Grade 1", "Grade 2", "Grade 3", "Grade 4", "Grade 5", "Grade 6", "Grade 7", "Grade 8", "Form 1", "Form 2", "Form 3", "Form 4"];
+
+async function loadMdm(key) {
+  const cfg = MDM_MODULES[key];
+  const state = mdmState[key];
+  const token = (mdmLoadToken[key] = (mdmLoadToken[key] || 0) + 1);
+  mdmCache[key] = { ...mdmCache[key], loaded: false };
+  const { rows, total, error } = await cfg.load(state);
+  if (mdmLoadToken[key] !== token) return; // a newer request already landed
+  mdmCache[key] = { rows, total, loaded: true, error: error ? authMessage(error) : null };
+}
+
+function mdmIsRowActive(cfg, row) {
+  if (cfg.noArchive) return true;
+  if (!cfg.archive) return true;
+  const { activeCol, activeVal } = cfg.archive;
+  return activeVal === undefined ? !!row[activeCol] : row[activeCol] === activeVal;
+}
+
+function mdmToolbar(key) {
+  const cfg = MDM_MODULES[key];
+  const state = mdmState[key];
+  const filterSelects = cfg.filters.map((f) => {
+    const opts = f.options().map((o) => mdmOptTag(o.value, o.label, state.filters[f.key] || "")).join("");
+    return `<select class="select select-sm" data-mdm-filter="${f.key}"><option value="">${esc(f.label)}: all</option>${opts}</select>`;
+  }).join("");
+  const sortOpts = cfg.sorts.map(([v, l]) => mdmOptTag(v, l, state.sort || cfg.defaultSort)).join("");
+  return `
+    <div class="panel-head-row">
+      <div>
+        <h2>${icon(cfg.icon)} ${esc(cfg.label)}</h2>
+        <p class="panel-sub" style="margin-bottom:0">${mdmCache[key].loaded ? mdmCache[key].total : "…"} record${mdmCache[key].total === 1 ? "" : "s"}</p>
+      </div>
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
+        ${cfg.noCreate ? "" : `<button class="btn btn-primary btn-xs" data-mdm-new>${icon("plus")} New</button>`}
+      </div>
+    </div>
+    <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-top:.75rem">
+      <div class="scd-search" style="max-width:16rem">${icon("search")}<input class="input" data-mdm-search value="${esc(state.search)}" placeholder="${esc(cfg.searchPlaceholder)}"></div>
+      ${filterSelects}
+      <select class="select select-sm" data-mdm-sort>${sortOpts}</select>
+      <button class="btn btn-outline btn-xs" data-mdm-dir title="Sort direction">${state.dir === "desc" ? "↓" : "↑"}</button>
+      ${cfg.noArchive ? "" : `<label style="display:flex;align-items:center;gap:.35rem;font-size:.82rem;color:var(--muted-foreground)">
+        <input type="checkbox" data-mdm-show-archived ${state.filters.showArchived ? "checked" : ""}> Show archived</label>`}
+    </div>`;
+}
+
+function mdmPaginationBar(key) {
+  const state = mdmState[key];
+  const { total } = mdmCache[key];
+  const from = total ? state.page * MDM_PAGE_SIZE + 1 : 0;
+  const to = Math.min(total, state.page * MDM_PAGE_SIZE + MDM_PAGE_SIZE);
+  const lastPage = Math.max(0, Math.ceil(total / MDM_PAGE_SIZE) - 1);
+  return `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:.75rem;font-size:.82rem;color:var(--muted-foreground)">
+      <span>${total ? `${from}–${to} of ${total}` : "No records"}</span>
+      <div style="display:flex;gap:.4rem">
+        <button class="btn btn-outline btn-xs" data-mdm-page="prev" ${state.page <= 0 ? "disabled" : ""}>${icon("arrowLeft")} Prev</button>
+        <button class="btn btn-outline btn-xs" data-mdm-page="next" ${state.page >= lastPage ? "disabled" : ""}>Next ${icon("arrowRight")}</button>
+      </div>
+    </div>`;
+}
+
+function mdmTable(key, canWrite) {
+  const cfg = MDM_MODULES[key];
+  const { rows, loaded, error } = mdmCache[key];
+  if (!loaded) return `<div class="empty-state">Loading…</div>`;
+  if (error) return `<div class="empty-state">Could not load — ${esc(error)} <button class="btn btn-outline btn-xs" data-mdm-retry>${icon("refresh")} Retry</button></div>`;
+  if (!rows.length) {
+    const hint = mdmState[key].search || Object.values(mdmState[key].filters).some(Boolean)
+      ? "Try clearing search or filters." : cfg.noCreate ? "" : "Add the first one with “New”.";
+    return `<div class="empty-state">No records match. ${hint}</div>`;
+  }
+
+  const head = `<div class="utx-row utx-head" style="grid-template-columns:${cfg.colWidths}">
+    ${cfg.columns.map((c) => `<div class="utx-cell">${esc(c)}</div>`).join("")}<div class="utx-cell"></div></div>`;
+  const body = rows.map((r) => {
+    const active = mdmIsRowActive(cfg, r);
+    const key = mdmKeyOf(cfg, r);
+    const cells = cfg.renderRow(r).map((c) => `<div class="utx-cell">${c}</div>`).join("");
+    const actions = `
+      <button class="icon-btn" data-mdm-view="${esc(key)}" title="View">${icon("eye")}</button>
+      ${canWrite ? `<button class="icon-btn" data-mdm-edit="${esc(key)}" title="Edit">${icon("pen")}</button>` : ""}
+      ${canWrite && !cfg.noArchive ? (active
+        ? `<button class="icon-btn danger" data-mdm-archive="${esc(key)}" title="Archive">${icon("trash")}</button>`
+        : `<button class="icon-btn" data-mdm-restore="${esc(key)}" title="Restore">${icon("refresh")}</button>`) : ""}
+      ${canWrite && cfg.noArchive && r.updated_at ? `<button class="icon-btn danger" data-mdm-archive="${esc(key)}" title="Reset">${icon("trash")}</button>` : ""}`;
+    return `<div class="utx-row" style="grid-template-columns:${cfg.colWidths}${active ? "" : ";opacity:.6"}">${cells}<div class="utx-cell utx-actions">${actions}</div></div>`;
+  }).join("");
+  return `<div class="utx-scroll"><div class="utx-table">${head}${body}</div></div>`;
+}
+
+function mdmModal(key) {
+  const cfg = MDM_MODULES[key];
+  const state = mdmState[key];
+  if (state.viewId != null) {
+    const row = mdmCache[key].rows.find((r) => String(mdmKeyOf(cfg, r)) === String(state.viewId));
+    if (!row) return "";
+    const fields = cfg.viewFields(row).map(([l, v]) => `<div class="form-row"><strong style="min-width:9rem;display:inline-block">${esc(l)}</strong><span>${mdmDash(v)}</span></div>`).join("");
+    return `<div class="modal-overlay" data-mdm-view-overlay><div class="modal" role="dialog" aria-modal="true">
+      <div class="modal-head"><h2>${esc(cfg.label)} details</h2><button class="icon-btn" data-mdm-view-close aria-label="Close">✕</button></div>
+      <div class="modal-body">${fields}</div>
+      <div class="modal-foot"><button class="btn btn-outline" data-mdm-view-close>Close</button></div>
+    </div></div>`;
+  }
+  if (!state.formOpen) return "";
+  const editing = state.editId != null;
+  const row = editing ? mdmCache[key].rows.find((r) => String(mdmKeyOf(cfg, r)) === String(state.editId)) : null;
+  if (editing && !row) return "";
+  return `<div class="modal-overlay" data-mdm-form-overlay><div class="modal" role="dialog" aria-modal="true">
+    <div class="modal-head"><h2>${editing ? "Edit" : "New"} ${esc(cfg.label).replace(/s$/, "")}</h2><button class="icon-btn" data-mdm-form-close aria-label="Close">✕</button></div>
+    <form id="mdmForm" class="modal-body" data-editing="${editing ? "1" : "0"}">
+      ${cfg.formFields(row)}
+      <div data-mdm-dupe-warning></div>
+    </form>
+    <div class="modal-foot">
+      <button class="btn btn-primary" data-mdm-save>${icon("check")} ${state.dedupeOk ? "Save anyway" : "Save"}</button>
+      <button class="btn btn-outline" data-mdm-form-close>Cancel</button>
+    </div>
+  </div></div>`;
+}
+
+function masterDataPanel() {
+  const tabs = Object.entries(MDM_MODULES).map(([key, cfg]) =>
+    `<button class="ksubtab ${mdmTab === key ? "active" : ""}" data-mdm-tab="${key}">${icon(cfg.icon)} ${esc(cfg.label)}</button>`).join("");
+  return `<div class="panel" style="margin-top:1.5rem" data-mdm-panel>
+    <div class="panel-head-row"><div>
+      <h2>${icon("layers")} Master Data Management</h2>
+      <p class="panel-sub" style="margin-bottom:0">The single source of record for schools, people, learners, devices and infrastructure</p>
+    </div></div>
+    <div class="ksubtabs" style="margin-top:.75rem">${tabs}</div>
+    <div data-mdm-body style="margin-top:1rem">
+      ${mdmToolbar(mdmTab)}
+      ${mdmTable(mdmTab, mdmCanWrite())}
+      ${mdmPaginationBar(mdmTab)}
+    </div>
+    ${mdmModal(mdmTab)}
+  </div>`;
+}
+
+// Only admin/programme_manager have create/edit/delete on every one of the
+// six modules this panel covers (per the permission matrix, patch-22) —
+// M&E's grant on these is view+export only. Hiding the buttons here is
+// convenience; has_perm() in every RLS policy is what actually refuses the
+// write if this check were ever wrong or bypassed.
+function mdmCanWrite() {
+  return ["admin", "programme_manager", "staff"].includes(coachUser?.role);
+}
+
+/* Teachers and School Leaders are `profiles` rows, not a standalone table —
+   creating one means a real invited account (createStaffAccount, the same
+   generalized invite path the RBAC pass built for Staff/M&E), then linking
+   it to a school and saving the role-specific fields. Both writes happen
+   here rather than in cfg.toPayload/a plain insert, because "create" for
+   these two modules is structurally a two-step, cross-table operation, not
+   a single-row insert like every other module. */
+async function mdmSaveProfileRole(key, raw, editRow) {
+  const cfg = MDM_MODULES[key];
+  const school = raw.school_id ? getSchools().find((s) => s.id === raw.school_id) : null;
+  // profiles.school (free text) is what a dozen *existing* RLS policies
+  // still match a school leader/teacher's own school against (see
+  // patch-26's header) — kept in sync with the new school_id FK so a
+  // person linked through this screen gets the same scoping a hand-typed
+  // signup already relies on, not a second, disconnected notion of "their
+  // school" that only this module understands.
+  const profilePatch = { school_id: raw.school_id || null, school: school?.name || null };
+  if (key === "school_leaders") {
+    profilePatch.head_title = raw.head_title?.trim() || null;
+    profilePatch.phone = raw.phone?.trim() || null;
+  }
+
+  let id = editRow?.id;
+  if (!editRow) {
+    ({ id } = await createStaffAccount({ fullName: raw.fullName.trim(), email: raw.email.trim().toLowerCase(), role: cfg.profileRole }));
+  }
+
+  const { error } = await supabase.from("profiles").update(profilePatch).eq("id", id);
+  if (error) throw new Error(authMessage(error));
+
+  if (key === "teachers") {
+    const extPatch = {};
+    TEACHER_EXT_FIELDS.forEach((f) => { extPatch[f.key] = raw[f.key]?.trim ? raw[f.key].trim() || null : raw[f.key] || null; });
+    const { error: extErr } = await supabase.from("teachers").upsert({ id, ...extPatch }, { onConflict: "id" });
+    if (extErr) throw new Error(authMessage(extErr));
+  }
+}
+
+async function mdmSubmit(key) {
+  const cfg = MDM_MODULES[key];
+  const state = mdmState[key];
+  const form = document.getElementById("mdmForm");
+  if (!form) return;
+  const raw = Object.fromEntries(new FormData(form).entries());
+  // Unchecked checkboxes are simply absent from FormData — Infrastructure's
+  // amenity checkboxes need an explicit "off" so toPayload can tell "not
+  // ticked" apart from "field not on this form at all".
+  if (key === "infrastructure") FACILITY_FLAGS.forEach((f) => { if (!(f.key in raw)) raw[f.key] = "off"; });
+  raw.editing = state.editId != null;
+
+  const errs = cfg.validate(raw);
+  if (errs.length) return toast("Fix the following", errs.join(" "), "error");
+
+  const editRow = state.editId != null ? mdmCache[key].rows.find((r) => String(mdmKeyOf(cfg, r)) === String(state.editId)) : null;
+
+  // Duplicate detection guards against *creating* a mistaken second record
+  // for something that already exists — it has nothing to say about editing
+  // a record the admin already correctly identified. Without this guard, an
+  // edit unrelated to name/code/serial would still re-run the same fuzzy
+  // name search that created the record in the first place, and warn about
+  // the very row being edited (or any sibling sharing part of its name) on
+  // every single save.
+  if (!editRow && !state.dedupeOk) {
+    const dupes = await cfg.findDuplicates(raw, undefined);
+    if (dupes.length) {
+      state.dedupeOk = true;
+      const warnHost = form.querySelector("[data-mdm-dupe-warning]");
+      if (warnHost) warnHost.innerHTML = `<div class="notice">${icon("alert")}<span>Possible duplicate — review before saving:<ul style="margin:.4rem 0 0 1.2rem">${dupes.map((d) => `<li>${esc(d)}</li>`).join("")}</ul></span></div>`;
+      const saveBtn = document.querySelector("[data-mdm-save]");
+      if (saveBtn) saveBtn.innerHTML = `${icon("check")} Save anyway`;
+      return;
+    }
+  }
+  state.dedupeOk = false;
+
+  const saveBtn = document.querySelector("[data-mdm-save]");
+  if (saveBtn) saveBtn.disabled = true;
+  try {
+    if (key === "teachers" || key === "school_leaders") {
+      await mdmSaveProfileRole(key, raw, editRow);
+    } else if (key === "infrastructure") {
+      const { error } = await supabase.from("school_facilities").upsert(cfg.toPayload(raw, editRow), { onConflict: "school_id" });
+      if (error) throw new Error(authMessage(error));
+    } else {
+      const payload = cfg.toPayload(raw);
+      const q = editRow ? supabase.from(key).update(payload).eq("id", editRow.id) : supabase.from(key).insert(payload);
+      const { error } = await q;
+      if (error) throw new Error(authMessage(error));
+    }
+    state.formOpen = false;
+    state.editId = null;
+    await loadMdm(key);
+    renderMasterData();
+    toast(editRow ? "Saved" : "Created", "", "success");
+  } catch (err) {
+    toast("Could not save", err.message, "error");
+    if (saveBtn) saveBtn.disabled = false;
+  }
+}
+
+async function mdmSetArchived(key, rowKey, archived) {
+  const cfg = MDM_MODULES[key];
+  const row = mdmCache[key].rows.find((r) => String(mdmKeyOf(cfg, r)) === String(rowKey));
+  if (!row) return;
+  let error;
+  if (key === "devices") {
+    ({ error } = await supabase.from("devices").update({ status: archived ? "retired" : "active" }).eq("id", row.id));
+  } else if (key === "teachers" || key === "school_leaders") {
+    ({ error } = await supabase.from("profiles").update({ active: !archived }).eq("id", row.id));
+  } else {
+    ({ error } = await supabase.from(key).update({ active: !archived }).eq("id", row.id));
+  }
+  if (error) return toast("Could not update", authMessage(error), "error");
+  await loadMdm(key);
+  renderMasterData();
+  toast(archived ? "Archived" : "Restored", "", "success");
+}
+
+// Top-level, not nested inside wireMyDashboard's closure like most of this
+// file's render/wire pairs — mdmSubmit() and mdmSetArchived() also need to
+// call renderMasterData() after a save, and they live at module scope (no
+// access to that closure's own `body` variable). Re-fetching #dashBody
+// directly reaches the identical node the closure's `body` points to, so
+// this works from anywhere without threading the element through as an
+// argument everywhere.
+function renderMasterData() {
+  const holder = document.getElementById("dashBody")?.querySelector("[data-mdm-panel]");
+  if (!holder) return;
+  holder.outerHTML = masterDataPanel();
+  wireMasterData();
+}
+
+function wireMasterData() {
+  const panel = document.getElementById("dashBody")?.querySelector("[data-mdm-panel]");
+  if (!panel) return;
+  const key = mdmTab;
+  const cfg = MDM_MODULES[key];
+  const state = mdmState[key];
+  const canWrite = mdmCanWrite();
+
+  if (!mdmCache[key].loaded) loadMdm(key).then(() => { if (mdmTab === key) renderMasterData(); });
+
+  panel.querySelectorAll("[data-mdm-tab]").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      mdmTab = btn.dataset.mdmTab;
+      renderMasterData();
+    })
+  );
+
+  const reload = async () => { await loadMdm(key); renderMasterData(); };
+
+  const searchEl = panel.querySelector("[data-mdm-search]");
+  if (searchEl) {
+    let t = null;
+    searchEl.addEventListener("input", (e) => {
+      clearTimeout(t);
+      const v = e.target.value;
+      t = setTimeout(async () => {
+        state.search = v; state.page = 0;
+        await reload();
+        const again = document.getElementById("dashBody")?.querySelector("[data-mdm-search]");
+        if (again) { again.focus(); again.setSelectionRange(v.length, v.length); }
+      }, 350);
+    });
+  }
+
+  panel.querySelectorAll("[data-mdm-filter]").forEach((sel) =>
+    sel.addEventListener("change", () => {
+      state.filters[sel.dataset.mdmFilter] = sel.value || null;
+      state.page = 0;
+      reload();
+    })
+  );
+  panel.querySelector("[data-mdm-show-archived]")?.addEventListener("change", (e) => {
+    state.filters.showArchived = e.target.checked;
+    state.page = 0;
+    reload();
+  });
+  panel.querySelector("[data-mdm-sort]")?.addEventListener("change", (e) => {
+    state.sort = e.target.value;
+    reload();
+  });
+  panel.querySelector("[data-mdm-dir]")?.addEventListener("click", () => {
+    state.dir = state.dir === "desc" ? "asc" : "desc";
+    reload();
+  });
+  panel.querySelectorAll("[data-mdm-page]").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      state.page += btn.dataset.mdmPage === "next" ? 1 : -1;
+      reload();
+    })
+  );
+  panel.querySelector("[data-mdm-retry]")?.addEventListener("click", reload);
+
+  panel.querySelector("[data-mdm-new]")?.addEventListener("click", () => {
+    if (!canWrite) return;
+    state.formOpen = true; state.editId = null; state.dedupeOk = false;
+    renderMasterData();
+  });
+  panel.querySelectorAll("[data-mdm-edit]").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      if (!canWrite) return;
+      state.editId = btn.dataset.mdmEdit; state.formOpen = true; state.dedupeOk = false;
+      renderMasterData();
+    })
+  );
+  panel.querySelectorAll("[data-mdm-view]").forEach((btn) =>
+    btn.addEventListener("click", () => { state.viewId = btn.dataset.mdmView; renderMasterData(); })
+  );
+  panel.querySelectorAll("[data-mdm-archive]").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      if (!canWrite) return;
+      const label = cfg.noArchive ? "Reset this infrastructure record?" : `Archive this ${cfg.label.replace(/s$/, "").toLowerCase()}?`;
+      if (!confirm(label + " This does not delete its history — it can be restored or re-entered later.")) return;
+      if (cfg.noArchive) {
+        supabase.from("school_facilities").delete().eq("school_id", btn.dataset.mdmArchive)
+          .then(({ error }) => error ? toast("Could not reset", authMessage(error), "error") : (loadMdm(key).then(renderMasterData), toast("Reset", "", "success")));
+      } else {
+        mdmSetArchived(key, btn.dataset.mdmArchive, true);
+      }
+    })
+  );
+  panel.querySelectorAll("[data-mdm-restore]").forEach((btn) =>
+    btn.addEventListener("click", () => { if (canWrite) mdmSetArchived(key, btn.dataset.mdmRestore, false); })
+  );
+
+  panel.querySelector("[data-mdm-view-overlay]")?.addEventListener("click", (e) => {
+    if (e.target.hasAttribute("data-mdm-view-overlay")) { state.viewId = null; renderMasterData(); }
+  });
+  panel.querySelectorAll("[data-mdm-view-close]").forEach((b) => b.addEventListener("click", () => { state.viewId = null; renderMasterData(); }));
+
+  panel.querySelector("[data-mdm-form-overlay]")?.addEventListener("click", (e) => {
+    if (e.target.hasAttribute("data-mdm-form-overlay")) { state.formOpen = false; state.editId = null; renderMasterData(); }
+  });
+  panel.querySelectorAll("[data-mdm-form-close]").forEach((b) => b.addEventListener("click", () => { state.formOpen = false; state.editId = null; renderMasterData(); }));
+  panel.querySelector("[data-mdm-save]")?.addEventListener("click", () => mdmSubmit(key));
+}
+
 /* ---------------------------------------------------------- audit log (patch-24)
    Read-only. audit_logs has no insert/update/delete policy at all (see
    patch-23) — every row here was written by log_audit(), called only from
@@ -3607,6 +4592,7 @@ function adminBody(ctx) {
       <p class="panel-sub">Daily authenticated sessions</p>
       ${barChart(s.trend, s.trendLabels)}
     </div>
+    ${masterDataPanel()}
     ${adminAccountsPanel(ctx.user)}
     ${officerAssignmentsPanel()}
     ${devicesPanel()}
@@ -7366,6 +8352,7 @@ export function wireMyDashboard(user, events) {
       });
     }
     wireAuditLog();
+    wireMasterData();
 
     // --- edit an account (database) or a local learner (this device) ---
     body.querySelectorAll("[data-edit-user]").forEach((btn) =>

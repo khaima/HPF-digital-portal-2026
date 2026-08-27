@@ -1,9 +1,12 @@
 # HPF Digital Portal — schema reference
 
-What the database actually looks like, as of `patch-24`. This is a
+What the database actually looks like, as of `patch-27`. This is a
 reference, not a narrative — for the story of how it got here, see
 `AUDIT.md`; for run order, see `SETUP.md`; for the full role/permission
-design and its live-tested verification, see **`AUTH-RBAC.md`**. 42 tables
+design and its live-tested verification, see **`AUTH-RBAC.md`**; for the
+Master Data Management screens (Schools, Teachers, Learners, School
+Leaders, Devices, Infrastructure) built on top of this schema, see
+**`MDM.md`**. 42 tables
 (40 domain tables + `app_modules`/`permissions`, the permission matrix
 itself), every one RLS-enabled, built from the same small vocabulary of
 `SECURITY DEFINER` helper functions rather than one-off authorization logic
@@ -26,12 +29,12 @@ timestamp, since nothing ever updates those rows.
 
 | Table | Purpose | Key FKs | Timestamps |
 |---|---|---|---|
-| `profiles` | One row per real account (every role incl. staff/admin) | `id` → `auth.users` | created + updated |
+| `profiles` | One row per real account (every role incl. staff/admin). `school_id` (patch-26) is a real FK for Teachers/School Leaders/Field Officers, kept in sync with the older free-text `school` column rather than replacing it — see `MDM.md`. `active` (patch-26) is an MDM roster flag, not an access-control one. | `id` → `auth.users`, `school_id` → `schools` | created + updated |
 | `roles` | Label/description lookup for `profiles.role` | `profiles.role` → `roles.id` | — (fixed reference data) |
-| `teachers` | 1:1 extension of a teacher's `profiles` row | `id` → `profiles` | created + updated |
+| `teachers` | 1:1 extension of a teacher's `profiles` row. `tsc_number` (patch-26) is unique — a real national identifier, not a fuzzy-match guess. | `id` → `profiles` | created + updated |
 | `field_officers` | 1:1 extension of a field officer's `profiles` row | `id` → `profiles` | created + updated |
 | `teacher_training` | Training records for a teacher | `teacher_id` → `profiles` | created + updated |
-| `learners` | Roster identity — no auth account, ever (see below) | `school_id` → `schools`, `created_by` → `profiles` | created + updated |
+| `learners` | Roster identity — no auth account, ever (see below). `grade` and `active` added in patch-26; `admission_number` is unique per school. | `school_id` → `schools`, `created_by` → `profiles` | created + updated |
 
 **School leaders have no extension table.** Unlike teachers/field officers,
 a school leader has no role-specific fields beyond what `profiles` already
@@ -48,7 +51,7 @@ client-side concern this table doesn't touch.
 
 | Table | Purpose | Key FKs | Timestamps |
 |---|---|---|---|
-| `schools` | The school itself — name, county, GPS, story | — | created + updated |
+| `schools` | The school itself — name, county, GPS, story, plus (patch-26) code, sub-county, location, programme status, contact info, and `active` | — | created + updated |
 | `school_facilities` | Current-state infrastructure inventory (1 row per school) | `school_id` → `schools` | updated only (no separate created_at — the row is created once with its first state) |
 | `school_programmes` | Which HPF programmes run at a school, and their status | `school_id` → `schools` | created + updated |
 | `school_returns` | Termly self-reported figures (enrolment, staffing, facilities) | `submitted_by` → `profiles` | created + updated |
@@ -91,7 +94,7 @@ schema patch-13 built for a future migration that hasn't happened yet.
 
 | Table | Purpose | Key FKs |
 |---|---|---|
-| `devices` | A physical device at a school | `school_id` → `schools` |
+| `devices` | A physical device at a school. `serial_number` and `asset_tag` (patch-26) are both unique. | `school_id` → `schools` |
 | `device_maintenance` | An issue reported against a device | `device_id` → `devices`, `reported_by` → `profiles` |
 
 ## Digital learning
