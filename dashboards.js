@@ -1731,6 +1731,7 @@ function mdmTable(moduleKey, canWrite) {
     const actions = `
       ${moduleKey === "schools" ? `<button class="icon-btn" data-s360-open="${esc(key)}" title="Open 360 profile">${icon("layers")}</button>` : ""}
       ${moduleKey === "teachers" ? `<button class="icon-btn" data-t360-open="${esc(key)}" title="Open 360 profile">${icon("layers")}</button>` : ""}
+      ${moduleKey === "learners" ? `<button class="icon-btn" data-l360-open="${esc(key)}" title="Open 360 profile">${icon("layers")}</button>` : ""}
       <button class="icon-btn" data-mdm-view="${esc(key)}" title="View">${icon("eye")}</button>
       ${canWrite ? `<button class="icon-btn" data-mdm-edit="${esc(key)}" title="Edit">${icon("pen")}</button>` : ""}
       ${canWrite && !cfg.noArchive ? (active
@@ -2041,6 +2042,9 @@ function wireMasterData() {
   );
   panel.querySelectorAll("[data-t360-open]").forEach((btn) =>
     btn.addEventListener("click", () => openTeacher360(btn.dataset.t360Open))
+  );
+  panel.querySelectorAll("[data-l360-open]").forEach((btn) =>
+    btn.addEventListener("click", () => openLearner360(btn.dataset.l360Open))
   );
 }
 
@@ -2902,6 +2906,336 @@ function wireTeacher360() {
     btn.addEventListener("click", () => { teacher360Tab = btn.dataset.t360Tab; renderTeacher360(); })
   );
   overlay.querySelector("[data-t360-retry]")?.addEventListener("click", () => { if (teacher360Id) loadTeacher360(teacher360Id).then(renderTeacher360); });
+}
+
+/* ============================================================
+   Learner 360 — a unified, read-only profile for one learner.
+
+   Same shape as School 360 and Teacher 360, with one real schema gap the
+   other two don't have to deal with: `learners` (this table, patch-13/MDM,
+   what this view is keyed on) and the class-roster/assessment system
+   (`enrollments`, `submissions`) are two ID spaces that were never linked.
+   `enrollments.learner_id`/`submissions.learner_id` both reference
+   `profiles(id)` and are hard-coded null on every insert this app makes
+   (see the #addLearnerForm submit handler and the quiz-sync code) — a
+   roster entry's only identity is its typed `name`. So Attendance and
+   Digital Engagement below are real `learner_id` joins (attendance_records,
+   kolibri_activity, library_activity, learning_activity all reference
+   `learners(id)` directly — the one part of this table that IS wired up),
+   but Assessments can only be reached by matching `enrollments.name` /
+   `submissions.name` against this learner's own name within their school's
+   classes — a best-effort bridge, not a guaranteed identity match, and the
+   Assessments tab says so rather than presenting a false-precision link.
+
+   Progress is new: HPF's own published impact work tracks attendance and
+   dropout as outcome indicators, not just activity counts, so this tab
+   turns the raw attendance/assessment history into an explicit month-over-
+   month trend — computed from real recorded values, never a fabricated
+   composite "outcome score". */
+
+const LEARNER360_TABS = [
+  ["overview", "Overview", "layers"],
+  ["attendance", "Attendance", "clipboard"],
+  ["digital", "Digital Engagement", "laptop"],
+  ["assessments", "Assessments", "chartColumn"],
+  ["progress", "Progress", "trendingUp"],
+];
+
+let learner360Id = null;
+let learner360Tab = "overview";
+let learner360LoadToken = 0;
+let learner360Cache = null;
+
+function freshLearner360Cache(learnerId) {
+  return {
+    learnerId, loaded: false, error: null, learner: null,
+    attendance: [], kolibri: [], library: [], learningActivity: [],
+    matchedClasses: [], assessments: [], submissions: [],
+  };
+}
+
+async function openLearner360(learnerId) {
+  learner360Id = learnerId;
+  learner360Tab = "overview";
+  learner360Cache = freshLearner360Cache(learnerId);
+  renderLearner360();
+  await loadLearner360(learnerId);
+  if (learner360Id === learnerId) renderLearner360();
+}
+
+function closeLearner360() {
+  learner360Id = null;
+  learner360Cache = null;
+  renderLearner360();
+}
+
+/* Four phases, not one Promise.all: matching into the assessment system
+   needs this learner's school's classes (phase 2) before it can look for a
+   name match in `enrollments` (phase 3), which in turn has to resolve
+   before assessments — and their submissions — can be fetched (phase 4). */
+async function loadLearner360(learnerId) {
+  const token = ++learner360LoadToken;
+  const set = (patch) => { if (learner360Cache && learner360Cache.learnerId === learnerId) Object.assign(learner360Cache, patch); };
+
+  const { data: learner, error: learnerErr } = await supabase.from("learners").select("*, school:schools(id,name,county)").eq("id", learnerId).maybeSingle();
+  if (token !== learner360LoadToken) return;
+  if (learnerErr || !learner) {
+    set({ loaded: true, error: learnerErr ? authMessage(learnerErr) : "Learner not found." });
+    return;
+  }
+  set({ learner });
+
+  const [attendanceRes, kolibriRes, libraryRes, learningActRes, classesRes] = await Promise.all([
+    supabase.from("attendance_records").select("*, class:classes(name)").eq("learner_id", learnerId).order("session_date", { ascending: false }).limit(500),
+    supabase.from("kolibri_activity").select("*").eq("learner_id", learnerId).order("synced_at", { ascending: false }).limit(200),
+    supabase.from("library_activity").select("*").eq("learner_id", learnerId).order("occurred_at", { ascending: false }).limit(200),
+    supabase.from("learning_activity").select("*").eq("learner_id", learnerId).order("occurred_at", { ascending: false }).limit(200),
+    learner.school?.name ? supabase.from("classes").select("*").eq("school", learner.school.name) : Promise.resolve({ data: [] }),
+  ]);
+  if (token !== learner360LoadToken) return;
+
+  const classes = classesRes.data || [];
+  set({
+    attendance: attendanceRes.data || [], kolibri: kolibriRes.data || [],
+    library: libraryRes.data || [], learningActivity: learningActRes.data || [],
+  });
+
+  const classIds = classes.map((c) => c.id);
+  const enrollmentsRes = classIds.length
+    ? await supabase.from("enrollments").select("class_id").in("class_id", classIds).ilike("name", learner.full_name)
+    : { data: [] };
+  if (token !== learner360LoadToken) return;
+
+  const matchedClassIds = [...new Set((enrollmentsRes.data || []).map((e) => e.class_id))];
+  set({ matchedClasses: classes.filter((c) => matchedClassIds.includes(c.id)) });
+
+  const assessmentsRes = matchedClassIds.length
+    ? await supabase.from("assessments").select("*, class:classes(name)").in("class_id", matchedClassIds).order("created_at", { ascending: false })
+    : { data: [] };
+  if (token !== learner360LoadToken) return;
+
+  const assessments = assessmentsRes.data || [];
+  set({ assessments });
+
+  const assessmentIds = assessments.map((a) => a.id);
+  const submissionsRes = assessmentIds.length
+    ? await supabase.from("submissions").select("*").in("assessment_id", assessmentIds).ilike("name", learner.full_name)
+    : { data: [] };
+  if (token !== learner360LoadToken) return;
+
+  set({ loaded: true, error: null, submissions: submissionsRes.data || [] });
+}
+
+/* Shared by Overview and Progress. Buckets a set of rows into calendar
+   months and, separately, states each of attendance and assessment score
+   as its own plain "previous month → latest month" comparison — two
+   independent facts, never merged into one fabricated composite, since
+   HPF's own impact reporting tracks them as separate indicators. */
+function learner360Trend(c) {
+  const bucket = (rows, dateKey) => {
+    const map = new Map();
+    rows.forEach((r) => {
+      const d = new Date(r[dateKey]);
+      if (isNaN(d)) return;
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(r);
+    });
+    return [...map.entries()].sort(([a], [b]) => (a < b ? -1 : 1))
+      .map(([key, items]) => ({ key, label: new Date(key + "-02").toLocaleDateString(undefined, { month: "short", year: "numeric" }), items }));
+  };
+  const attMonths = bucket(c.attendance, "session_date")
+    .map((m) => ({ ...m, value: Math.round((m.items.filter((a) => a.status === "present").length / m.items.length) * 100) }));
+  const scoreMonths = bucket(c.submissions, "created_at")
+    .map((m) => ({ ...m, value: Math.round(m.items.reduce((n, s) => n + (s.pct || 0), 0) / m.items.length) }));
+  const digitalEvents = [
+    ...c.kolibri.map((k) => ({ _when: k.synced_at })),
+    ...c.library.map((l) => ({ _when: l.occurred_at })),
+    ...c.learningActivity.map((a) => ({ _when: a.occurred_at })),
+  ];
+  const digMonths = bucket(digitalEvents, "_when");
+  const trendOf = (months) => {
+    if (months.length < 2) return null;
+    const prev = months[months.length - 2].value, latest = months[months.length - 1].value;
+    const dir = Math.abs(latest - prev) < 1 ? "stable" : latest > prev ? "up" : "down";
+    return { dir, prev, latest };
+  };
+  return { attMonths, scoreMonths, digMonths, attTrend: trendOf(attMonths), scoreTrend: trendOf(scoreMonths) };
+}
+
+/* ---------------------------------------------------------- Learner 360: Overview */
+function learner360Overview() {
+  return x360Gate(learner360Cache, { noun: "this learner", retryAttr: "l360" }, (c) => {
+    const present = c.attendance.filter((a) => a.status === "present").length;
+    const attRate = c.attendance.length ? Math.round((present / c.attendance.length) * 100) : null;
+    const digitalEvents = [...c.kolibri, ...c.library, ...c.learningActivity];
+    const avgScore = c.submissions.length ? Math.round(c.submissions.reduce((n, s) => n + (s.pct || 0), 0) / c.submissions.length) : null;
+    const { attTrend, scoreTrend } = learner360Trend(c);
+    const trendText = (t) => !t ? "" : `${t.dir === "up" ? "↑ Improving" : t.dir === "down" ? "↓ Declining" : "→ Stable"} (${t.prev}% → ${t.latest}%)`;
+
+    const metrics = [
+      { icon: "clipboard", label: "Attendance rate",
+        value: attRate !== null ? `${attRate}% present` : "",
+        empty: !c.attendance.length, period: x360Period(c.attendance, "session_date"),
+        updated: x360MaxDate(c.attendance, "session_date"), source: "attendance_records" },
+      { icon: "laptop", label: "Digital engagement",
+        value: `${digitalEvents.length} event${digitalEvents.length === 1 ? "" : "s"}`,
+        empty: !digitalEvents.length, period: x360Period(digitalEvents, ["synced_at", "occurred_at"]),
+        updated: x360MaxDate(digitalEvents, "synced_at", "occurred_at"), source: "kolibri/library/learning activity" },
+      { icon: "chartColumn", label: "Assessments taken",
+        value: `${c.submissions.length}${avgScore !== null ? ` · avg ${avgScore}%` : ""}`,
+        empty: !c.submissions.length, period: x360Period(c.submissions, "created_at"),
+        updated: x360MaxDate(c.submissions, "created_at"), source: "submissions (matched by name)" },
+      { icon: "trendingUp", label: "Attendance trend",
+        value: trendText(attTrend), empty: !attTrend, period: "Month over month",
+        updated: null, source: "computed from attendance_records" },
+      { icon: "chartColumn", label: "Assessment score trend",
+        value: trendText(scoreTrend), empty: !scoreTrend, period: "Month over month",
+        updated: null, source: "computed from submissions" },
+    ];
+
+    const grid = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:1rem">${metrics.map(x360MetricCard).join("")}</div>`;
+    return `${grid}<p class="hint" style="margin-top:.75rem">${icon("info")} Assessments are matched to this learner by name within their school's classes, not a direct id link — see the Assessments tab.</p>`;
+  });
+}
+
+/* ---------------------------------------------------------- Learner 360: Attendance */
+function learner360Attendance() {
+  return x360Gate(learner360Cache, { noun: "this learner", retryAttr: "l360" }, (c) => {
+    if (!c.attendance.length) return x360EmptyRow("No attendance records for this learner yet.");
+    const present = c.attendance.filter((a) => a.status === "present").length;
+    const rate = Math.round((present / c.attendance.length) * 100);
+    const rows = c.attendance.slice(0, 60).map((a) => `<div class="submission">
+        <span class="s-title" style="flex:1">${new Date(a.session_date).toLocaleDateString()}${a.class?.name ? " · " + esc(a.class.name) : ""}</span>
+        <span class="pill ${{ present: "synced", absent: "danger-pill", late: "role-pill", excused: "role-pill" }[a.status] || "role-pill"}">${esc(a.status)}</span>
+      </div>`).join("");
+    return `${x360Section("Attendance rate", "clipboard", `<div class="kpi-value" style="font-size:2rem">${rate}%</div>
+      <p class="s-meta">${present} present of ${c.attendance.length} recorded session(s) · ${x360Period(c.attendance, "session_date")}</p>`)}
+      ${x360Section("Recent sessions", "clock", rows)}`;
+  });
+}
+
+/* ---------------------------------------------------------- Learner 360: Digital Engagement */
+function learner360Digital() {
+  return x360Gate(learner360Cache, { noun: "this learner", retryAttr: "l360" }, (c) => {
+    const rows = [
+      ...c.kolibri.map((k) => ({ when: k.synced_at, label: `Kolibri content, ${k.progress_pct ?? 0}% progress`, extra: k.time_spent_seconds ? Math.round(k.time_spent_seconds / 60) + " min" : "" })),
+      ...c.library.map((l) => ({ when: l.occurred_at, label: `Library: ${l.action || "activity"}`, extra: "" })),
+      ...c.learningActivity.map((a) => ({ when: a.occurred_at, label: a.activity_type || "Learning activity", extra: "" })),
+    ].sort((a, b) => new Date(b.when) - new Date(a.when)).slice(0, 100);
+    const body = rows.length
+      ? rows.map((r) => `<div class="submission"><div style="flex:1;min-width:0"><div class="s-title">${esc(r.label)}</div>
+          <div class="s-meta">${new Date(r.when).toLocaleString()}${r.extra ? " · " + esc(r.extra) : ""}</div></div></div>`).join("")
+      : x360EmptyRow("No digital learning activity recorded for this learner yet.");
+    return x360Section(`Recent activity (${rows.length})`, "laptop", body);
+  });
+}
+
+/* ---------------------------------------------------------- Learner 360: Assessments */
+function learner360Assessments() {
+  return x360Gate(learner360Cache, { noun: "this learner", retryAttr: "l360" }, (c) => {
+    const rows = c.assessments.length
+      ? c.assessments.map((a) => {
+          const sub = c.submissions.find((s) => s.assessment_id === a.id);
+          return `<div class="submission"><div style="flex:1;min-width:0">
+            <div class="s-title">${esc(a.title)}</div>
+            <div class="s-meta">${esc(a.class?.name || "—")} · ${new Date(a.created_at).toLocaleDateString()}</div>
+          </div>${sub ? `<span class="pill synced">${sub.pct}%</span>` : `<span class="pill role-pill">Not submitted</span>`}</div>`;
+        }).join("")
+      : x360EmptyRow("No assessments found in this learner's matched classes yet.");
+    return `<p class="hint" style="margin-bottom:.75rem">${icon("info")} Matched by name within this learner's school — the class roster and assessment system don't yet reference the learners table by id, so this is a best-effort match, not a guaranteed link.</p>${x360Section(`Assessments (${c.assessments.length})`, "chartColumn", rows)}`;
+  });
+}
+
+/* ---------------------------------------------------------- Learner 360: Progress */
+function learner360Progress() {
+  return x360Gate(learner360Cache, { noun: "this learner", retryAttr: "l360" }, (c) => {
+    const { attMonths, scoreMonths, digMonths, attTrend, scoreTrend } = learner360Trend(c);
+
+    const trendRow = (label, ic, trend) => {
+      const pill = !trend
+        ? `<span class="pill role-pill">Not enough history yet</span>`
+        : `<span class="pill ${trend.dir === "up" ? "synced" : trend.dir === "down" ? "danger-pill" : "role-pill"}">${icon(trend.dir === "down" ? "trendingDown" : "trendingUp")} ${trend.dir === "up" ? "Improving" : trend.dir === "down" ? "Declining" : "Stable"} (${trend.prev}% → ${trend.latest}%)</span>`;
+      return `<div class="submission"><span class="s-title" style="flex:1">${icon(ic)} ${esc(label)}</span>${pill}</div>`;
+    };
+    const summary = `${trendRow("Attendance, month over month", "clipboard", attTrend)}${trendRow("Assessment scores, month over month", "chartColumn", scoreTrend)}`;
+
+    const monthKeys = [...new Set([...attMonths.map((m) => m.key), ...scoreMonths.map((m) => m.key), ...digMonths.map((m) => m.key)])].sort();
+    const rows = monthKeys.length
+      ? monthKeys.map((key) => {
+          const a = attMonths.find((m) => m.key === key), s = scoreMonths.find((m) => m.key === key), d = digMonths.find((m) => m.key === key);
+          const label = (a || s || d).label;
+          return `<div class="submission">
+            <span class="s-title" style="flex:1">${esc(label)}</span>
+            <span class="s-meta">${a ? a.value + "% attendance" : "—"}</span>
+            <span class="s-meta">${d ? d.items.length + " digital event" + (d.items.length === 1 ? "" : "s") : "—"}</span>
+            <span class="s-meta">${s ? "avg " + s.value + "%" : "—"}</span>
+          </div>`;
+        }).join("")
+      : x360EmptyRow("Not enough recorded history yet to show a month-by-month trend.");
+
+    return `<p class="hint" style="margin-bottom:.75rem">${icon("info")} Outcomes, not just activity counts — attendance and assessment performance over time, the indicators HPF's own impact reporting tracks. Shown oldest to newest so the trend reads left to right, the only tab in this profile ordered that way on purpose.</p>
+      ${x360Section("Trend summary", "trendingUp", summary)}
+      ${x360Section("Month by month", "clock", rows)}`;
+  });
+}
+
+const LEARNER360_RENDER = {
+  overview: learner360Overview, attendance: learner360Attendance, digital: learner360Digital,
+  assessments: learner360Assessments, progress: learner360Progress,
+};
+
+function learner360Modal() {
+  const c = learner360Cache;
+  const learner = c?.learner;
+  const tabs = LEARNER360_TABS.map(([key, label, ic]) =>
+    `<button class="ksubtab ${learner360Tab === key ? "active" : ""}" data-l360-tab="${key}">${icon(ic)} ${esc(label)}</button>`).join("");
+
+  const headBody = !c
+    ? ""
+    : !c.loaded && !c.error
+    ? `<p class="panel-sub" style="margin:0">Loading…</p>`
+    : c.error && !learner
+    ? `<p class="panel-sub" style="margin:0">${esc(c.error)}</p>`
+    : `<p class="panel-sub" style="margin:0">${esc(learner.school?.name || "No school linked")}${learner.grade ? " · Grade " + esc(learner.grade) : ""}${learner.admission_number ? " · Adm " + esc(learner.admission_number) : ""}
+        ${learner.active === false ? `<span class="pill danger-pill">Archived</span>` : ""}</p>`;
+
+  const body = !learner
+    ? (c?.error
+        ? `<div class="empty-state">${esc(c.error)} <button class="btn btn-outline btn-xs" data-l360-retry>${icon("refresh")} Retry</button></div>`
+        : `<div class="empty-state">Loading this learner's profile…</div>`)
+    : (LEARNER360_RENDER[learner360Tab] || learner360Overview)();
+
+  return `<div class="modal-overlay" data-l360-overlay>
+    <div class="modal" style="max-width:1180px;max-height:92vh" role="dialog" aria-modal="true" aria-label="Learner 360 profile">
+      <div class="modal-head">
+        <div><h2>${icon("layers")} ${esc(learner?.full_name || "Learner 360")}</h2>${headBody}</div>
+        <button class="icon-btn" data-l360-close aria-label="Close">✕</button>
+      </div>
+      <div class="modal-body">
+        ${learner ? `<div class="ksubtabs">${tabs}</div>` : ""}
+        <div data-l360-content>${body}</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderLearner360() {
+  const holder = document.getElementById("dashBody")?.querySelector("[data-l360-root]");
+  if (!holder) return;
+  holder.innerHTML = learner360Id ? learner360Modal() : "";
+  if (learner360Id) wireLearner360();
+}
+
+function wireLearner360() {
+  const overlay = document.getElementById("dashBody")?.querySelector("[data-l360-overlay]");
+  if (!overlay) return;
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) closeLearner360(); });
+  overlay.querySelector("[data-l360-close]")?.addEventListener("click", closeLearner360);
+  overlay.querySelectorAll("[data-l360-tab]").forEach((btn) =>
+    btn.addEventListener("click", () => { learner360Tab = btn.dataset.l360Tab; renderLearner360(); })
+  );
+  overlay.querySelector("[data-l360-retry]")?.addEventListener("click", () => { if (learner360Id) loadLearner360(learner360Id).then(renderLearner360); });
 }
 
 /* ---------------------------------------------------------- audit log (patch-24)
@@ -5529,7 +5863,8 @@ function adminBody(ctx) {
         : `<div class="empty-state">No activity yet.</div>`)}
     </div>
     <div data-s360-root>${school360Id ? safeRender("School 360", () => school360Modal()) : ""}</div>
-    <div data-t360-root>${teacher360Id ? safeRender("Teacher 360", () => teacher360Modal()) : ""}</div>`;
+    <div data-t360-root>${teacher360Id ? safeRender("Teacher 360", () => teacher360Modal()) : ""}</div>
+    <div data-l360-root>${learner360Id ? safeRender("Learner 360", () => learner360Modal()) : ""}</div>`;
 }
 
 /* Live things a learner can join: active-session assignments (matched by

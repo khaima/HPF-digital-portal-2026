@@ -51,6 +51,8 @@ frontend static (it still deploys on GitHub Pages).
 
    **Teacher 360** (no new migration — a read-only view over existing tables, sharing School 360's rendering helpers): see [`TEACHER-360.md`](TEACHER-360.md).
 
+   **Learner 360** (no new migration — a read-only view over existing tables, sharing School 360's rendering helpers): see [`LEARNER-360.md`](LEARNER-360.md).
+
    **Do not run [`seed-dev.sql`](seed-dev.sql) against this project.** It's fake
    data for local/branch testing only — see its own header comment.
 
