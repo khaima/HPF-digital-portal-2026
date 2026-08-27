@@ -6,7 +6,8 @@ reference, not a narrative — for the story of how it got here, see
 design and its live-tested verification, see **`AUTH-RBAC.md`**; for the
 Master Data Management screens (Schools, Teachers, Learners, School
 Leaders, Devices, Infrastructure) built on top of this schema, see
-**`MDM.md`**. 42 tables
+**`MDM.md`**; for the unified single-school profile built on top of both,
+see **`SCHOOL-360.md`**. 42 tables
 (40 domain tables + `app_modules`/`permissions`, the permission matrix
 itself), every one RLS-enabled, built from the same small vocabulary of
 `SECURITY DEFINER` helper functions rather than one-off authorization logic
