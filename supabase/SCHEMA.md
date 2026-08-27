@@ -1,12 +1,21 @@
 # HPF Digital Portal — schema reference
 
-What the database actually looks like, as of `patch-20`. This is a reference,
-not a narrative — for the story of how it got here, see `AUDIT.md`; for run
-order, see `SETUP.md`. 40 tables, every one RLS-enabled, built from the same
-small vocabulary of `SECURITY DEFINER` helper functions rather than one-off
-authorization logic per table: `is_admin()`, `is_staff()`, `owns_class()`,
-`enrolled_in()`, `teaches_learner()`, `assigned_to_school()`,
-`visit_school_match()`, `activity_visible()`.
+What the database actually looks like, as of `patch-24`. This is a
+reference, not a narrative — for the story of how it got here, see
+`AUDIT.md`; for run order, see `SETUP.md`; for the full role/permission
+design and its live-tested verification, see **`AUTH-RBAC.md`**. 42 tables
+(40 domain tables + `app_modules`/`permissions`, the permission matrix
+itself), every one RLS-enabled, built from the same small vocabulary of
+`SECURITY DEFINER` helper functions rather than one-off authorization logic
+per table: `is_admin()`, `is_staff()`, `is_programme_manager()`,
+`has_perm()`, `owns_class()`, `enrolled_in()`, `teaches_learner()`,
+`assigned_to_school()`, `visit_school_match()`, `activity_visible()`.
+
+Every RLS policy (158 of them) is built from two independent halves —
+`has_perm(module, action)` (may this *role* do this *kind* of thing) and a
+row-scope expression (to *this* row) — rather than one combined check. See
+`AUTH-RBAC.md` for why both are necessary and how that was verified against
+the live database, not just written.
 
 Every table below has a UUID primary key. `created_at` + `updated_at` (the
 latter kept honest by the shared `touch_updated_at()` trigger) are called

@@ -890,7 +890,11 @@ function pageFieldOfficer() {
   const user = Auth.current();
   if (!user) return pageAuth("login");
 
-  const allowed = user.role === "field_officer" || user.role === "admin";
+  // Org-wide roles (patch-22's is_staff() in Postgres) as well as the
+  // officer's own role — this is a client-side "should we show a friendly
+  // notice" check, not the access control: field_reports RLS (assigned
+  // schools, or own rows) is what actually decides who can read or write.
+  const allowed = ["field_officer", "admin", "programme_manager", "me_officer", "staff"].includes(user.role);
   // Postgres already scopes this to the signed-in officer via RLS (admins see
   // everyone's), so no client-side filter by user is needed the way the old
   // localStorage version required.

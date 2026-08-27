@@ -38,6 +38,10 @@ frontend static (it still deploys on GitHub Pages).
    | 21 | [`patch-19-me-indicators-targets.sql`](patch-19-me-indicators-targets.sql) | `me_indicators`, `me_indicator_values`, `me_targets` — M&E data model |
    | 22 | [`patch-20-evidence.sql`](patch-20-evidence.sql) | `evidence` — generic supporting attachment, linked to any other row |
    | 23 | [`patch-21-single-source-of-truth.sql`](patch-21-single-source-of-truth.sql) | Gives learner logins, the digital library, and scorecard activities a real database home — see [`STORAGE-AUDIT.md`](STORAGE-AUDIT.md) |
+   | 24 | [`patch-22a-rbac-role-values.sql`](patch-22a-rbac-role-values.sql) | Adds `programme_manager` + `me_officer` role values — must run and commit on its own, before patch-22 |
+   | 25 | [`patch-22-permission-matrix.sql`](patch-22-permission-matrix.sql) | The permission matrix (`app_modules`, `permissions`, `has_perm()`) — see [`AUTH-RBAC.md`](AUTH-RBAC.md) |
+   | 26 | [`patch-23-rbac-policies.sql`](patch-23-rbac-policies.sql) | Rewrites every table's RLS as matrix-backed, per-command (view/create/edit/delete) policies |
+   | 27 | [`patch-24-audit-triggers.sql`](patch-24-audit-triggers.sql) | Wires the audit trail to real triggers — it existed since patch-13 but nothing had ever called it |
 
    **Do not run [`seed-dev.sql`](seed-dev.sql) against this project.** It's fake
    data for local/branch testing only — see its own header comment.

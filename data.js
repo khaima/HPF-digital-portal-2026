@@ -186,17 +186,23 @@ export const ROLES = [
   { value: "school_leader", label: "School Leader" },
   { value: "field_officer", label: "Field Officer" },
   { value: "learner", label: "Learner" },
-  { value: "staff", label: "HPF Staff" },
+  { value: "me_officer", label: "M&E" },
+  { value: "programme_manager", label: "Programme Manager" },
   { value: "admin", label: "HPF Admin" },
 ];
 
 // Self-serve signup only ever offers these — handle_new_user() (patch-01)
 // clamps anything else to "learner" server-side, so a role that isn't in
 // this list would be a working button that silently does something else.
-// Neither "staff" nor "admin" is reachable by signing up; both are granted
-// by an existing staff/admin account promoting someone (dashboards.js).
+// programme_manager, me_officer and admin are never reachable by signing up
+// — all three are granted by an existing account with people.edit access
+// inviting someone (dashboards.js, createStaffAccount), never typed at
+// signup. "staff" is the pre-patch-22 tier: no longer offered anywhere,
+// existing rows migrated to programme_manager, kept in the enum only
+// because Postgres cannot drop an enum value.
+export const NON_SELF_SERVE_ROLES = ["admin", "programme_manager", "me_officer", "staff"];
 export const SELF_SERVE_ROLES = ROLES.filter(
-  (r) => r.value !== "staff" && r.value !== "admin"
+  (r) => !NON_SELF_SERVE_ROLES.includes(r.value)
 );
 
 export const ORG_TYPES = [

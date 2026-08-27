@@ -13,30 +13,43 @@ const K_USERS = "hpf_users";
 const K_SESSION = "hpf_session";
 const K_IMPERSONATE = "hpf_impersonate"; // stores the real user while "in" someone's account
 const ROLE_LABEL = Object.fromEntries(ROLES.map((r) => [r.value, r.label]));
-const DASH_ROLES = ["admin", "staff", "learner", "teacher", "field_officer", "school_leader"];
-// Every role with a real profiles row (i.e. not learner) — an unrelated "staff"
-// to the "staff" *role value* added below: this is "which roles are staff of
-// the org" (admin/staff/teacher/field_officer/school_leader), not the role
-// named "staff" specifically. Kept as one name since renaming it would touch
-// every "Users by role" chart on the admin dashboard for no behavior change.
+// 'staff' is deprecated (patch-22 split it into programme_manager/me_officer)
+// and deliberately excluded from ROLES so nothing can select it going
+// forward — but the enum value still exists and this label is what renders
+// if a row somehow still carries it, rather than the raw db string.
+ROLE_LABEL.staff = "HPF Staff (legacy)";
+
+// Every role with org-wide standing — mirrors is_staff() in Postgres
+// (patch-22). 'staff' is kept only so a not-yet-migrated row still renders
+// and dispatches correctly; no UI ever lets anyone become it now.
+const ORG_ROLES = ["admin", "programme_manager", "me_officer", "staff"];
+const DASH_ROLES = [...ORG_ROLES, "learner", "teacher", "field_officer", "school_leader"];
+// Every role with a real profiles row (i.e. not learner) — used by the
+// "Users by role" chart on the admin dashboard.
 const STAFF_ROLES = DASH_ROLES.filter((r) => r !== "learner");
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
-/* which role workspaces each role may view via the switcher:
-   admin/staff see everyone, teacher sees teacher+learner, others only themselves */
+/* which role workspaces each role may view via the switcher: org-wide roles
+   see everyone, teacher sees teacher+learner, others only themselves */
 const VIEWABLE = {
-  admin: ["admin", "staff", "teacher", "learner", "field_officer", "school_leader"],
-  staff: ["admin", "staff", "teacher", "learner", "field_officer", "school_leader"],
+  admin: [...ORG_ROLES, "teacher", "learner", "field_officer", "school_leader"],
+  programme_manager: [...ORG_ROLES, "teacher", "learner", "field_officer", "school_leader"],
+  me_officer: [...ORG_ROLES, "teacher", "learner", "field_officer", "school_leader"],
+  staff: [...ORG_ROLES, "teacher", "learner", "field_officer", "school_leader"],
   teacher: ["teacher", "learner"],
   field_officer: ["field_officer"],
   school_leader: ["school_leader"],
   learner: ["learner"],
 };
 
-/* which roles a user is allowed to "enter" (impersonate to help remotely) */
+/* which roles a user is allowed to "enter" (impersonate to help remotely) —
+   people.edit in the matrix is what actually authorizes this server-side
+   (enterAccount only ever touches localStorage, but promoting/demoting a
+   real account under it is what "helping remotely" usually turns into) */
 const CAN_ENTER = {
-  admin: ["admin", "staff", "teacher", "learner", "field_officer", "school_leader"],
-  staff: ["admin", "staff", "teacher", "learner", "field_officer", "school_leader"],
+  admin: [...ORG_ROLES, "teacher", "learner", "field_officer", "school_leader"],
+  programme_manager: [...ORG_ROLES, "teacher", "learner", "field_officer", "school_leader"],
+  staff: [...ORG_ROLES, "teacher", "learner", "field_officer", "school_leader"],
   teacher: ["learner"],
 };
 
@@ -252,7 +265,7 @@ let editAdminId = null; // row currently showing the inline "edit name" form
    identical copies. Default collapsed: these three are the longest panels on
    the dashboard and an admin opens this page daily, so the summary heading is
    what shows first and each expands only on request. */
-let collapsedPanels = { admins: true, library: true, activity: true, assignments: true, devices: true, peopledetail: true, interventions: true };
+let collapsedPanels = { admins: true, library: true, activity: true, assignments: true, devices: true, peopledetail: true, interventions: true, audit: true };
 
 /* A header-row collapse button plus the wrapper its body goes in. Call
    collapseBtn(key) inside the panel's header, then wrap the existing body
@@ -279,7 +292,7 @@ async function loadAdmins() {
   const { data, error } = await supabase
     .from("profiles")
     .select("id, full_name, email, username, role, created_at")
-    .in("role", ["admin", "staff"])
+    .in("role", ["admin", "programme_manager", "me_officer", "staff"])
     .order("created_at");
   adminsLoaded = true;
   adminsError = error ? authMessage(error) : null;
@@ -290,14 +303,15 @@ async function loadAdmins() {
 /* Raise one profile to admin or staff. Reads the row back because a refused
    promotion is silent: guard_profile_role() restores the old role and
    returns success. Admin is the one transition the database reserves for an
-   existing admin (patch-14) — staff is open to any staff-or-admin viewer,
-   same as every other admin-level action. */
+   existing admin (patch-14) — every other role change needs people.edit
+   (patch-22's guard_profile_role), open to Programme Manager as well as
+   Admin, same as every other admin-level action. */
 async function promoteToRole(id, role) {
   const { data, error } = await supabase
     .from("profiles").update({ role }).eq("id", id).select("role").maybeSingle();
   if (error) throw new Error(authMessage(error));
   if (data?.role !== role) {
-    const noun = role === "admin" ? "an HPF admin" : "HPF staff";
+    const noun = role === "admin" ? "an HPF admin" : "able to assign " + (ROLE_LABEL[role] || role);
     throw new Error(
       `The database refused the promotion — this session isn't recognised as ${noun}. ` +
       "Sign in with an account that has that permission, or run this in the " +
@@ -306,7 +320,6 @@ async function promoteToRole(id, role) {
   }
 }
 const promoteToAdmin = (id) => promoteToRole(id, "admin");
-const promoteToStaff = (id) => promoteToRole(id, "staff");
 
 /* Admin-only from patch-16: touching an EXISTING Staff or Admin row (rename
    or remove) is no longer something Staff can do, even though Staff can
@@ -499,7 +512,7 @@ function meIndicatorsPanel() {
    only ever grants a session when the recipient clicks it, so this is what
    actually proves the address belongs to them — a typed-in password handed
    over "in person" never did. */
-async function createStaffAccount({ fullName, email, role = "staff", school = null, county = null, project = null }) {
+async function createStaffAccount({ fullName, email, role = "programme_manager", school = null, county = null, project = null }) {
   const existing = await findProfileByEmail(email);
   if (existing.length) {
     throw new Error(`${email} already has an account. Use "Promote existing account" instead — inviting again would just re-email them.`);
@@ -622,17 +635,21 @@ function adminAccountsPanel(currentUser) {
             <div class="s-meta">${esc(a.email || "—")}${a.username ? " · " + esc(a.username) : ""}
               · added ${new Date(a.created_at).toLocaleDateString()}</div>
           </div>
-          ${viewerIsAdmin && a.role === "staff"
+          ${viewerIsAdmin && a.role !== "admin"
             ? `<button class="btn btn-outline btn-xs" data-promote-to-admin="${a.id}" style="margin-right:.5rem">${icon("shield")} Promote to Admin</button>`
             : ""}
           ${canManage
             ? `<button class="icon-btn" data-edit-admin="${a.id}" title="Edit name">${icon("pen")}</button>
                <button class="icon-btn danger" data-remove-admin="${a.id}" data-name="${esc(a.full_name || a.email || "this account")}" title="Remove from Staff/Admin">${icon("trash")}</button>`
             : ""}
-          <span class="pill role-pill">${a.role === "admin" ? "Admin" : "Staff"}</span>
+          <span class="pill role-pill">${esc(ROLE_LABEL[a.role] || a.role)}</span>
         </div>`;
       }).join("")
     : `<div class="empty-state">No staff or admin rows in the database yet.</div>`;
+
+  const tierOpts = `
+    <option value="programme_manager">Programme Manager — full operational access</option>
+    <option value="me_officer">M&amp;E — reads &amp; exports everything, writes only M&amp;E data</option>`;
 
   const addForm = adminFormOpen ? `
     <form id="addAdminForm" class="add-user-form">
@@ -642,12 +659,13 @@ function adminAccountsPanel(currentUser) {
         <div class="field"><label>HPF email</label>
           <input class="input" name="email" type="email" required placeholder="name@${ORG_DOMAIN}"></div>
       </div>
-      <p class="hint">Must be an <strong>@${ORG_DOMAIN}</strong> address. Creates the account as
-        <strong>Staff</strong> and emails them a link to set their own password and sign in —
-        promote to Admin afterwards if that's what they need. No password to hand over: clicking
-        the link is what proves the address is really theirs. Delivery depends on the SMTP setup
-        described in <strong>supabase/AUTH-RECOVERY.md</strong> — if an invite doesn't arrive,
-        that's the first thing to check.</p>
+      <div class="field"><label>Tier</label><select class="select" name="role">${tierOpts}</select></div>
+      <p class="hint">Must be an <strong>@${ORG_DOMAIN}</strong> address. Emails them a link to set
+        their own password and sign in — an admin can promote further to Admin afterwards, from
+        this list. No password to hand over: clicking the link is what proves the address is
+        really theirs. Delivery depends on the SMTP setup described in
+        <strong>supabase/AUTH-RECOVERY.md</strong> — if an invite doesn't arrive, that's the first
+        thing to check.</p>
       <div class="add-user-actions">
         <button class="btn btn-primary" type="submit">${icon("shield")} Send invite</button>
         <button class="btn btn-outline" type="button" data-admin-add-cancel>Cancel</button>
@@ -658,11 +676,12 @@ function adminAccountsPanel(currentUser) {
     <form id="promoteAdminForm" class="add-user-form">
       <div class="field"><label>Email of an existing HPF account</label>
         <input class="input" name="email" type="email" required placeholder="name@${ORG_DOMAIN}"></div>
+      <div class="field"><label>Tier</label><select class="select" name="role">${tierOpts}</select></div>
       <p class="hint">The person already signed up (as a teacher, school leader or field officer)
-        and keeps their current password — only their role changes, to <strong>Staff</strong>.
-        An admin can promote them again from Staff to Admin afterwards, from this list.</p>
+        and keeps their current password — only their role changes. An admin can promote them
+        further to Admin afterwards, from this list.</p>
       <div class="add-user-actions">
-        <button class="btn btn-primary" type="submit">${icon("userCheck")} Make staff</button>
+        <button class="btn btn-primary" type="submit">${icon("userCheck")} Change role</button>
         <button class="btn btn-outline" type="button" data-admin-promote-cancel>Cancel</button>
       </div>
     </form>` : "";
@@ -1028,6 +1047,80 @@ function interventionsPanel() {
     </form>` : "";
 
   return wrap(`${addForm}${rows}`);
+}
+
+/* ---------------------------------------------------------- audit log (patch-24)
+   Read-only. audit_logs has no insert/update/delete policy at all (see
+   patch-23) — every row here was written by log_audit(), called only from
+   the SECURITY DEFINER triggers this table's own writes can never reach.
+   RLS (has_perm('audit','view')) is what actually restricts who can see
+   this, same as everywhere else — this panel only renders for a viewer the
+   matrix already grants audit.view to. */
+let auditLogCache = [];
+let auditLogLoaded = false;
+let auditLogError = null;
+async function loadAuditLog() {
+  const { data, error } = await supabase
+    .from("audit_logs")
+    .select("id, action, table_name, record_id, old_data, new_data, created_at, actor:profiles(full_name, email, role)")
+    .order("created_at", { ascending: false })
+    .limit(200);
+  auditLogLoaded = true;
+  auditLogError = error ? authMessage(error) : null;
+  if (!error) auditLogCache = data || [];
+  return auditLogCache;
+}
+
+const AUDIT_ACTION_LABEL = {
+  create: "Created", update: "Updated", delete: "Deleted",
+  role_change: "Role changed", role_change_refused: "Role change refused",
+};
+
+// A one-line diff of what actually changed, rather than dumping two JSON
+// blobs — the thing an admin scanning this list actually wants to know.
+function auditDiffLine(row) {
+  if (row.action === "create") return "new row";
+  if (row.action === "delete") return "row removed";
+  const before = row.old_data || {}, after = row.new_data || {};
+  const changed = Object.keys(after).filter((k) => JSON.stringify(after[k]) !== JSON.stringify(before[k]));
+  if (!changed.length) return "no field changes recorded";
+  return changed.slice(0, 4).map((k) => `${k}: ${esc(String(before[k] ?? "—"))} → ${esc(String(after[k] ?? "—"))}`).join(" · ");
+}
+
+function auditLogPanel() {
+  const head = `
+    <div class="panel-head-row">
+      <div>
+        <h2>${icon("shield")} Audit log</h2>
+        <p class="panel-sub" style="margin-bottom:0">Who changed what, and when — last 200 events, written by the database itself</p>
+      </div>
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
+        <button class="btn btn-outline btn-xs" data-audit-export>${icon("download")} Export CSV</button>
+        ${collapseBtn("audit")}
+      </div>
+    </div>`;
+  const wrap = (inner) => `<div class="panel" style="margin-top:1.5rem" data-audit-panel>${head}${collapseBody("audit", inner)}</div>`;
+
+  if (!auditLogLoaded) return wrap(`<div class="empty-state">Loading the audit log…</div>`);
+  if (auditLogError) {
+    return wrap(`<div class="empty-state">Could not load the audit log — ${esc(auditLogError)}
+      <div style="margin-top:.6rem"><button class="btn btn-outline btn-xs" data-audit-retry>${icon("refresh")} Try again</button></div>
+    </div>`);
+  }
+  if (!auditLogCache.length) return wrap(`<div class="empty-state">No audited changes yet.</div>`);
+
+  const rows = auditLogCache.map((r) => `
+    <div class="submission" style="align-items:flex-start">
+      <div style="flex:1;min-width:0">
+        <div class="s-title">${esc(AUDIT_ACTION_LABEL[r.action] || r.action)} · ${esc(r.table_name)}</div>
+        <div class="s-meta">${esc(r.actor?.full_name || r.actor?.email || "Unknown actor")}${r.actor?.role ? " (" + esc(ROLE_LABEL[r.actor.role] || r.actor.role) + ")" : ""}
+          · ${new Date(r.created_at).toLocaleString()}</div>
+        <div class="s-meta" style="font-family:monospace;font-size:.8em">${auditDiffLine(r)}</div>
+      </div>
+      ${r.action === "role_change_refused" ? `<span class="pill danger-pill">Refused</span>` : ""}
+    </div>`).join("");
+
+  return wrap(`<div class="lib-list">${rows}</div>`);
 }
 
 /* ---------------------------------------------------------- user management
@@ -1737,6 +1830,8 @@ const ROLE_COLOR = {
   school_leader: "oklch(78% 0.15 75)",
   field_officer: "oklch(55% 0.15 300)",
   staff: "oklch(58% 0.18 230)",
+  programme_manager: "oklch(58% 0.18 230)",
+  me_officer: "oklch(60% 0.16 195)",
   admin: "oklch(62% 0.24 27)",
 };
 const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -3517,6 +3612,7 @@ function adminBody(ctx) {
     ${devicesPanel()}
     ${peopleDetailPanel()}
     ${interventionsPanel()}
+    ${auditLogPanel()}
     ${userManagementPanel(ctx.user)}
     ${digitalLibraryPanel()}
     <div class="panel" style="margin-top:1.5rem">
@@ -5089,7 +5185,6 @@ function assessCard(a, cls, classes) {
       <div class="session-bar">
         ${statusBadge}
         <span class="session-audience">${targetLine}</span>
-        <button class="btn btn-outline btn-xs" data-sim-assess="${a.id}" title="Generate demo submissions">${icon("activity")} Simulate</button>
         ${publishBtn}
         ${sessionBtn}
       </div>
@@ -5127,24 +5222,6 @@ function buildAssessmentRows(a) {
     ...a.questions.map((q, qi) => (s.answers[qi] === q.correct ? "correct" : "wrong")),
   ]);
   return { header, rows };
-}
-
-/* fabricate plausible submissions for enrolled learners (demo aid) */
-function simulateAssessment(a, cls) {
-  const done = new Set((a.submissions || []).map((s) => s.learnerId));
-  cls.learners
-    .filter((l) => !done.has(l.id))
-    .forEach((l) => {
-      // ~68% chance of the correct answer per question
-      const answers = a.questions.map((q) =>
-        Math.random() < 0.68 ? q.correct : Math.floor(Math.random() * q.options.length)
-      );
-      const correct = a.questions.reduce((n, q, i) => n + (answers[i] === q.correct ? 1 : 0), 0);
-      a.submissions.push({
-        learnerId: l.id, name: l.name, answers, correct, total: a.questions.length,
-        pct: Math.round((correct / a.questions.length) * 100), at: Date.now(),
-      });
-    });
 }
 
 /* Attendance (patch-18) — mark present/absent/late/excused per learner for
@@ -6000,7 +6077,13 @@ function schoolLeaderBody() {
 
 const BODIES = {
   admin: adminBody,
-  staff: adminBody, // same dashboard code — the RLS split is what actually differs
+  // Same dashboard code for every org-wide role — the permission matrix and
+  // RLS are what actually differ per role (an M&E viewer's writes are
+  // refused server-side; the panels that would only ever no-op for them are
+  // hidden client-side too, but that's convenience, not the enforcement).
+  programme_manager: adminBody,
+  me_officer: adminBody,
+  staff: adminBody,
   learner: learnerBody,
   teacher: teacherBody,
   field_officer: fieldOfficerBody,
@@ -6030,7 +6113,7 @@ export function myDashboardMain(user, events) {
   // work across every school, so naming one would be wrong: a leftover school
   // on the profile (from before they were promoted, or picked at signup) is
   // not where they work. Region still reads true for them, so keep it.
-  const orgWide = user.role === "admin" || user.role === "staff";
+  const orgWide = ORG_ROLES.includes(user.role);
   const place = (orgWide ? [user.region] : [user.region, user.school]).filter(Boolean);
   const placeBit = place.length ? ` in <strong>${place.map(esc).join(" · ")}</strong>` : "";
   const intro =
@@ -6561,7 +6644,7 @@ export function wireMyDashboard(user, events) {
     // of the dashboard visibly shaking/blinking non-stop).
     if (!programmeDataLoaded) {
       const classesPromise = classesLoaded ? Promise.resolve(classesCache) : loadClasses();
-      Promise.allSettled([loadSchools(), loadReturns(), loadRevisions(), loadGrades(), loadFieldReports(), classesPromise, loadDeviceIssues(), loadMeIndicators(), loadSchoolFacilities(), loadDevices(), loadPeopleExt(), loadInterventions()]).then(() => {
+      Promise.allSettled([loadSchools(), loadReturns(), loadRevisions(), loadGrades(), loadFieldReports(), classesPromise, loadDeviceIssues(), loadMeIndicators(), loadSchoolFacilities(), loadDevices(), loadPeopleExt(), loadInterventions(), loadAuditLog()]).then(() => {
         programmeDataLoaded = true;
         // Full re-render, not just renderAnalytics(): Programme Overview (a
         // sibling of the analytics panel, not inside it) reads the same
@@ -6649,10 +6732,12 @@ export function wireMyDashboard(user, events) {
       }
 
       // ---- every other role: a real database account, or nothing ----
-      // An org email means HPF staff regardless of what was picked.
+      // An org email means HPF staff tier (Programme Manager) regardless of
+      // what was picked, unless M&E was explicitly chosen — an org email
+      // doesn't mean everyone at HPF should default to full write access.
       const email = (data.email || "").trim().toLowerCase();
       if (!email) return toast("Email required", "Every role except Learner signs in with an email.", "error");
-      if (email.endsWith("@" + ORG_DOMAIN)) data.role = "staff";
+      if (email.endsWith("@" + ORG_DOMAIN) && data.role !== "me_officer") data.role = "programme_manager";
       // Admin is the one role the database reserves for an existing admin to
       // grant (patch-14's guard_profile_role). Inviting straight to it would
       // be refused server-side after the auth account already existed, which
@@ -6793,6 +6878,7 @@ export function wireMyDashboard(user, events) {
         const d = Object.fromEntries(new FormData(form).entries());
         const fullName = (d.fullName || "").trim();
         const email = (d.email || "").trim().toLowerCase();
+        const tier = d.role === "me_officer" ? "me_officer" : "programme_manager";
         if (!fullName) return toast("Name required", "Enter the person's full name.", "error");
         if (!email.endsWith("@" + ORG_DOMAIN))
           return toast("HPF email required", `A staff account must use an @${ORG_DOMAIN} address.`, "error");
@@ -6800,13 +6886,13 @@ export function wireMyDashboard(user, events) {
         const submit = form.querySelector("[type=submit]");
         if (submit) { submit.disabled = true; submit.textContent = "Sending…"; }
         try {
-          await createStaffAccount({ fullName, email });
+          await createStaffAccount({ fullName, email, role: tier });
           adminFormOpen = false;
           await loadAdmins();
           renderAdmins();
           toast(
             "Invite sent",
-            `${fullName} will get an email at ${email} with a link to set their password and sign in as HPF staff.`,
+            `${fullName} will get an email at ${email} with a link to set their password and sign in as ${ROLE_LABEL[tier]}.`,
             "success"
           );
         } catch (err) {
@@ -6818,11 +6904,13 @@ export function wireMyDashboard(user, events) {
       panel.querySelector("#promoteAdminForm")?.addEventListener("submit", async (e) => {
         e.preventDefault();
         const form = e.currentTarget;
-        const email = (new FormData(form).get("email") || "").trim().toLowerCase();
+        const d = Object.fromEntries(new FormData(form).entries());
+        const email = (d.email || "").trim().toLowerCase();
+        const tier = d.role === "me_officer" ? "me_officer" : "programme_manager";
         if (!email.includes("@")) return toast("Email required", "Enter the account's email address.", "error");
 
         const submit = form.querySelector("[type=submit]");
-        if (submit) { submit.disabled = true; submit.textContent = "Promoting…"; }
+        if (submit) { submit.disabled = true; submit.textContent = "Saving…"; }
         try {
           const rows = await findProfileByEmail(email);
           if (!rows.length) {
@@ -6830,17 +6918,17 @@ export function wireMyDashboard(user, events) {
           }
           if (rows.length > 1) throw new Error(`More than one account uses ${email}. Sort that out in the Supabase dashboard first.`);
           const target = rows[0];
-          if (target.role === "staff" || target.role === "admin")
-            throw new Error(`${target.full_name || email} is already ${target.role === "admin" ? "an admin" : "staff"}.`);
+          if (ORG_ROLES.includes(target.role))
+            throw new Error(`${target.full_name || email} is already ${ROLE_LABEL[target.role] || target.role}.`);
 
-          await promoteToStaff(target.id);
+          await promoteToRole(target.id, tier);
           adminPromoteOpen = false;
           await loadAdmins();
           renderAdmins();
-          toast("Staff member added", `${target.full_name || email} now has full platform access.`, "success");
+          toast("Role granted", `${target.full_name || email} is now ${ROLE_LABEL[tier]}.`, "success");
         } catch (err) {
-          toast("Could not promote", err.message, "error");
-          if (submit) { submit.disabled = false; submit.innerHTML = `${icon("userCheck")} Make staff`; }
+          toast("Could not change role", err.message, "error");
+          if (submit) { submit.disabled = false; submit.innerHTML = `${icon("userCheck")} Change role`; }
         }
       });
 
@@ -7237,6 +7325,48 @@ export function wireMyDashboard(user, events) {
     }
     wireInterventions();
 
+    // --- audit log ---
+    function renderAuditLog() {
+      const holder = body.querySelector("[data-audit-panel]");
+      if (!holder) return;
+      holder.outerHTML = auditLogPanel();
+      wireAuditLog();
+    }
+    function wireAuditLog() {
+      const panel = body.querySelector("[data-audit-panel]");
+      if (!panel) return;
+      panel.querySelector("[data-audit-retry]")?.addEventListener("click", () => {
+        auditLogLoaded = false;
+        renderAuditLog();
+        loadAuditLog().then(renderAuditLog);
+      });
+      // Client-side, from what RLS already returned to this viewer — not a
+      // separate export permission to enforce, since a CSV of rows the
+      // browser can already see discloses nothing SELECT didn't already.
+      panel.querySelector("[data-audit-export]")?.addEventListener("click", () => {
+        if (!auditLogCache.length) return toast("Nothing to export", "The audit log is empty.", "error");
+        const header = ["when", "actor", "role", "action", "table", "record_id", "change"];
+        const csvRow = (cells) => cells.map((c) => `"${String(c ?? "").replace(/"/g, '""')}"`).join(",");
+        const lines = [csvRow(header), ...auditLogCache.map((r) => csvRow([
+          new Date(r.created_at).toISOString(),
+          r.actor?.full_name || r.actor?.email || "Unknown",
+          r.actor?.role || "",
+          AUDIT_ACTION_LABEL[r.action] || r.action,
+          r.table_name,
+          r.record_id || "",
+          auditDiffLine(r),
+        ]))];
+        const blob = new Blob([lines.join("\r\n")], { type: "text/csv;charset=utf-8;" });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = `hpf-audit-log-${new Date().toISOString().slice(0, 10)}.csv`;
+        a.click();
+        URL.revokeObjectURL(a.href);
+        toast("Exported", `${auditLogCache.length} events.`, "success");
+      });
+    }
+    wireAuditLog();
+
     // --- edit an account (database) or a local learner (this device) ---
     body.querySelectorAll("[data-edit-user]").forEach((btn) =>
       btn.addEventListener("click", () => { editUserId = btn.dataset.editUser; renderRole(role); })
@@ -7294,9 +7424,13 @@ export function wireMyDashboard(user, events) {
       // own workspace.
       const target = directoryUsers().find((x) => x.id === targetId);
       let newRole = data.role || target?.role;
-      // An org email means HPF staff. Not admin: admin is only ever granted
-      // deliberately, one row at a time, by an existing admin (patch-14).
-      if ((target?.email || "").toLowerCase().endsWith("@" + ORG_DOMAIN) && newRole !== "admin") newRole = "staff";
+      // An org email defaults to Programme Manager tier. Two exceptions:
+      // admin is only ever granted deliberately, one row at a time, by an
+      // existing admin (patch-14); and M&E is respected if that's what the
+      // editor explicitly chose — an org email shouldn't silently upgrade a
+      // deliberate M&E assignment to full write access.
+      if ((target?.email || "").toLowerCase().endsWith("@" + ORG_DOMAIN)
+          && newRole !== "admin" && newRole !== "me_officer") newRole = "programme_manager";
 
       const patch = {
         full_name: fullName,
@@ -7311,7 +7445,7 @@ export function wireMyDashboard(user, events) {
          needs is_admin() — so a staff viewer setting someone to "admin" is
          reverted by the database rather than refused. The read-back below is
          what catches that, instead of reporting a success that didn't happen. */
-      if (targetId === ctx.user.id && newRole !== "admin" && newRole !== "staff") {
+      if (targetId === ctx.user.id && !ORG_ROLES.includes(newRole)) {
         const ok = confirm(
           "This removes your own staff access. You will lose the staff dashboard " +
           "as soon as the page reloads, and only another staff member or admin can " +
@@ -8399,21 +8533,6 @@ export function wireMyDashboard(user, events) {
         renderRole("teacher");
       })
     );
-    body.querySelectorAll("[data-sim-assess]").forEach((btn) =>
-      btn.addEventListener("click", () => {
-        const { classes, cls } = currentClass();
-        const a = cls.assessments.find((x) => x.id === btn.dataset.simAssess);
-        if (!a) return;
-        if (!cls.learners.length) return toast("No learners", "Enroll learners first.", "error");
-        const before = a.submissions.length;
-        simulateAssessment(a, cls);
-        saveClasses(classes);
-        coachState.analyzeId = a.id;
-        const added = a.submissions.length - before;
-        toast("Responses simulated", added ? `${added} demo submission${added === 1 ? "" : "s"} auto-marked.` : "Everyone already submitted.", "success");
-        renderRole("teacher");
-      })
-    );
     body.querySelectorAll("[data-assess-session]").forEach((btn) =>
       btn.addEventListener("click", async () => {
         const { classes, cls } = currentClass();
@@ -8959,7 +9078,7 @@ export function wireMyDashboard(user, events) {
   function wireBody(role) {
     wireTasks();
     wireRoleActions();
-    if (role === "admin" || role === "staff") wireAdmin(role);
+    if (ORG_ROLES.includes(role)) wireAdmin(role);
     if (role === "field_officer") wireFieldOfficerDash();
     if (role === "school_leader") wireSchoolReturns(role);
     // "Enter account" buttons live inside the body (admin table, coach learners)
