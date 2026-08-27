@@ -5023,6 +5023,42 @@ function programmeOverview(s) {
     </div>`;
 }
 
+/* One panel's bug should cost that panel, not the page. Before this, every
+   panel in adminBody() was one big chained template literal: if any single
+   one threw while building its HTML, the exception propagated out of the
+   *whole* function, `body.innerHTML = dashboardBody(...)` never ran, and
+   wireBody() never ran either — every button on the page, in every other
+   panel, silently had no listener attached. That's a real failure mode this
+   session hit directly (a stray undefined-variable reference during the
+   Master Data Management build briefly did exactly this in production) and
+   is worth guarding against structurally rather than trusting every future
+   panel to be bug-free. Used for every panel added this session; the
+   older, long-stable panels are left as plain calls rather than retrofitted
+   for a risk they haven't actually shown. */
+function safeRender(label, fn) {
+  try {
+    return fn();
+  } catch (err) {
+    console.error(`${label} panel failed to render:`, err);
+    return `<div class="panel" style="margin-top:1.5rem"><div class="empty-state">
+      ${icon("alert")} ${esc(label)} couldn't load — try refreshing the page. (${esc(err.message || String(err))})
+    </div></div>`;
+  }
+}
+
+/* Same isolation for the wiring half: a panel's buttons rendered but a
+   listener attach threw would otherwise abort every wireX() call still
+   queued after it in the same mount sequence, silently leaving *their*
+   buttons dead too — indistinguishable from the render-side failure above
+   without opening devtools. */
+function safeWire(label, fn) {
+  try {
+    fn();
+  } catch (err) {
+    console.error(`${label} panel failed to wire up:`, err);
+  }
+}
+
 function adminBody(ctx) {
   const events = ctx.events || [];
   const s = computeAdminStats(events);
@@ -5128,15 +5164,15 @@ function adminBody(ctx) {
       <p class="panel-sub">Daily authenticated sessions</p>
       ${barChart(s.trend, s.trendLabels)}
     </div>
-    ${masterDataPanel()}
-    ${adminAccountsPanel(ctx.user)}
-    ${officerAssignmentsPanel()}
-    ${devicesPanel()}
-    ${peopleDetailPanel()}
-    ${interventionsPanel()}
-    ${auditLogPanel()}
-    ${userManagementPanel(ctx.user)}
-    ${digitalLibraryPanel()}
+    ${safeRender("Master Data Management", () => masterDataPanel())}
+    ${safeRender("HPF Staff & Admins", () => adminAccountsPanel(ctx.user))}
+    ${safeRender("Field officer assignments", () => officerAssignmentsPanel())}
+    ${safeRender("Devices", () => devicesPanel())}
+    ${safeRender("People detail", () => peopleDetailPanel())}
+    ${safeRender("Interventions", () => interventionsPanel())}
+    ${safeRender("Audit log", () => auditLogPanel())}
+    ${safeRender("User management", () => userManagementPanel(ctx.user))}
+    ${safeRender("Digital library", () => digitalLibraryPanel())}
     <div class="panel" style="margin-top:1.5rem">
       <div class="panel-head-row">
         <div>
@@ -8846,7 +8882,7 @@ export function wireMyDashboard(user, events) {
         })
       );
     }
-    wireInterventions();
+    safeWire("Interventions", wireInterventions);
 
     // --- audit log ---
     function renderAuditLog() {
@@ -8888,8 +8924,8 @@ export function wireMyDashboard(user, events) {
         toast("Exported", `${auditLogCache.length} events.`, "success");
       });
     }
-    wireAuditLog();
-    wireMasterData();
+    safeWire("Audit log", wireAuditLog);
+    safeWire("Master Data Management", wireMasterData);
 
     // --- edit an account (database) or a local learner (this device) ---
     body.querySelectorAll("[data-edit-user]").forEach((btn) =>

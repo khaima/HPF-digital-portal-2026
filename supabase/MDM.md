@@ -138,9 +138,34 @@ the generic audit trigger from patch-24/27 — every create, edit, and
 archive made through this module is a row in `audit_logs`, visible in the
 Audit log panel already shipped with the RBAC pass.
 
+## Known regression, fixed (patch-28)
+
+Making `schools.code` required (patch-26) broke the *older* "Add school"
+form on the admin Schools map — it predates Master Data Management and
+inserts `{name, county, lat, lng}` with no code at all, so every save
+through it failed outright. Rather than patch that one call site and hope
+every other insert path remembers to supply a code, `schools` now
+generates one itself (patch-28) whenever an insert doesn't provide one,
+using the same county-prefix scheme patch-26's backfill used. A caller
+that does supply a code — Master Data Management's own form — is
+unaffected.
+
+## Resilience
+
+A panel's own bug should cost that panel, not the whole admin dashboard.
+Every panel added this session (Master Data Management, Interventions,
+Audit log) renders and wires through `safeRender()`/`safeWire()`, which
+catch an exception and show "couldn't load" for that one panel instead of
+letting it propagate out of `adminBody()` and abort every button on the
+page from getting a listener at all — the actual failure mode a stray
+undefined-variable reference caused, briefly, in production during this
+build. Older, long-stable panels were left as plain calls rather than
+retrofitted for a risk they haven't shown.
+
 ## Files
 
 | File | Purpose |
 |---|---|
 | `patch-26-master-data.sql` | Schools/profiles/learners/teachers/devices fields and constraints |
 | `patch-27-mdm-audit.sql` | Extends audit logging to teachers, learners, field_officers |
+| `patch-28-schools-autocode.sql` | Auto-generates a school code on insert when one isn't supplied |

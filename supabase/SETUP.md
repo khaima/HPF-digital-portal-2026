@@ -47,6 +47,7 @@ frontend static (it still deploys on GitHub Pages).
    | 30 | [`patch-27-mdm-audit.sql`](patch-27-mdm-audit.sql) | Extends patch-24's audit triggers to `teachers`, `learners`, `field_officers` |
 
    **School 360** (no new migration — a read-only view over existing tables): see [`SCHOOL-360.md`](SCHOOL-360.md).
+   | 31 | [`patch-28-schools-autocode.sql`](patch-28-schools-autocode.sql) | Auto-generates a school `code` when an insert doesn't supply one — fixes a real regression where the older "Add school" form (predating Master Data Management) broke once `code` became required |
 
    **Do not run [`seed-dev.sql`](seed-dev.sql) against this project.** It's fake
    data for local/branch testing only — see its own header comment.
