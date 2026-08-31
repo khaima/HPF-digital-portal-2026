@@ -48,6 +48,7 @@ frontend static (it still deploys on GitHub Pages).
 
    **School 360** (no new migration — a read-only view over existing tables): see [`SCHOOL-360.md`](SCHOOL-360.md).
    | 31 | [`patch-28-schools-autocode.sql`](patch-28-schools-autocode.sql) | Auto-generates a school `code` when an insert doesn't supply one — fixes a real regression where the older "Add school" form (predating Master Data Management) broke once `code` became required |
+   | 32 | [`patch-29-kobo-pipeline.sql`](patch-29-kobo-pipeline.sql) | A real Kobo-to-HPF ingestion pipeline: `kobo_raw_payloads`, `kobo_sync_runs`, and reshapes the patch-13 `kobo_submissions` sink into a full processing-status lifecycle — see [`KOBO-INTEGRATION.md`](KOBO-INTEGRATION.md) |
 
    **Teacher 360** (no new migration — a read-only view over existing tables, sharing School 360's rendering helpers): see [`TEACHER-360.md`](TEACHER-360.md).
 

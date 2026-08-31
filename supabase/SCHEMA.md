@@ -148,11 +148,19 @@ this table is what a future pass would read from instead.
 | `login_events` | Signup/login audit trail for real (Supabase) accounts | — |
 | `notifications` | A message for one recipient | `recipient_id` → `profiles` |
 | `audit_logs` | Generic sensitive-action trail, written via `log_audit()` | `actor_id` → `profiles` |
-| `kobo_submissions` | Raw sink for a future KoboToolbox webhook — no client insert path | — |
+| `kobo_submissions` | Processed Kobo ingestion record — status lifecycle, no client insert path | `raw_payload_id` → `kobo_raw_payloads`, `duplicate_of_id` → itself |
+| `kobo_raw_payloads` | Immutable raw Kobo JSON, written before anything else in the pipeline runs | — |
+| `kobo_sync_runs` | One row per ingestion attempt — what the Data pipeline monitoring page's "last successful/failed synchronization" reads | — |
 
 `login_events`, `notifications`, `audit_logs`, and the three digital-learning
 activity tables are append-only by design — no `updated_at`, since nothing
-ever updates a row after it's written.
+ever updates a row after it's written. `kobo_raw_payloads` is the same way.
+`kobo_submissions` and `kobo_sync_runs` (patch-29) are not: a submission's
+`processing_status` genuinely changes after insert, so it keeps
+`updated_at` and the shared `touch_updated_at()` trigger like the rest of
+this schema's mutable rows; a sync run is written once as `'running'` and
+updated exactly once when it finishes, which `finished_at` already dates
+precisely enough that a second, generic `updated_at` would be redundant.
 
 ## Relationship map (the load-bearing FK chains)
 
@@ -179,6 +187,8 @@ me_indicators ─┬─ me_indicator_values (→ schools, nullable)
                └─ me_targets (→ schools, nullable)
 
 evidence ── (ref_table, ref_id) ──▶ any of the above, informally
+
+kobo_raw_payloads ── kobo_submissions (duplicate_of_id → itself)
 ```
 
 The one non-obvious join in this schema: a school leader's scope is matched
@@ -190,6 +200,11 @@ and others) does this same name-match rather than a direct FK, which is why
 renaming a school in the `schools` table without updating every affected
 profile would silently break that scoping — worth knowing before ever
 editing a school's name in production.
+
+`kobo_raw_payloads`/`kobo_submissions` sit outside the tree above on
+purpose — a standalone ingestion pipeline, not yet mapped onto any
+existing entity, since that mapping needs a specific Kobo form's question
+schema this project doesn't have yet. See `KOBO-INTEGRATION.md`.
 
 ## What's wired to the UI today, and what isn't
 
@@ -203,13 +218,20 @@ Real client code reads and writes: `profiles`, `schools`, `school_returns`
 `interventions`, `action_items`, `evidence`, and `digital_learning` — 30
 tables.
 
-The remaining 11 — `roles`, `teacher_training`, `subjects`, `field_visits` +
+The remaining 9 — `roles`, `teacher_training`, `subjects`, `field_visits` +
 `field_visit_findings`, `kolibri_activity`, `library_activity`,
-`learning_activity`, `notifications`, `audit_logs`, `kobo_submissions` —
-are real, RLS-complete schema with zero client wiring.
-`school_returns.attendance_rate` also still stands alone; nothing yet
-computes it from the now-real `attendance_records` rows. Building UI
-against any of these is a separate, future decision.
+`learning_activity`, `notifications` — are real, RLS-complete schema with
+zero client wiring. `school_returns.attendance_rate` also still stands
+alone; nothing yet computes it from the now-real `attendance_records`
+rows. Building UI against any of these is a separate, future decision.
+
+`kobo_submissions`/`kobo_raw_payloads`/`kobo_sync_runs` (patch-29) are a
+third category: real client wiring, but not the browser-writes-directly
+shape every other row in the "30" above uses. The browser only ever
+reads them (the admin dashboard's Data pipeline panel); every write comes
+from the `kobo-sync` Edge Function using the project's secret key, which
+bypasses RLS entirely — no `authenticated` role has an insert/update/
+delete policy on any of the three. See `KOBO-INTEGRATION.md`.
 
 ## What the browser still stores, and why
 

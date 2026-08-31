@@ -3312,6 +3312,108 @@ function auditLogPanel() {
   return wrap(`<div class="lib-list">${rows}</div>`);
 }
 
+/* ---------------------------------------------------------- Kobo data pipeline monitoring (patch-29)
+   Read-only, on purpose, all the way down: kobo_raw_payloads,
+   kobo_submissions, and kobo_sync_runs have no insert/update/delete
+   policy for `authenticated` at all — every row here was written by the
+   kobo-sync Edge Function using the project's secret key, which bypasses
+   RLS entirely. This panel never talks to Kobo, holds no Kobo credential,
+   and cannot write to any of these tables even by accident — it only
+   ever SELECTs what the Edge Function already wrote. See
+   KOBO-INTEGRATION.md for the full pipeline and why the dashboard is
+   never allowed a Kobo connection of its own. RLS (has_perm('me','view'))
+   is what actually restricts who can see this. */
+let koboPipelineCache = null;
+let koboPipelineLoaded = false;
+let koboPipelineError = null;
+
+const KOBO_STATUS_LABEL = {
+  RECEIVED: "Received", VALIDATED: "Validated", PROCESSED: "Processed",
+  DUPLICATE: "Duplicate", REQUIRES_REVIEW: "Requires review", REJECTED: "Rejected",
+};
+const KOBO_STATUS_PILL = {
+  PROCESSED: "synced", REJECTED: "danger-pill",
+  DUPLICATE: "role-pill", REQUIRES_REVIEW: "role-pill", RECEIVED: "role-pill", VALIDATED: "role-pill",
+};
+
+async function loadKoboPipeline() {
+  const [statusRes, recentRes, lastOkRes, lastFailRes] = await Promise.all([
+    // Just the status column, not full rows — cheap even at a few
+    // thousand submissions, and simpler than six separate count queries.
+    // Worth revisiting if this table ever grows past that.
+    supabase.from("kobo_submissions").select("processing_status"),
+    supabase.from("kobo_submissions")
+      .select("id, form_id, kobo_submission_id, processing_status, validation_status, submitted_at, received_at, error_detail")
+      .order("received_at", { ascending: false }).limit(50),
+    supabase.from("kobo_sync_runs").select("*").eq("status", "success").order("started_at", { ascending: false }).limit(1).maybeSingle(),
+    supabase.from("kobo_sync_runs").select("*").eq("status", "failed").order("started_at", { ascending: false }).limit(1).maybeSingle(),
+  ]);
+  koboPipelineLoaded = true;
+  const firstErr = [statusRes, recentRes, lastOkRes, lastFailRes].find((r) => r.error);
+  koboPipelineError = firstErr ? authMessage(firstErr.error) : null;
+  if (!koboPipelineError) {
+    const counts = { RECEIVED: 0, VALIDATED: 0, PROCESSED: 0, DUPLICATE: 0, REQUIRES_REVIEW: 0, REJECTED: 0 };
+    (statusRes.data || []).forEach((r) => { counts[r.processing_status] = (counts[r.processing_status] || 0) + 1; });
+    koboPipelineCache = {
+      total: (statusRes.data || []).length, counts,
+      recent: recentRes.data || [], lastSuccess: lastOkRes.data || null, lastFailure: lastFailRes.data || null,
+    };
+  }
+  return koboPipelineCache;
+}
+
+function koboPipelinePanel() {
+  const head = `
+    <div class="panel-head-row">
+      <div>
+        <h2>${icon("cloud")} Data pipeline</h2>
+        <p class="panel-sub" style="margin-bottom:0">Kobo → ingestion → validation → transformation → deduplication → PostgreSQL — what actually happened, read-only</p>
+      </div>
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
+        <button class="btn btn-outline btn-xs" data-pipeline-export>${icon("download")} Export CSV</button>
+        ${collapseBtn("pipeline")}
+      </div>
+    </div>`;
+  const wrap = (inner) => `<div class="panel" style="margin-top:1.5rem" data-pipeline-panel>${head}${collapseBody("pipeline", inner)}</div>`;
+
+  if (!koboPipelineLoaded) return wrap(`<div class="empty-state">Loading the data pipeline…</div>`);
+  if (koboPipelineError) {
+    return wrap(`<div class="empty-state">Could not load the data pipeline — ${esc(koboPipelineError)}
+      <div style="margin-top:.6rem"><button class="btn btn-outline btn-xs" data-pipeline-retry>${icon("refresh")} Try again</button></div>
+    </div>`);
+  }
+
+  const c = koboPipelineCache;
+  const inProgress = c.counts.RECEIVED + c.counts.VALIDATED;
+
+  const metrics = [
+    { icon: "inbox", label: "Total submissions", value: `${c.total}`, empty: !c.total, period: "All-time", source: "kobo_submissions" },
+    { icon: "check", label: "Successful", value: `${c.counts.PROCESSED}`, empty: !c.counts.PROCESSED, period: "All-time", source: "PROCESSED" },
+    { icon: "alert", label: "Failed", value: `${c.counts.REJECTED}`, empty: !c.counts.REJECTED, period: "All-time", source: "REJECTED" },
+    { icon: "puzzle", label: "Duplicates", value: `${c.counts.DUPLICATE}`, empty: !c.counts.DUPLICATE, period: "All-time", source: "DUPLICATE" },
+    { icon: "eye", label: "Requires review", value: `${c.counts.REQUIRES_REVIEW}`, empty: !c.counts.REQUIRES_REVIEW, period: "All-time", source: "REQUIRES_REVIEW" },
+    { icon: "clock", label: "In progress", value: `${inProgress}`, empty: !inProgress, period: "Not yet processed", source: "RECEIVED · VALIDATED" },
+    { icon: "refresh", label: "Last successful sync",
+      value: c.lastSuccess ? `${c.lastSuccess.form_id || "all forms"} · ${c.lastSuccess.fetched_count} fetched` : "",
+      empty: !c.lastSuccess, period: c.lastSuccess ? timeAgo(new Date(c.lastSuccess.started_at).getTime()) : null,
+      updated: c.lastSuccess ? new Date(c.lastSuccess.started_at).getTime() : null, source: "kobo_sync_runs" },
+    { icon: "alert", label: "Last failed sync",
+      value: c.lastFailure ? `${c.lastFailure.form_id || "all forms"}${c.lastFailure.error_detail ? " · " + c.lastFailure.error_detail.slice(0, 60) : ""}` : "",
+      empty: !c.lastFailure, period: c.lastFailure ? timeAgo(new Date(c.lastFailure.started_at).getTime()) : null,
+      updated: c.lastFailure ? new Date(c.lastFailure.started_at).getTime() : null, source: "kobo_sync_runs" },
+  ];
+  const grid = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:1rem">${metrics.map(x360MetricCard).join("")}</div>`;
+
+  const rows = c.recent.length
+    ? c.recent.map((r) => `<div class="submission"><div style="flex:1;min-width:0">
+        <div class="s-title">${esc(r.form_id)} · ${esc(r.kobo_submission_id)}</div>
+        <div class="s-meta">${r.submitted_at ? "Submitted " + new Date(r.submitted_at).toLocaleString() : "No submission time"} · Received ${new Date(r.received_at).toLocaleString()}${r.error_detail ? " · " + esc(r.error_detail.slice(0, 80)) : ""}</div>
+      </div><span class="pill ${KOBO_STATUS_PILL[r.processing_status] || "role-pill"}">${esc(KOBO_STATUS_LABEL[r.processing_status] || r.processing_status)}</span></div>`).join("")
+    : `<div class="empty-state">No Kobo submissions recorded yet — see KOBO-INTEGRATION.md to connect a real Kobo account.</div>`;
+
+  return wrap(`${grid}${x360Section(`Recent submissions (last ${c.recent.length})`, "inbox", rows)}`);
+}
+
 /* ---------------------------------------------------------- user management
 
    The account list, with `profiles` (Postgres) as the source of truth.
@@ -5839,6 +5941,7 @@ function adminBody(ctx) {
     ${safeRender("Devices", () => devicesPanel())}
     ${safeRender("People detail", () => peopleDetailPanel())}
     ${safeRender("Interventions", () => interventionsPanel())}
+    ${safeRender("Data pipeline", () => koboPipelinePanel())}
     ${safeRender("Audit log", () => auditLogPanel())}
     ${safeRender("User management", () => userManagementPanel(ctx.user))}
     ${safeRender("Digital library", () => digitalLibraryPanel())}
@@ -8874,7 +8977,7 @@ export function wireMyDashboard(user, events) {
     // of the dashboard visibly shaking/blinking non-stop).
     if (!programmeDataLoaded) {
       const classesPromise = classesLoaded ? Promise.resolve(classesCache) : loadClasses();
-      Promise.allSettled([loadSchools(), loadReturns(), loadRevisions(), loadGrades(), loadFieldReports(), classesPromise, loadDeviceIssues(), loadMeIndicators(), loadSchoolFacilities(), loadDevices(), loadPeopleExt(), loadInterventions(), loadAuditLog()]).then(() => {
+      Promise.allSettled([loadSchools(), loadReturns(), loadRevisions(), loadGrades(), loadFieldReports(), classesPromise, loadDeviceIssues(), loadMeIndicators(), loadSchoolFacilities(), loadDevices(), loadPeopleExt(), loadInterventions(), loadAuditLog(), loadKoboPipeline()]).then(() => {
         programmeDataLoaded = true;
         // Full re-render, not just renderAnalytics(): Programme Overview (a
         // sibling of the analytics panel, not inside it) reads the same
@@ -9596,6 +9699,44 @@ export function wireMyDashboard(user, events) {
       });
     }
     safeWire("Audit log", wireAuditLog);
+
+    // --- data pipeline ---
+    function renderKoboPipeline() {
+      const holder = body.querySelector("[data-pipeline-panel]");
+      if (!holder) return;
+      holder.outerHTML = koboPipelinePanel();
+      wireKoboPipeline();
+    }
+    function wireKoboPipeline() {
+      const panel = body.querySelector("[data-pipeline-panel]");
+      if (!panel) return;
+      panel.querySelector("[data-pipeline-retry]")?.addEventListener("click", () => {
+        koboPipelineLoaded = false;
+        renderKoboPipeline();
+        loadKoboPipeline().then(renderKoboPipeline);
+      });
+      // Same reasoning as the audit log's export: client-side, from rows
+      // RLS already handed this viewer — not a separate export permission
+      // to enforce.
+      panel.querySelector("[data-pipeline-export]")?.addEventListener("click", () => {
+        if (!koboPipelineCache?.recent?.length) return toast("Nothing to export", "No Kobo submissions recorded yet.", "error");
+        const header = ["form_id", "kobo_submission_id", "processing_status", "validation_status", "submitted_at", "received_at", "error_detail"];
+        const csvRow = (cells) => cells.map((c) => `"${String(c ?? "").replace(/"/g, '""')}"`).join(",");
+        const lines = [csvRow(header), ...koboPipelineCache.recent.map((r) => csvRow([
+          r.form_id, r.kobo_submission_id, r.processing_status, r.validation_status,
+          r.submitted_at ? new Date(r.submitted_at).toISOString() : "",
+          new Date(r.received_at).toISOString(), r.error_detail || "",
+        ]))];
+        const blob = new Blob([lines.join("\r\n")], { type: "text/csv;charset=utf-8;" });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = `hpf-kobo-pipeline-${new Date().toISOString().slice(0, 10)}.csv`;
+        a.click();
+        URL.revokeObjectURL(a.href);
+        toast("Exported", `${koboPipelineCache.recent.length} recent submission(s).`, "success");
+      });
+    }
+    safeWire("Data pipeline", wireKoboPipeline);
     safeWire("Master Data Management", wireMasterData);
 
     // --- edit an account (database) or a local learner (this device) ---
