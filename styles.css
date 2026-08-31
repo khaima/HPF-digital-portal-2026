@@ -1185,10 +1185,6 @@ textarea.input:focus {
   border-radius: 0.6rem;
 }
 
-.recover .btn + .btn.recover-alt {
-  margin-top: 0.6rem;
-}
-
 /* .btn is nowrap by default, which clips these longer labels on a 320px
    phone — the panel's buttons are full-width, so let them wrap instead */
 .recover .btn-block {

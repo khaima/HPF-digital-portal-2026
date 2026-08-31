@@ -1,16 +1,29 @@
 /* ============================================================
    HPF Digital Portal — account recovery & email confirmation
    Self-service "I forgot my password", "I forgot my username", and
-   "confirm my new account", on top of Supabase Auth. Two ways in,
-   both driven by email:
+   "confirm my new account", on top of Supabase Auth.
 
-     • a reset link  — resetPasswordForEmail() mails a link; opening it
-       returns here with a recovery session and the PASSWORD_RECOVERY
-       event, and the app asks for a new password.
+   Forgetting your PASSWORD is code-only, on request (2026-08-31): the
+   portal's own UI never offers or expects a reset link for that flow
+   anymore — only a 6-digit code. resetPasswordForEmail() is still the
+   Supabase call underneath (there's no separate "code-only" API), and
+   sends whatever the "Reset Password" email template contains; a code
+   has nothing for a mail gateway's link-safety scanner to prefetch and
+   burn before the real person opens it, which a link does — the likely
+   real cause behind "Your reset link is no longer valid" for someone who
+   swears they never clicked anything. For the email itself to match (not
+   just this UI), the template's {{ .ConfirmationURL }} still needs
+   removing in the Supabase dashboard — that part isn't something this
+   codebase can do by itself; see supabase/AUTH-RECOVERY.md.
+
+   Signup confirmation (intent "confirm") is unaffected — it still offers
+   both the link and a code:
+
+     • a link — resend()/signUp() mail one; opening it returns here with a
+       session and the account is confirmed.
      • a one-time code — the same email also carries a 6-digit token
-       (template permitting, see supabase/AUTH-RECOVERY.md), so anyone
-       who can't open the link on this device can type the code instead.
-       verifyOtp() turns it into the same session.
+       (template permitting, see supabase/AUTH-RECOVERY.md). verifyOtp()
+       turns either one into the same session.
 
    Forgotten usernames use signInWithOtp() rather than a password reset:
    the person hasn't lost their password, so make them prove they own the
@@ -146,7 +159,7 @@ export function recoveryTitle() {
     return { h1: "Your account", sub: "This is the username stored against your email address." };
   return state.intent === "username"
     ? { h1: "Find your username", sub: "Confirm your email address and the portal will show you the username on your account." }
-    : { h1: "Reset your password", sub: "We'll email you a link and a one-time code. Either one lets you set a new password." };
+    : { h1: "Reset your password", sub: `We'll email you a ${CODE_LEN}-digit code — type it in and choose a new password.` };
 }
 
 export function recoveryHtml() {
@@ -184,11 +197,8 @@ function startStep() {
         ? `<button class="btn btn-primary btn-block" type="submit" data-send="code">
              ${icon("mail")} Email me a sign-in code
            </button>`
-        : `<button class="btn btn-primary btn-block" type="submit" data-send="link">
-             ${icon("mail")} Email me a reset link
-           </button>
-           <button class="btn btn-outline btn-block recover-alt" type="button" data-send="code">
-             ${icon("key")} Send a ${CODE_LEN}-digit code instead
+        : `<button class="btn btn-primary btn-block" type="submit" data-send="code">
+             ${icon("key")} Email me a ${CODE_LEN}-digit code
            </button>`}
     </form>
 
@@ -200,17 +210,14 @@ function startStep() {
     ${backToLogin}`;
 }
 
+/* Only "confirm" (signup) still reaches this step — password reset is
+   code-only now, see this file's header comment. */
 function linkSentStep() {
-  const confirming = state.intent === "confirm";
   return `
     <div class="notice recover-note">${icon("mail")}
-      ${confirming
-        ? `<span>Your account is created. A confirmation link is on its way to
-           <strong>${esc(state.email)}</strong> — open it on this device and you'll be
-           signed straight in. The link works once.</span>`
-        : `<span>A password reset link is on its way to <strong>${esc(state.email)}</strong>.
-           Open it on this device and you'll come straight back here to choose a new password.
-           The link is good for one hour and can only be used once.</span>`}
+      <span>Your account is created. A confirmation link is on its way to
+      <strong>${esc(state.email)}</strong> — open it on this device and you'll be
+      signed straight in. The link works once.</span>
     </div>
     <p class="hint recover-hint">Can't open the link — reading mail on a different phone,
       or it won't load? The same email also contains a ${CODE_LEN}-digit code.</p>
@@ -461,6 +468,10 @@ function send(kind, btn) {
       state.codeType = "email";
       state.step = "code";
     } else {
+      // Password reset is code-only now (see this file's header comment) —
+      // this branch is only ever reached with kind === "code". redirectTo
+      // stays set regardless: harmless if the dashboard's Reset Password
+      // template has no link, and correct if it still does.
       const { error } = await supabase.auth.resetPasswordForEmail(email, {
         redirectTo: redirectUrl(),
       });
@@ -468,7 +479,7 @@ function send(kind, btn) {
         throw new Error(authMessage(error));
       }
       state.codeType = "recovery";
-      state.step = kind === "code" ? "code" : "linkSent";
+      state.step = "code";
     }
     toast("Email sent", `Check ${email} — it usually arrives within a minute.`, "success");
     paint();

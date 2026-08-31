@@ -45,8 +45,10 @@ export function authMessage(error) {
     return "Too many emails have been sent from the portal in the last hour. Please try again later.";
   // "For security purposes, you can only request this after 51 seconds."
   if (m.includes("for security purposes")) return error.message;
+  // Shared by every recovery/invite/confirm path (a code, a link, or an
+  // admin invite), so this can't name which one expired — just that it did.
   if (m.includes("auth session missing") || m.includes("session_not_found"))
-    return "Your reset link is no longer valid. Request a new one and open it straight away.";
+    return "That's no longer valid. Request a new one and use it straight away.";
   if (m.includes("new password should be different") || m.includes("same as the old password"))
     return "That is the password you already have. Choose a different one.";
   return error?.message || "Something went wrong. Please try again.";

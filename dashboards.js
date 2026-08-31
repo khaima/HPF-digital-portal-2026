@@ -3488,7 +3488,8 @@ function userManagementPanel(currentUser) {
      password field — the browser cannot set someone else's Supabase password,
      and the old form's field only ever wrote to a localStorage copy that no
      sign-in consulted, so it read as working while doing nothing. Password
-     recovery is the emailed reset link.
+     recovery is the self-service "Forgot password?" flow on the login page
+     (recovery.js), which emails a one-time code.
    - A local learner: name, username, password, school. The role select is
      omitted entirely rather than disabled — a learner is the only role this
      store can hold, and offering the others was how a local row could be

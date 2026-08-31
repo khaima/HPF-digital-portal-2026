@@ -27,12 +27,22 @@ what's ready versus what still needs a person in the dashboard.
   self-serve signup with real users; if it strands accounts, re-run
   `patch-11-open-signup.sql` to restore auto-confirm (see `patch-25`'s own
   header for the exact rollback).
+- [x] **Step 2b — Password reset dropped its link, code-only now**
+  (2026-08-31, `recovery.js`) — at explicit request. The portal's own UI no
+  longer shows or expects a reset link for "Forgot password?" — only the
+  6-digit code. **Signup confirmation and username recovery are unchanged**
+  — both still offer a link and a code. See "Why password reset is
+  code-only now" below.
+- [ ] **Step 2c — Remove `{{ .ConfirmationURL }}` from the *Reset Password*
+  template only** *(dashboard action needed — this is the part that makes
+  the email itself match what the app now promises; see below)*
 
-Tell me once you've clicked through 1, 2, or 3 in the dashboard and I'll tick
-it off here with the date. I cannot click them myself — no tool this session
-has reaches Supabase's Auth dashboard settings (only the database), and step 3
-specifically needs an account and an API key from a mail provider that has to
-be yours, not something I should ever hold or paste in on your behalf.
+Tell me once you've clicked through 1, 2, 2c, or 3 in the dashboard and I'll
+tick it off here with the date. I cannot click them myself — no tool this
+session reaches Supabase's Auth dashboard settings (only the database), and
+step 3 specifically needs an account and an API key from a mail provider
+that has to be yours, not something I should ever hold or paste in on your
+behalf.
 
 Everything below is in your project at
 <https://supabase.com/dashboard/project/zptupvyrwoeabncxabgj>.
@@ -137,8 +147,47 @@ Keep whatever the template already has and add:
 <p>It expires in one hour and can only be used once.</p>
 ```
 
-Leave `{{ .ConfirmationURL }}` in place — the link and the code are two ways
-through the same email, and the portal supports both.
+Leave `{{ .ConfirmationURL }}` in place on **Magic Link** and **Confirm
+signup** — the link and the code are still two ways through the same email
+on both of those. **Reset Password is the one exception** — see step 2c.
+
+## 2b. Why password reset is code-only now
+
+**Decision (2026-08-31): the portal's own UI no longer offers a reset link
+for "Forgot password?"** — only the 6-digit code, at explicit request.
+Signup confirmation and username recovery are unchanged; both still offer
+a link and a code.
+
+**Why:** a one-time reset link has a real, observed failure mode a code
+doesn't — some institutional mail gateways and phone mail apps "prefetch"
+or safety-scan every link in an email by opening it automatically, which
+silently consumes a one-time link before the real person ever clicks it.
+They then see "Your reset link is no longer valid" despite having done
+nothing wrong, with no way to tell that's what happened. A 6-digit code
+has no clickable target for a scanner to consume — typing it is the only
+way it gets used.
+
+## 2c. Make the email match — remove the link from Reset Password only
+
+**Status: not yet applied** *(dashboard action needed — I can't reach this
+screen myself, same as steps 1–3)*.
+
+The app change above stops the portal from ever showing or expecting a
+reset link, but `resetPasswordForEmail()` still sends whatever the **Reset
+Password** template contains — if `{{ .ConfirmationURL }}` is still in
+that template, the email itself still has a clickable link sitting
+unused. To make the email match what the app now promises:
+
+**Authentication → Emails → Templates → Reset Password** — delete the
+`{{ .ConfirmationURL }}` link/button, keep `{{ .Token }}` (added in step 2)
+and the surrounding text. **Leave Magic Link and Confirm signup exactly as
+they are** — this is Reset Password only.
+
+Tell me once it's done and I'll tick it off here. Until then, a stray
+"Reset Password" link still going out is not dangerous — a user of this
+portal simply never sees or needs it, since the panel never shows one — but
+it isn't fully truthful to "don't send a reset link" until this one edit
+is made.
 
 ## 3. Set up real email sending (required before anyone but you can use it)
 
@@ -192,12 +241,12 @@ nothing in the portal or the dashboard says why.
 
 **Recovering an account**
 
-1. **Login → Forgot password?** → enter a real staff email → **Email me a reset
-   link**. Open it on the same device: you get the "choose a new password" form,
-   and the new password works immediately.
-2. Repeat with **Send a 6-digit code instead** and type the code from the email.
-3. **Forgot username?** — after the code, the portal shows the username on the
-   account.
+1. **Login → Forgot password?** → enter a real staff email → **Email me a
+   6-digit code**. Type the code from the email: you get the "choose a new
+   password" form, and the new password works immediately. (No link step —
+   see "Why password reset is code-only now" above.)
+2. **Forgot username?** — after the code, the portal shows the username on the
+   account. This flow is unchanged: it still offers a link and a code.
 
 **Authentication → Logs** shows every send and every failure, and is the first
 place to look when an email doesn't arrive.
@@ -209,6 +258,9 @@ deliver to a colleague's address and make step 3 look done when it isn't. See
 
 ## What the portal does and doesn't do
 
+- **Password reset is code-only.** "Forgot password?" only ever offers a
+  6-digit code, never a link — see "Why password reset is code-only now"
+  above. Signup confirmation and username recovery still offer both.
 - **Nothing is emailed to an unregistered address.** Ask to recover an address
   with no account and the portal behaves exactly as it does for a real one — it
   won't confirm or deny that an account exists, so the login page can't be used
@@ -236,12 +288,13 @@ deliver to a colleague's address and make step 3 look done when it isn't. See
 
 | What you see | Cause |
 |---|---|
-| Link opens the home page, not the password form | `/auth` is missing from Redirect URLs (step 1) |
+| Link opens the home page, not the confirmation/sign-in step (confirm or username-recovery only — password reset has no link anymore) | `/auth` is missing from Redirect URLs (step 1) |
 | Email has a link but no code | `{{ .Token }}` missing from the template (step 2) |
+| Reset Password email still shows a link | `{{ .ConfirmationURL }}` not yet removed from that one template (step 2c) — harmless (the portal never shows or expects it), just not fully cleaned up |
 | No email at all, for a real account | Built-in mailer — hourly cap reached, or the address isn't in your Supabase org (step 3) |
 | "Too many emails have been sent…" | Rate limit reached; raise it or wait the hour out (step 3) |
 | "That code is wrong or has expired" | Mistyped, already used, or over an hour old — send a new one |
-| "Your reset link is no longer valid" | The reset session expired before the new password was saved; start again |
+| "That's no longer valid. Request a new one…" | The session (from a code, an old reset link, or an invite) expired before the next step finished; start again |
 | Signup ends on "Confirm your email" and no email arrives | *Confirm email* is on and delivery isn't set up — do step 0 or step 3, or confirm them by hand |
 | "This email address hasn't been confirmed yet" on sign-in | Same cause; the panel that appears will resend or take a code |
 
