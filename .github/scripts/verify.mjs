@@ -143,7 +143,7 @@ else pass(".env is not tracked");
 const SECRET_PATTERNS = [
   { name: "Supabase secret key", re: /\bsb_secret_[A-Za-z0-9_-]{10,}/ },
   { name: "a PEM private key block", re: /-----BEGIN [A-Z ]*PRIVATE KEY-----/ },
-  { name: "a generic secret-shaped assignment", re: /\b(API_KEY|SECRET|SERVICE_ROLE(?:_KEY)?|DB_PASSWORD)\s*[:=]\s*["'][A-Za-z0-9_\-/+]{16,}["']/ },
+  { name: "a generic secret-shaped assignment", re: /\b(API_KEY|SECRET|SERVICE_ROLE(?:_KEY)?|DB_PASSWORD|[A-Z_]*TOKEN)\s*[:=]\s*["'][A-Za-z0-9_\-/+]{16,}["']/ },
 ];
 // Binary/asset files can't be read as text and can't hold a plausible text
 // secret either -- skip them rather than let a decode error abort the run.
