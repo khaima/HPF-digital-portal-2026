@@ -1,0 +1,35 @@
+# Shared verification pipeline — the single place the actual CI checks
+# live. Called by both pr.yml (every pull request) and deploy.yml (every
+# push to main, as a required job before the deploy job runs) so the two
+# trigger contexts can never drift into checking different things. See
+# CI.md at the repo root for what each check does and why.
+#
+# A reusable workflow (`on: workflow_call`), not a script called by two
+# other workflows' `run:` steps — this way each caller gets its own checks
+# tab in the Actions UI, and a failing check here fails the caller's run
+# directly rather than needing to be parsed out of log text.
+name: CI
+
+on:
+  workflow_call:
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # Checks 1-7, plus the pure-module half of check 8 (smoke tests) —
+      # see .github/scripts/verify.mjs's own header for what each does.
+      - name: Syntax, JSON, references, required files, secrets, credentials, routes
+        run: node .github/scripts/verify.mjs
+
+      # Check 8, the other half: serve the real static files the way a
+      # deploy actually would, and request every real entry point.
+      - name: Smoke test — serve and fetch every real file
+        run: bash .github/scripts/smoke-serve.sh

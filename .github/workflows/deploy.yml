@@ -8,6 +8,14 @@
 # published tree is exactly what is on main, so a deploy is reproducible from
 # the commit alone, and only actions/checkout (official) is used — no
 # third-party actions in the path to production.
+#
+# As of the CI pass (see CI.md): the `deploy` job below is byte-for-byte the
+# same job that has always lived here — nothing about how it publishes
+# changed. What's new is `ci`, and `deploy`'s new `needs: ci` — the pipeline
+# is now push → CI → deploy, and a failing check stops the mirror-to-
+# gh-pages step from ever running. Manual redeploys (workflow_dispatch) go
+# through the same gate, on the same reasoning: a hand-triggered deploy of a
+# broken commit is still a broken deploy.
 name: Deploy to GitHub Pages
 
 on:
@@ -26,7 +34,11 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
   deploy:
+    needs: ci
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

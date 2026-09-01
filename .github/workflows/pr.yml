@@ -1,0 +1,12 @@
+# Runs the same checks as deploy.yml, on every pull request against main —
+# so a problem surfaces before merge, not after it's already live. Deploys
+# nothing; a PR from a fork has no access to deploy anyway, and shouldn't.
+name: Pull Request Checks
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
