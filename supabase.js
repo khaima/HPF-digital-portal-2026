@@ -43,6 +43,15 @@ export function authMessage(error) {
     return "That code is wrong or has expired. Request a new one and try again.";
   if (m.includes("email rate limit") || m.includes("over_email_send_rate_limit"))
     return "Too many emails have been sent from the portal in the last hour. Please try again later.";
+  // GoTrue wraps every mail-transport failure the same way ("Error sending
+  // recovery/confirmation/magic link/invite email") whichever flow
+  // triggered it — almost always because no real SMTP provider is
+  // configured yet (supabase/AUTH-RECOVERY.md, step 3). The raw string is
+  // an internal detail, not something the person hitting it can act on;
+  // an admin resetting/confirming them by hand from the Supabase dashboard
+  // is the one thing that actually helps until step 3 is done.
+  if (m.includes("error sending") && m.includes("email"))
+    return "The portal couldn't send that email right now. Please ask an HPF administrator to help you sign in — they can reset or confirm your account directly.";
   // "For security purposes, you can only request this after 51 seconds."
   if (m.includes("for security purposes")) return error.message;
   // Shared by every recovery/invite/confirm path (a code, a link, or an
