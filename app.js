@@ -37,39 +37,67 @@ const ADMIN_EMAIL = "patrick@humanpractice.org";
 const K_FO_OUTBOX_LEGACY = "hpf_fo_outbox";
 
 /* ------------------------------------------------------------ officer's assigned schools
-   Which schools this field officer covers — school_officer_assignments,
-   admin-managed, RLS lets an officer read only their own rows. Drives the
-   report form's school picker: an officer can only file a NEW report for a
-   school they are assigned to (server-enforced, not just a UI nicety — the
-   "fr insert" policy checks the same assignment table), so a free-text field
-   here would just produce a confusing RLS rejection instead of a clear list. */
+   Which schools show up in the "New field report" county -> school cascade.
+   Two sources, by role:
+
+     - admin bypasses the assignment restriction entirely (RLS: is_admin()
+       OR assigned_to_school(school)), so their list is every real school
+       (schools, patch-02) — not just ones someone has assigned.
+     - everyone else (field_officer and the other roles that share this
+       flow) is scoped to school_officer_assignments, admin-managed; RLS
+       lets an officer read only their own rows. An officer can only file a
+       NEW report for a school they are assigned to (server-enforced, not
+       just a UI nicety — the "fr insert" policy checks the same assignment
+       table), so offering anything wider would just produce a confusing
+       RLS rejection instead of a clear list.
+
+   Either way the result is the same shape: a flat list of names
+   (foSchoolsCache) plus a name -> county map (foSchoolCounties) the county
+   step filters by. */
 let foSchoolsCache = [];
 let foSchoolsLoaded = false;
 /* schoolName -> county, resolved against the real schools table (patch-02).
-   school_officer_assignments only carries the school's NAME, not a county,
-   so the county cascade below needs this separate lookup. Cached the same
-   way as foSchoolsCache, for the same offline reason. */
+   For admin this comes back in the same query as the name list; for
+   everyone else school_officer_assignments only carries the NAME, so it
+   needs a second lookup (loadFoSchoolCounties below). */
 let foSchoolCounties = {};
 
 /* Cached into IndexedDB on every successful online fetch, and read back
    from there when the fetch fails. This is what makes the visit form
-   usable offline at all: without the assigned-school list there is
-   nothing to pick, and an officer in the field cannot file anything.
-   Postgres stays authoritative — the cache is only ever a fallback, and
-   the UI says when it is being used and how old it is. */
+   usable offline at all: without the school list there is nothing to
+   pick, and an officer in the field cannot file anything. Postgres stays
+   authoritative — the cache is only ever a fallback, and the UI says when
+   it is being used and how old it is. */
 async function loadFoSchools() {
-  const { data, error } = await supabase
-    .from("school_officer_assignments").select("school").order("school");
+  const user = Auth.current();
 
-  if (!error) {
-    foSchoolsCache = (data || []).map((r) => r.school);
-    await loadFoSchoolCounties(foSchoolsCache);
-    try {
-      await cachePut("fo_schools", foSchoolsCache);
-      foSchoolsCachedAt = Date.now();
-    } catch (err) { console.warn("could not cache schools:", err.message); }
-    foSchoolsLoaded = true;
-    return foSchoolsCache;
+  if (user?.role === "admin") {
+    const { data, error } = await supabase.from("schools").select("name, county").order("name");
+    if (!error) {
+      foSchoolsCache = (data || []).map((r) => r.name);
+      foSchoolCounties = Object.fromEntries((data || []).map((s) => [s.name, s.county || ""]));
+      try {
+        await cachePut("fo_schools", foSchoolsCache);
+        await cachePut("fo_school_counties", foSchoolCounties);
+        foSchoolsCachedAt = Date.now();
+      } catch (err) { console.warn("could not cache schools:", err.message); }
+      foSchoolsLoaded = true;
+      return foSchoolsCache;
+    }
+  } else {
+    const { data, error } = await supabase
+      .from("school_officer_assignments").select("school").order("school");
+
+    if (!error) {
+      foSchoolsCache = (data || []).map((r) => r.school);
+      await loadFoSchoolCounties(foSchoolsCache);
+      try {
+        await cachePut("fo_schools", foSchoolsCache);
+        foSchoolsCachedAt = Date.now();
+      } catch (err) { console.warn("could not cache schools:", err.message); }
+      foSchoolsLoaded = true;
+      return foSchoolsCache;
+    }
   }
 
   // Offline (or the fetch failed): fall back to the cached list.
@@ -98,10 +126,11 @@ async function loadFoSchools() {
 }
 
 /* Resolves each assigned school's county from the real schools table, by
-   name (school_officer_assignments has no FK to join on). Best-effort: a
-   failure here still leaves the school picker itself working, it just
-   falls back to an unfiltered county list (see countyOptions below) rather
-   than blocking the page. */
+   name (school_officer_assignments has no FK to join on). Non-admin only —
+   admin's own branch above already gets county in the same query. Best-
+   effort: a failure here still leaves the school picker itself working, it
+   just falls back to an unfiltered county list (see countyOptions below)
+   rather than blocking the page. */
 async function loadFoSchoolCounties(names) {
   if (!names.length) { foSchoolCounties = {}; return; }
   const { data, error } = await supabase.from("schools").select("name, county").in("name", names);
@@ -1151,47 +1180,41 @@ function pageFieldOfficer() {
         You can explore the interface below, but submissions are marked for review.</span>
       </div>`;
 
-  // Admin bypasses the assignment check entirely (RLS: is_admin() OR
-  // assigned_to_school(school)), so a free-text field is fine and matches
-  // that bypass. A field officer can only ever successfully file a NEW report
-  // for a school in their own assignment list — offering anything wider would
-  // just be a form that sometimes fails with a database error instead of a
-  // clear reason.
-  // County -> school cascade (non-admin). Admin keeps the free-text bypass
-  // below, so it isn't restricted to a county list built from assignments.
-  // The cascade only switches on once every assigned school's county is
-  // actually known — an empty foCounties (lookup still loading, failed, or
-  // schools with no county on file) falls back to the full county list and
-  // an unfiltered school list, same as before this feature existed, rather
-  // than a county dropdown with nothing pickable and no way through it.
-  const foCounties = user.role === "admin"
-    ? []
-    : [...new Set(foSchoolsCache.map((s) => foSchoolCounties[s]).filter(Boolean))].sort();
+  // County -> school cascade, for every role: admin picks from every real
+  // school (schools, patch-02); everyone else from their own assignment
+  // list (school_officer_assignments) — either way loadFoSchools() has
+  // already resolved both foSchoolsCache and foSchoolCounties by the time
+  // this renders, or is in the process of doing so. The cascade only
+  // switches on once every school's county is actually known — an empty
+  // foCounties (lookup still loading, failed, or schools with no county on
+  // file) falls back to the full county list and an unfiltered school
+  // list, rather than a county dropdown with nothing pickable and no way
+  // through it.
+  const foCounties = [...new Set(foSchoolsCache.map((s) => foSchoolCounties[s]).filter(Boolean))].sort();
   const foCascadeAvailable = foCounties.length > 0;
   // Which county the school list should start filtered to: the officer's
-  // own county if they're actually assigned a school there, else whichever
+  // own county if a school of theirs is actually there, else whichever
   // county comes first — either way the school select below never opens on
-  // an unfiltered dump of every assigned school across every county.
+  // an unfiltered dump of every school across every county.
   const foInitialCounty = foCascadeAvailable
     ? (foCounties.includes(user.county) ? user.county : foCounties[0])
     : null;
   const schoolsForCounty = (county) =>
     foCascadeAvailable ? foSchoolsCache.filter((s) => foSchoolCounties[s] === county) : foSchoolsCache;
 
-  const schoolField = user.role === "admin"
-    ? `<input class="input" id="fo_school" name="school" type="text" required aria-required="true" placeholder="e.g. Nyeri Hill Primary School">`
-    : !foSchoolsLoaded
-    ? `<input class="input" id="fo_school" disabled aria-label="School" placeholder="Loading your assigned schools…">`
+  const schoolField = !foSchoolsLoaded
+    ? `<input class="input" id="fo_school" disabled aria-label="School" placeholder="Loading schools…">`
     : foSchoolsCache.length
     ? `<select class="select" id="fo_school" name="school" required aria-required="true">
          <option value="" disabled selected>Select a school</option>
          ${schoolsForCounty(foInitialCounty).map((s) => `<option>${esc(s)}</option>`).join("")}
        </select>`
-    : `<input class="input" id="fo_school" disabled aria-label="School" placeholder="No schools assigned yet">`;
-  const noAssignmentsNotice = (user.role !== "admin" && foSchoolsLoaded && !foSchoolsCache.length)
+    : `<input class="input" id="fo_school" disabled aria-label="School" placeholder="${user.role === "admin" ? "No schools in the system yet" : "No schools assigned yet"}">`;
+  const noAssignmentsNotice = (foSchoolsLoaded && !foSchoolsCache.length)
     ? `<div class="notice">${icon("info")}
-        <span>You have no assigned schools yet, so there is nowhere to file a new report.
-        Ask an HPF administrator to assign you to one or more schools.</span>
+        <span>${user.role === "admin"
+          ? "There are no schools in the system yet, so there is nowhere to file a new report. Add a school first."
+          : "You have no assigned schools yet, so there is nowhere to file a new report. Ask an HPF administrator to assign you to one or more schools."}</span>
       </div>`
     : "";
 
@@ -1330,16 +1353,6 @@ function pageFieldOfficer() {
               <div class="field" id="fo_value_wrap" hidden>
                 <label for="fo_value" id="fo_value_label">Value</label>
                 <input class="input" id="fo_value" name="meValue" type="number" step="any" inputmode="decimal">
-              </div>
-              <div class="form-row">
-                <div class="field">
-                  <label for="fo_teachers">Teachers present</label>
-                  <input class="input" id="fo_teachers" name="teachers" type="number" min="0" value="0">
-                </div>
-                <div class="field">
-                  <label for="fo_learners">Learners reached</label>
-                  <input class="input" id="fo_learners" name="learners" type="number" min="0" value="0">
-                </div>
               </div>
               <div class="field">
                 <label for="fo_notes">Observations & notes</label>
@@ -1755,7 +1768,7 @@ function wireFieldOfficer() {
   if (!foReportsLoaded) {
     loadFoReports().then(() => { if (onFieldOfficerPage()) render(); });
   }
-  if (!foSchoolsLoaded && user.role !== "admin") {
+  if (!foSchoolsLoaded) {
     loadFoSchools().then(() => { if (onFieldOfficerPage()) render(); });
   }
   if (!foIndicatorsLoaded) {
@@ -1920,8 +1933,9 @@ function wireFieldOfficer() {
       school: fd.get("school"),
       visit_type: visitLabel,
       county,
-      teachers: +fd.get("teachers") || 0,
-      learners: +fd.get("learners") || 0,
+      // teachers/learners removed from the form — the column stays
+      // (nullable, defaults to 0) so historical reports keep their
+      // figures; new ones just no longer collect it.
       notes: fd.get("notes") || null,
       // Optional M&E link: null unless a "form" (indicator) was actually
       // picked. patch-36's trigger derives the me_indicator_values row

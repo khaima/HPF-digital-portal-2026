@@ -15,14 +15,16 @@ already established this project (`school_officer_assignments`, `schools`,
 1. **County** — for a field officer (or programme_manager / me_officer /
    staff, who share the same assigned-school flow), this lists only the
    counties where they actually have an assigned school, not all 47. Admin
-   keeps the existing free-text school field and full county list — the
-   RLS bypass they've always had (`is_admin() OR assigned_to_school(...)`)
-   makes an assignment-scoped picker meaningless for that role.
-2. **School** — filtered to the selected county's assigned schools. Picking
-   a school outside the officer's assignment list was never possible
-   before this feature either — `field_reports`' insert policy has always
-   checked `assigned_to_school()` — the difference is the UI now groups by
-   county instead of listing every assigned school flat.
+   bypasses the assignment restriction entirely (RLS: `is_admin() OR
+   assigned_to_school(...)`), so their county list is built from every real
+   school (`schools`, patch-02) instead — every county with at least one
+   school on record, not just assigned ones.
+2. **School** — filtered to the selected county. For a field officer,
+   picking a school outside their assignment list was never possible before
+   this feature either — `field_reports`' insert policy has always checked
+   `assigned_to_school()` — the difference is the UI now groups by county
+   and only ever offers a real, selectable school instead of a flat list
+   (or, for admin, free text prone to typos and near-duplicates).
 3. **Visit type** — exactly four options, each mapped to an M&E scorecard
    pillar (`me_indicators.scorecard_pillar`, patch-21): Learning →
    `education`, Infrastructure → `infrastructure`, ICT → `ict`, MEP →
@@ -88,9 +90,11 @@ What it does, in order:
 1. No-op if `me_indicator_id` or `me_value` is null (the common case: no
    form was linked).
 2. Resolves `school_id` by matching `field_reports.school` (free text) to
-   `schools.name`. No match — a typo, or an admin's free-text entry that
-   isn't a real school row — skips the M&E write silently; the field
-   report itself is already saved either way.
+   `schools.name`. Every report now comes from a school picker fed by the
+   real `schools` table, so this should always match — a miss (a school
+   renamed after older reports referenced it, say) skips the M&E write
+   silently rather than failing the report; the report itself is already
+   saved either way.
 3. Computes `period_year`/`period_term` from the report's `created_at`,
    using the same term boundaries `hpf_term_range()` (patch-32) already
    defines: Term 1 Jan–Apr, Term 2 May–Aug, Term 3 Sep–Dec.
@@ -107,6 +111,20 @@ inserts for the same indicator/school/term left exactly one
 indicator picked, and one against a school name with no match in `schools`,
 both inserted cleanly with no M&E row created and no error.
 
+## Fields removed from the form
+
+"Teachers present" and "Learners reached" are gone — the form no longer
+asks for them. `field_reports.teachers`/`.learners` stay in the schema
+(nullable, default `0`) so historical reports keep whatever figures they
+already have; new reports just don't populate them (they insert as `0`,
+the column default, since the row no longer sets them at all). Nothing
+elsewhere in `app.js` reads either column. `dashboards.js` still sums them
+into a "Teachers reached" KPI tile and shows a "N teacher(s)/learner(s)
+seen" note on School 360's recent-visit list — those keep working off
+historical data but will trend toward 0 for reports filed after this
+change, since there's no longer anywhere to enter a number. Left as-is;
+say if that KPI should be retired or replaced.
+
 ## Known limits
 
 - **`me_indicators` currently has no seeded rows for any pillar** on the
@@ -115,8 +133,8 @@ both inserted cleanly with no M&E row created and no error.
   dashboard → Add activity, which sets `scorecard_pillar`). The cascade and
   the derivation trigger are both real and tested; there is simply nothing
   to pick yet.
-- **County resolution needs `schools.county` set** for each assigned
-  school. If it's missing, or the lookup fails (offline, RLS), the county
-  step falls back to the full county list and the school step falls back
-  to the officer's full assigned list, unfiltered — never a dead end, just
-  not narrowed.
+- **County resolution needs `schools.county` set** for each school (every
+  real one for admin, the assigned ones for everyone else). If it's
+  missing, or the lookup fails (offline, RLS), the county step falls back
+  to the full county list and the school step falls back to the full
+  unfiltered list — never a dead end, just not narrowed.
