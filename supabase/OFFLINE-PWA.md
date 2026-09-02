@@ -145,6 +145,21 @@ fallback resolved, so a competing in-flight render could paint a wrong
 answer. The flag is now set only once the answer is known, so an
 intervening render shows "Loading…" instead of something false.
 
+### A second real bug, found later: shipped fixes looked like they hadn't shipped
+
+`sw.js`'s shell caching started cache-first-then-background-refresh: a
+returning visitor got whatever was cached, and the fetch that would have
+updated it only landed *after* that response was already sent — so a
+deploy only became visible on the visitor's second reload, not the first.
+During active development that's indistinguishable from the fix not having
+shipped at all. Now network-first (`VERSION` bumped to `hpf-shell-v2` to
+also clear out anyone's stale v1 cache): an online load always gets the
+current deploy and refreshes the cache with it; the cache is purely the
+offline fallback, used only when the network fetch itself fails. The
+already-verified "true offline shell" behaviour (steps 1–14 above) is
+unchanged — a failed fetch still falls back to whatever's cached, exactly
+as before, just via a `catch` instead of a `hit ||`.
+
 ## Not done
 
 - **Issues and assessments are not wired** to the outbox yet (see above).

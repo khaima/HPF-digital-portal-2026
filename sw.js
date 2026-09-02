@@ -15,13 +15,25 @@
         one user's data ends up in another's browser on a shared field
         device — exactly the deployment this portal targets.
 
-   So: cache-first for the shell (fast, works offline), network-only for
-   everything else, with a navigation fallback so a cold offline reload of
-   any SPA route still boots the app. Route handling itself is app.js's
-   job — the shell just has to load.
+   So: network-first for the shell (falls back to cache only when the
+   network fails, so a deploy is visible on the very next load instead of
+   needing two reloads — see the v1 -> v2 note below), network-only for
+   everything else, with the same network-first/cache-fallback shape for
+   navigations so a cold offline reload of any SPA route still boots the
+   app. Route handling itself is app.js's job — the shell just has to load.
+
+   v1 -> v2: v1 was cache-first-then-background-refresh for shell assets,
+   which meant a shipped fix only reached a returning visitor's *second*
+   reload after a deploy (the first reload silently refreshed the cache;
+   the app itself kept running the stale copy until the reload after
+   that) — confusing during active development, when a feature just
+   shipped can look like it never landed. Network-first fixes that: an
+   online load always gets the current deploy, and the cache is purely
+   the offline fallback it was meant to be. The version bump also clears
+   out any stale v1 cache still sitting in a returning visitor's browser.
    ============================================================ */
 
-const VERSION = "hpf-shell-v1";
+const VERSION = "hpf-shell-v2";
 const SHELL = [
   "./",
   "./index.html",
@@ -120,19 +132,21 @@ self.addEventListener("fetch", (event) => {
 
   if (!isShellRequest(url)) return;
 
-  // Shell asset: cache-first, then refresh the copy in the background so
-  // the next load gets the new build without ever blocking this one.
+  // Shell asset: network-first, cache as the offline fallback — same shape
+  // as the navigation handler above. An online load always gets whatever
+  // was just deployed and refreshes the cache with it; only a failed fetch
+  // (offline) falls back to whatever is already cached.
   event.respondWith(
     (async () => {
       const cache = await caches.open(VERSION);
-      const hit = await cache.match(request);
-      const network = fetch(request)
-        .then((res) => {
-          if (res && res.ok) cache.put(request, res.clone());
-          return res;
-        })
-        .catch(() => null);
-      return hit || (await network) || new Response("", { status: 504 });
+      try {
+        const res = await fetch(request);
+        if (res && res.ok) cache.put(request, res.clone());
+        return res;
+      } catch {
+        const hit = await cache.match(request);
+        return hit || new Response("", { status: 504 });
+      }
     })()
   );
 });
