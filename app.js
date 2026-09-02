@@ -1857,7 +1857,7 @@ function wireFieldOfficer() {
      no extra round trip on selection, matching how the rest of this app
      avoids re-fetching data it already has. */
   const countySelect = $("#fo_county");
-  const schoolSelect = $("#fo_school"); // a plain <input> for admin — nothing to filter there
+  const schoolSelect = $("#fo_school"); // a disabled <input> while loading, or when there are no schools to list
   countySelect?.addEventListener("change", () => {
     if (!(schoolSelect instanceof HTMLSelectElement)) return;
     // Same condition pageFieldOfficer() used to decide whether the county
