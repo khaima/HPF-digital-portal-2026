@@ -11,9 +11,27 @@
     <title>Human Practice Foundation — Digital Portal</title>
     <link rel="stylesheet" href="./styles.css" />
     <link rel="icon" href="./favicon.ico" type="image/x-icon" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <meta name="theme-color" content="#1f6feb" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="HPF Portal" />
+    <link rel="apple-touch-icon" href="./assets/icon-192.png" />
   </head>
   <body>
     <div id="app"></div>
     <script type="module" src="./app.js"></script>
+    <script>
+      /* Service worker registration. Kept in the page rather than app.js so
+         a module-loading failure still leaves the shell cached, and scoped
+         relatively so it works under GitHub Pages' /repo/ subpath as well as
+         Vercel's root (the same BASE problem vercel.json solves for routes). */
+      if ("serviceWorker" in navigator) {
+        window.addEventListener("load", () => {
+          navigator.serviceWorker
+            .register(new URL("./sw.js", document.baseURI), { scope: new URL("./", document.baseURI).pathname })
+            .catch((err) => console.warn("[sw] registration failed:", err.message));
+        });
+      }
+    </script>
   </body>
 </html>

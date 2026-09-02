@@ -4,7 +4,7 @@
    ============================================================ */
 
 import { icon } from "./icons.js";
-import { DASH, ROLES, ORG_TYPES, COUNTIES, KOLIBRI, CONTENT_KINDS, SCHOOLS,
+import { ROLES, ORG_TYPES, COUNTIES, SCHOOLS,
   LIBRARY_CATEGORIES, RESOURCE_TYPES, REGIONS, PROJECTS, KPI_TARGETS } from "./data.js";
 import { esc, timeAgo, runCounters, read, write, toast, uid } from "./util.js";
 import { supabase, adminClient, authMessage } from "./supabase.js";
@@ -96,8 +96,12 @@ const ROLE_META = {
   learner: {
     icon: "graduation",
     tagline: "Keep learning",
-    blurb: "Pick up where you left off, hand in your work, and grow your streak.",
-    can: ["Continue your courses", "Submit assignments", "Earn badges & streaks"],
+    // No streaks/badges/courses here: none of the three exist as real data,
+    // and this banner is a promise about what the dashboard below actually
+    // does. See supabase/LEARNER-EXPERIENCE-SPEC.md §4 (courses) and §12
+    // (achievements) for why they were removed rather than rebuilt.
+    blurb: "See the work your teacher has set you, hand it in, and open the resources they've shared.",
+    can: ["Take assessments and see your score", "Track your assignments", "Open shared learning resources"],
   },
   teacher: {
     icon: "users",
@@ -150,7 +154,7 @@ function trendBadge(trend) {
 
 /* The KPI row every role dashboard opens with. Same executive card as the
    admin analytics row — value against target, progress, direction, freshness
-   and a next action — fed from DASH rather than computed stats. */
+   and a next action — fed from real computed stats. */
 function statTiles(stats) {
   return `<div class="stat-row">${stats
     .map((s) =>
@@ -162,12 +166,16 @@ function statTiles(stats) {
         compact: s.compact,
         target: s.target,
         trend: typeof s.trend === "number" ? s.trend : null,
-        // DASH is seed data with no timestamps of its own; freshMins stands in
-        // for how often each figure would really be refreshed.
         updated: typeof s.freshMins === "number" ? Date.now() - s.freshMins * 6e4 : null,
         action: s.action,
         href: s.href,
         actionLabel: s.actionLabel,
+        // patch-32: where a figure came from (calculated vs manually
+        // entered) and how to reproduce it. Optional — only the metrics
+        // that actually have a provenance story pass these.
+        note: s.note,
+        badge: s.badge,
+        missing: s.missing,
       })
     )
     .join("")}</div>`;
@@ -621,7 +629,7 @@ function adminAccountsPanel(currentUser) {
         <form class="submission" data-edit-admin-form="${a.id}">
           <span class="avatar-sm">${esc((a.full_name || a.email || "A").slice(0, 1).toUpperCase())}</span>
           <div style="flex:1;min-width:0;display:flex;gap:.5rem;align-items:center">
-            <input class="input" name="fullName" type="text" required value="${esc(a.full_name || "")}" style="max-width:16rem">
+            <input class="input" name="fullName" type="text" required aria-required="true" value="${esc(a.full_name || "")}" style="max-width:16rem">
             <button class="btn btn-primary btn-xs" type="submit">Save</button>
             <button class="btn btn-outline btn-xs" type="button" data-edit-admin-cancel>Cancel</button>
           </div>
@@ -655,9 +663,9 @@ function adminAccountsPanel(currentUser) {
     <form id="addAdminForm" class="add-user-form">
       <div class="form-row">
         <div class="field"><label>Full name</label>
-          <input class="input" name="fullName" type="text" required placeholder="e.g. Grace Achieng"></div>
+          <input class="input" name="fullName" type="text" required aria-required="true" placeholder="e.g. Grace Achieng"></div>
         <div class="field"><label>HPF email</label>
-          <input class="input" name="email" type="email" required placeholder="name@${ORG_DOMAIN}"></div>
+          <input class="input" name="email" type="email" required aria-required="true" placeholder="name@${ORG_DOMAIN}"></div>
       </div>
       <div class="field"><label>Tier</label><select class="select" name="role">${tierOpts}</select></div>
       <p class="hint">Must be an <strong>@${ORG_DOMAIN}</strong> address. Emails them a link to set
@@ -675,7 +683,7 @@ function adminAccountsPanel(currentUser) {
   const promoteForm = adminPromoteOpen ? `
     <form id="promoteAdminForm" class="add-user-form">
       <div class="field"><label>Email of an existing HPF account</label>
-        <input class="input" name="email" type="email" required placeholder="name@${ORG_DOMAIN}"></div>
+        <input class="input" name="email" type="email" required aria-required="true" placeholder="name@${ORG_DOMAIN}"></div>
       <div class="field"><label>Tier</label><select class="select" name="role">${tierOpts}</select></div>
       <p class="hint">The person already signed up (as a teacher, school leader or field officer)
         and keeps their current password — only their role changes. An admin can promote them
@@ -753,11 +761,11 @@ function officerAssignmentsPanel() {
     <form id="assignForm" class="add-user-form">
       <div class="form-row">
         <div class="field"><label>Field officer</label>
-          <select class="select" name="officerId" required ${fieldOfficersCache.length ? "" : "disabled"}>
+          <select class="select" name="officerId" required aria-required="true" ${fieldOfficersCache.length ? "" : "disabled"}>
             ${officerOpts}
           </select></div>
         <div class="field"><label>School</label>
-          <select class="select" name="school" required>
+          <select class="select" name="school" required aria-required="true">
             <option value="" disabled selected>Select a school</option>${schoolOpts}
           </select></div>
       </div>
@@ -811,7 +819,7 @@ function devicesPanel() {
               : ""}
             ${issueFormDeviceId === d.id
               ? `<form class="add-user-form" data-issue-form="${esc(d.id)}" style="margin-top:.5rem">
-                   <div class="field"><input class="input" name="issue" required placeholder="What's wrong?"></div>
+                   <div class="field"><input class="input" name="issue" required aria-required="true" placeholder="What's wrong?"></div>
                    <div class="add-user-actions">
                      <button class="btn btn-primary btn-xs" type="submit">Report</button>
                      <button class="btn btn-outline btn-xs" type="button" data-issue-cancel>Cancel</button>
@@ -833,8 +841,8 @@ function devicesPanel() {
   const addForm = deviceFormOpen ? `
     <form id="deviceForm" class="add-user-form">
       <div class="form-row">
-        <div class="field"><label>Type</label><select class="select" name="device_type" required>${typeOpts}</select></div>
-        <div class="field"><label>School</label><select class="select" name="school_id" required>
+        <div class="field"><label>Type</label><select class="select" name="device_type" required aria-required="true">${typeOpts}</select></div>
+        <div class="field"><label>School</label><select class="select" name="school_id" required aria-required="true">
           <option value="" disabled selected>Select a school</option>${schoolOpts}</select></div>
       </div>
       <div class="form-row">
@@ -997,7 +1005,7 @@ function interventionsPanel() {
             ${actionItemFormForId === iv.id ? `
               <form class="add-user-form" data-action-form="${esc(iv.id)}" style="margin-top:.5rem">
                 <div class="form-row">
-                  <div class="field"><input class="input" name="title" required placeholder="Action item"></div>
+                  <div class="field"><input class="input" name="title" required aria-required="true" placeholder="Action item"></div>
                   <div class="field"><input class="input" type="date" name="due_date"></div>
                 </div>
                 <div class="add-user-actions">
@@ -1012,8 +1020,8 @@ function interventionsPanel() {
             ${evidenceFormForId === iv.id ? `
               <form class="add-user-form" data-evidence-form="${esc(iv.id)}" style="margin-top:.5rem">
                 <div class="form-row">
-                  <div class="field"><input class="input" name="title" required placeholder="What is this evidence?"></div>
-                  <div class="field"><input class="input" type="url" name="file_url" required placeholder="https://…"></div>
+                  <div class="field"><input class="input" name="title" required aria-required="true" placeholder="What is this evidence?"></div>
+                  <div class="field"><input class="input" type="url" name="file_url" required aria-required="true" placeholder="https://…"></div>
                 </div>
                 <div class="add-user-actions">
                   <button class="btn btn-primary btn-xs" type="submit">Attach</button>
@@ -1035,8 +1043,8 @@ function interventionsPanel() {
   const addForm = interventionFormOpen ? `
     <form id="interventionForm" class="add-user-form">
       <div class="form-row">
-        <div class="field"><label>Title</label><input class="input" name="title" required placeholder="e.g. Low attendance follow-up"></div>
-        <div class="field"><label>School</label><select class="select" name="school_id" required>
+        <div class="field"><label>Title</label><input class="input" name="title" required aria-required="true" placeholder="e.g. Low attendance follow-up"></div>
+        <div class="field"><label>School</label><select class="select" name="school_id" required aria-required="true">
           <option value="" disabled selected>Select a school</option>${schoolOpts}</select></div>
       </div>
       <div class="field"><label>Description</label><textarea class="input" name="description" rows="2"></textarea></div>
@@ -1165,11 +1173,11 @@ const MDM_MODULES = {
         .map(([v, l]) => mdmOptTag(v, l, r?.programme_status || "active")).join("");
       return `
         <div class="form-row">
-          <div class="field"><label>School name *</label><input class="input" name="name" required value="${esc(r?.name || "")}"></div>
-          <div class="field"><label>School code *</label><input class="input" name="code" required placeholder="e.g. MER-004" value="${esc(r?.code || "")}"></div>
+          <div class="field"><label>School name *</label><input class="input" name="name" required aria-required="true" value="${esc(r?.name || "")}"></div>
+          <div class="field"><label>School code *</label><input class="input" name="code" required aria-required="true" placeholder="e.g. MER-004" value="${esc(r?.code || "")}"></div>
         </div>
         <div class="form-row">
-          <div class="field"><label>County *</label><select class="select" name="county" required><option value="" disabled ${r?.county ? "" : "selected"}>Select county</option>${countyOpts}</select></div>
+          <div class="field"><label>County *</label><select class="select" name="county" required aria-required="true"><option value="" disabled ${r?.county ? "" : "selected"}>Select county</option>${countyOpts}</select></div>
           <div class="field"><label>Sub-county</label><input class="input" name="sub_county" value="${esc(r?.sub_county || "")}"></div>
         </div>
         <div class="field"><label>Location / landmark</label><input class="input" name="location" value="${esc(r?.location || "")}"></div>
@@ -1266,7 +1274,7 @@ const MDM_MODULES = {
       const statusOpts = ["active", "faulty", "retired"].map((v) => mdmOptTag(v, v[0].toUpperCase() + v.slice(1), r?.status || "active")).join("");
       return `
         <div class="form-row">
-          <div class="field"><label>Device type *</label><select class="select" name="device_type" required>${typeOpts}</select></div>
+          <div class="field"><label>Device type *</label><select class="select" name="device_type" required aria-required="true">${typeOpts}</select></div>
           <div class="field"><label>School</label><select class="select" name="school_id"><option value="">— none —</option>${schoolOpts}</select></div>
         </div>
         <div class="form-row">
@@ -1354,8 +1362,8 @@ const MDM_MODULES = {
       const genderOpts = ["female", "male"].map((v) => mdmOptTag(v, v[0].toUpperCase() + v.slice(1), r?.gender)).join("");
       return `
         <div class="form-row">
-          <div class="field"><label>Full name *</label><input class="input" name="full_name" required value="${esc(r?.full_name || "")}"></div>
-          <div class="field"><label>School *</label><select class="select" name="school_id" required><option value="" disabled ${r?.school_id ? "" : "selected"}>Select school</option>${schoolOpts}</select></div>
+          <div class="field"><label>Full name *</label><input class="input" name="full_name" required aria-required="true" value="${esc(r?.full_name || "")}"></div>
+          <div class="field"><label>School *</label><select class="select" name="school_id" required aria-required="true"><option value="" disabled ${r?.school_id ? "" : "selected"}>Select school</option>${schoolOpts}</select></div>
         </div>
         <div class="form-row">
           <div class="field"><label>Grade</label><select class="select" name="grade"><option value="">— none —</option>${gradeOpts}</select></div>
@@ -1454,8 +1462,8 @@ const MDM_MODULES = {
       }
       return `
         <div class="form-row">
-          <div class="field"><label>Full name *</label><input class="input" name="fullName" required></div>
-          <div class="field"><label>Email *</label><input class="input" name="email" type="email" required></div>
+          <div class="field"><label>Full name *</label><input class="input" name="fullName" required aria-required="true"></div>
+          <div class="field"><label>Email *</label><input class="input" name="email" type="email" required aria-required="true"></div>
         </div>
         <div class="field"><label>School</label><select class="select" name="school_id"><option value="">— none —</option>${schoolOpts}</select></div>
         <div class="form-row">${extHtml}</div>
@@ -1527,8 +1535,8 @@ const MDM_MODULES = {
       }
       return `
         <div class="form-row">
-          <div class="field"><label>Full name *</label><input class="input" name="fullName" required></div>
-          <div class="field"><label>Email *</label><input class="input" name="email" type="email" required></div>
+          <div class="field"><label>Full name *</label><input class="input" name="fullName" required aria-required="true"></div>
+          <div class="field"><label>Email *</label><input class="input" name="email" type="email" required aria-required="true"></div>
         </div>
         <div class="field"><label>School</label><select class="select" name="school_id"><option value="">— none —</option>${schoolOpts}</select></div>
         <div class="form-row">
@@ -2911,21 +2919,21 @@ function wireTeacher360() {
 /* ============================================================
    Learner 360 — a unified, read-only profile for one learner.
 
-   Same shape as School 360 and Teacher 360, with one real schema gap the
-   other two don't have to deal with: `learners` (this table, patch-13/MDM,
-   what this view is keyed on) and the class-roster/assessment system
-   (`enrollments`, `submissions`) are two ID spaces that were never linked.
-   `enrollments.learner_id`/`submissions.learner_id` both reference
-   `profiles(id)` and are hard-coded null on every insert this app makes
-   (see the #addLearnerForm submit handler and the quiz-sync code) — a
-   roster entry's only identity is its typed `name`. So Attendance and
-   Digital Engagement below are real `learner_id` joins (attendance_records,
-   kolibri_activity, library_activity, learning_activity all reference
-   `learners(id)` directly — the one part of this table that IS wired up),
-   but Assessments can only be reached by matching `enrollments.name` /
-   `submissions.name` against this learner's own name within their school's
-   classes — a best-effort bridge, not a guaranteed identity match, and the
-   Assessments tab says so rather than presenting a false-precision link.
+   Same shape as School 360 and Teacher 360. Every tab now resolves through
+   `learners.id` alone — attendance, digital engagement, enrollments and
+   submissions are all direct `learner_id` joins.
+
+   This used to be split: attendance/digital were real id joins, but
+   enrollments and submissions had to be reached by matching a typed name
+   within the learner's school — a best-effort bridge that could attribute
+   one child's results to another wherever two learners shared a name.
+   patch-33 ended that. Identity is canonical (`learners.id`, with
+   `learner_code` as its portable form), triggers guarantee every new
+   enrollment and submission carries it, and a reconciliation pass linked
+   the historical rows it could prove. Rows it could NOT prove are flagged
+   in `learner_identity_reviews` rather than guessed — so an unresolved
+   learner correctly shows no records here instead of showing someone
+   else's. See supabase/LEARNER-IDENTITY.md.
 
    Progress is new: HPF's own published impact work tracks attendance and
    dropout as outcome indicators, not just activity counts, so this tab
@@ -3000,13 +3008,24 @@ async function loadLearner360(learnerId) {
     library: libraryRes.data || [], learningActivity: learningActRes.data || [],
   });
 
+  // patch-33: identity resolves through learners.id ONLY. The name-match
+  // bridge this used to carry is gone — it was documented as best-effort
+  // and could silently attribute one child's results to another where two
+  // learners share a name. Every enrollment and submission now carries a
+  // stable learner_id (triggers guarantee it going forward; the
+  // reconciliation pass linked what it could prove historically), and
+  // anything that genuinely could not be resolved is flagged in
+  // learner_identity_reviews rather than guessed at here. A learner whose
+  // records are still unresolved shows as having no records — which is the
+  // truth, and is visible and fixable in the review queue, instead of
+  // showing someone else's. See supabase/LEARNER-IDENTITY.md.
   const classIds = classes.map((c) => c.id);
-  const enrollmentsRes = classIds.length
-    ? await supabase.from("enrollments").select("class_id").in("class_id", classIds).ilike("name", learner.full_name)
+  const enrRes = classIds.length
+    ? await supabase.from("enrollments").select("class_id").in("class_id", classIds).eq("learner_id", learnerId)
     : { data: [] };
   if (token !== learner360LoadToken) return;
 
-  const matchedClassIds = [...new Set((enrollmentsRes.data || []).map((e) => e.class_id))];
+  const matchedClassIds = [...new Set((enrRes.data || []).map((e) => e.class_id))];
   set({ matchedClasses: classes.filter((c) => matchedClassIds.includes(c.id)) });
 
   const assessmentsRes = matchedClassIds.length
@@ -3018,12 +3037,12 @@ async function loadLearner360(learnerId) {
   set({ assessments });
 
   const assessmentIds = assessments.map((a) => a.id);
-  const submissionsRes = assessmentIds.length
-    ? await supabase.from("submissions").select("*").in("assessment_id", assessmentIds).ilike("name", learner.full_name)
+  const subsRes = assessmentIds.length
+    ? await supabase.from("submissions").select("*").in("assessment_id", assessmentIds).eq("learner_id", learnerId)
     : { data: [] };
   if (token !== learner360LoadToken) return;
 
-  set({ loaded: true, error: null, submissions: submissionsRes.data || [] });
+  set({ loaded: true, error: null, submissions: subsRes.data || [] });
 }
 
 /* Shared by Overview and Progress. Buckets a set of rows into calendar
@@ -3085,7 +3104,7 @@ function learner360Overview() {
       { icon: "chartColumn", label: "Assessments taken",
         value: `${c.submissions.length}${avgScore !== null ? ` · avg ${avgScore}%` : ""}`,
         empty: !c.submissions.length, period: x360Period(c.submissions, "created_at"),
-        updated: x360MaxDate(c.submissions, "created_at"), source: "submissions (matched by name)" },
+        updated: x360MaxDate(c.submissions, "created_at"), source: "submissions · joined on learner_id" },
       { icon: "trendingUp", label: "Attendance trend",
         value: trendText(attTrend), empty: !attTrend, period: "Month over month",
         updated: null, source: "computed from attendance_records" },
@@ -3142,8 +3161,8 @@ function learner360Assessments() {
             <div class="s-meta">${esc(a.class?.name || "—")} · ${new Date(a.created_at).toLocaleDateString()}</div>
           </div>${sub ? `<span class="pill synced">${sub.pct}%</span>` : `<span class="pill role-pill">Not submitted</span>`}</div>`;
         }).join("")
-      : x360EmptyRow("No assessments found in this learner's matched classes yet.");
-    return `<p class="hint" style="margin-bottom:.75rem">${icon("info")} Matched by name within this learner's school — the class roster and assessment system don't yet reference the learners table by id, so this is a best-effort match, not a guaranteed link.</p>${x360Section(`Assessments (${c.assessments.length})`, "chartColumn", rows)}`;
+      : x360EmptyRow("No assessments in the classes this learner is enrolled in.");
+    return `<p class="hint" style="margin-bottom:.75rem">${icon("check")} Resolved through this learner's stable id (<code>learner_id</code>) — enrolment and submissions are real joins, not a name match. Any record that could not be identified with certainty is held in the identity review queue rather than shown here.</p>${x360Section(`Assessments (${c.assessments.length})`, "chartColumn", rows)}`;
   });
 }
 
@@ -3414,6 +3433,276 @@ function koboPipelinePanel() {
   return wrap(`${grid}${x360Section(`Recent submissions (last ${c.recent.length})`, "inbox", rows)}`);
 }
 
+/* ---------------------------------------------------------- notifications (patch-34)
+
+   The `notifications` table has existed since patch-13 with real RLS and
+   no producer. patch-34 added the producer — server-side triggers on the
+   tables where events actually happen — so this is purely the retrieval
+   side: read what RLS hands this session, and let a recipient mark their
+   own as read.
+
+   Nothing here filters by recipient. It doesn't need to and shouldn't try:
+   the "notifications view" policy already scopes every row to
+   `recipient_id = auth.uid()` (plus programme-manager oversight). Adding a
+   client-side `.eq("recipient_id", …)` would imply the client is what
+   enforces ownership, which it isn't — see supabase/NOTIFICATIONS.md's
+   RLS audit. */
+let notificationsCache = [];
+let notificationsLoaded = false;
+let notificationsError = null;
+let notificationsOpen = false;
+let notificationsFilter = "unread"; // "unread" | "all"
+
+const NOTIF_TYPE = {
+  field_assignment: { label: "Field assignment", icon: "mapPin" },
+  action_assigned: { label: "New action", icon: "clipboard" },
+  action_overdue: { label: "Overdue action", icon: "clock" },
+  high_priority_issue: { label: "High-priority issue", icon: "alert" },
+  kpi_at_risk: { label: "KPI at risk", icon: "target" },
+  kobo_sync_failed: { label: "Sync failed", icon: "refresh" },
+  offline_sync_failed: { label: "Offline sync failed", icon: "cloud" },
+  data_quality: { label: "Data quality", icon: "eye" },
+  training_assigned: { label: "Training", icon: "award" },
+  admin_event: { label: "Administration", icon: "shield" },
+};
+const NOTIF_PRIORITY_PILL = {
+  urgent: "danger-pill", high: "danger-pill", normal: "role-pill", low: "role-pill",
+};
+
+async function loadNotifications() {
+  const { data, error } = await supabase
+    .from("notifications")
+    .select("id, type, title, body, link, priority, ref_table, ref_id, read_at, created_at")
+    .order("created_at", { ascending: false })
+    .limit(100);
+  notificationsLoaded = true;
+  notificationsError = error ? authMessage(error) : null;
+  if (!error) notificationsCache = data || [];
+  return notificationsCache;
+}
+
+const unreadNotifications = () => notificationsCache.filter((n) => !n.read_at);
+
+/* Bell + count, rendered in the dashboard header (outside #dashBody, so it
+   survives role-tab re-renders and is wired separately). */
+function notificationBell() {
+  const n = unreadNotifications().length;
+  return `<button class="btn btn-outline" data-notif-toggle aria-expanded="${notificationsOpen}"
+      title="${n ? `${n} unread notification${n === 1 ? "" : "s"}` : "Notifications"}">
+    ${icon("mail")} Alerts${n ? ` <span class="pill danger-pill" style="margin-left:.35rem">${n}</span>` : ""}
+  </button>`;
+}
+
+function notificationPanel() {
+  if (!notificationsOpen) return "";
+  const wrap = (inner) => `<div class="panel" data-notif-panel style="margin-bottom:1rem">
+      <div class="panel-head-row">
+        <div>
+          <h2>${icon("mail")} Notifications</h2>
+          <p class="panel-sub" style="margin-bottom:0">Events that need your attention · you only ever see your own</p>
+        </div>
+        <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
+          <button class="btn btn-outline btn-xs" data-notif-filter="unread" ${notificationsFilter === "unread" ? 'style="font-weight:700"' : ""}>Unread</button>
+          <button class="btn btn-outline btn-xs" data-notif-filter="all" ${notificationsFilter === "all" ? 'style="font-weight:700"' : ""}>All</button>
+          <button class="btn btn-outline btn-xs" data-notif-mark-all>${icon("check")} Mark all read</button>
+          <button class="icon-btn" data-notif-close title="Close">✕</button>
+        </div>
+      </div>${inner}</div>`;
+
+  if (!notificationsLoaded) return wrap(`<div class="empty-state">Loading notifications…</div>`);
+  if (notificationsError) {
+    return wrap(`<div class="empty-state">Could not load notifications — ${esc(notificationsError)}
+      <div style="margin-top:.6rem"><button class="btn btn-outline btn-xs" data-notif-retry>${icon("refresh")} Try again</button></div>
+    </div>`);
+  }
+
+  const rows = notificationsFilter === "unread" ? unreadNotifications() : notificationsCache;
+  if (!rows.length) {
+    return wrap(`<div class="empty-state">${
+      notificationsFilter === "unread" ? "Nothing unread. You're up to date." : "No notifications yet."
+    }</div>`);
+  }
+
+  const list = rows.map((n) => {
+    const t = NOTIF_TYPE[n.type] || { label: n.type, icon: "info" };
+    const unread = !n.read_at;
+    return `<div class="submission" data-notif-row="${n.id}"${unread ? ' style="border-left:3px solid var(--primary)"' : ""}>
+      <div style="flex:1;min-width:0">
+        <div class="s-title">${icon(t.icon)} ${esc(n.title)}${unread ? ' <span class="la-live">new</span>' : ""}</div>
+        <div class="s-meta">${esc(t.label)} · ${esc(timeAgo(new Date(n.created_at).getTime()))}${
+          n.ref_table ? ` · ${esc(n.ref_table)}` : ""
+        }${n.body ? `<div style="margin-top:.25rem">${esc(n.body)}</div>` : ""}</div>
+      </div>
+      <span class="pill ${NOTIF_PRIORITY_PILL[n.priority] || "role-pill"}">${esc(n.priority)}</span>
+      ${n.link ? `<a class="btn btn-outline btn-xs" href="${esc(n.link)}" data-link style="margin-left:.5rem">Open</a>` : ""}
+      ${unread ? `<button class="icon-btn" data-notif-read="${n.id}" title="Mark as read" style="margin-left:.35rem">${icon("check")}</button>` : ""}
+    </div>`;
+  }).join("");
+
+  return wrap(`<div style="max-height:26rem;overflow-y:auto">${list}</div>`);
+}
+
+/* ---------------------------------------------------------- legacy account sunset (patch-30)
+
+   `hpf_users` (K_USERS) has never synced off the browser that created it —
+   see the user management comment just below this one. That means there is
+   no server-side census of legacy staff accounts to query; this panel does
+   not, and cannot, show "every legacy account that has ever existed". What
+   it shows is every legacy account that has actually logged in SINCE this
+   shipped — populated one real sign-in at a time by legacyLogin() (app.js)
+   calling record_legacy_login(), the only moment a legacy account is known
+   to be real. See supabase/LEGACY-SUNSET.md for the full design and why
+   that is the only honest population to report on.
+
+   Completing a migration needs a real, permissioned Supabase session — an
+   anonymous legacy sign-in structurally cannot grant itself a role, and
+   this deliberately does not change that. promoteToRole() below is the
+   exact function "Add staff member" already uses (patch-14/16's own gate),
+   not a new one. */
+let legacyMigrationsCache = [];
+let legacyMigrationsLoaded = false;
+let legacyMigrationsError = null;
+let legacySunsetConfig = null;
+let legacySunsetEditOpen = false;
+
+const LEGACY_STATUS_LABEL = {
+  detected: "Detected — not yet invited",
+  already_has_account: "Already has a real account",
+  invited: "Invited — awaiting admin",
+  migrated: "Migrated",
+  declined: "Declined",
+  obsolete: "Marked obsolete",
+};
+const LEGACY_STATUS_PILL = {
+  migrated: "synced", already_has_account: "synced",
+  detected: "role-pill", invited: "role-pill",
+  declined: "danger-pill", obsolete: "danger-pill",
+};
+
+async function loadLegacyMigrations() {
+  const [rowsRes, cfgRes] = await Promise.all([
+    supabase.from("legacy_account_migrations").select("*").order("last_login_at", { ascending: false }),
+    supabase.from("legacy_sunset_config").select("*").maybeSingle(),
+  ]);
+  legacyMigrationsLoaded = true;
+  legacyMigrationsError = rowsRes.error ? authMessage(rowsRes.error) : null;
+  if (!rowsRes.error) legacyMigrationsCache = rowsRes.data || [];
+  if (!cfgRes.error) legacySunsetConfig = cfgRes.data || null;
+  return legacyMigrationsCache;
+}
+
+/* Mirrors createStaffAccount()'s second half exactly (role, then any
+   school/county/project fields, then — field officers only — the
+   assignment table a plain profiles.school column doesn't cover) so a
+   migrated legacy account ends up indistinguishable from one an admin
+   invited by hand. complete_legacy_migration() (patch-30) is called last
+   and atomically records the outcome only after the real grant above it
+   has actually landed, never before. */
+async function completeLegacyMigration(row) {
+  if (!row.confirmed_email) {
+    throw new Error("This account hasn't completed the invite step yet — there is no confirmed email to look up.");
+  }
+  const matches = await findProfileByEmail(row.confirmed_email);
+  if (!matches.length) {
+    throw new Error(`${row.confirmed_email} was invited but the profile row hasn't appeared yet. Refresh in a moment and try again.`);
+  }
+  const profileId = matches[0].id;
+  if (row.legacy_role) await promoteToRole(profileId, row.legacy_role);
+  const { error: updErr } = await supabase
+    .from("profiles")
+    .update({ school: row.school || null, county: row.county || null, project: row.project || null })
+    .eq("id", profileId);
+  if (updErr) throw new Error(authMessage(updErr));
+  if (row.legacy_role === "field_officer" && row.school) {
+    // Best-effort: a duplicate assignment or a permission edge case here
+    // must not block the migration itself from completing — the role and
+    // school are already correctly set above either way.
+    await supabase.from("school_officer_assignments")
+      .insert({ officer_id: profileId, school: row.school })
+      .then(() => {}, () => {});
+  }
+  const { error: rpcErr } = await supabase.rpc("complete_legacy_migration", {
+    p_identifier: row.identifier, p_profile_id: profileId,
+  });
+  if (rpcErr) throw new Error(authMessage(rpcErr));
+}
+
+async function setLegacyStatus(id, status) {
+  const { error } = await supabase.from("legacy_account_migrations").update({ status }).eq("id", id);
+  if (error) throw new Error(authMessage(error));
+}
+
+function legacyMigrationPanel(currentUser) {
+  const head = `
+    <div class="panel-head-row">
+      <div>
+        <h2>${icon("logout")} Legacy account sunset</h2>
+        <p class="panel-sub" style="margin-bottom:0">Staff accounts detected signing in through the old local system — see supabase/LEGACY-SUNSET.md</p>
+      </div>
+      ${collapseBtn("legacy")}
+    </div>`;
+  const wrap = (inner) => `<div class="panel" style="margin-top:1.5rem" data-legacy-panel>${head}${collapseBody("legacy", inner)}</div>`;
+
+  if (!legacyMigrationsLoaded) return wrap(`<div class="empty-state">Loading legacy accounts…</div>`);
+  if (legacyMigrationsError) {
+    return wrap(`<div class="empty-state">Could not load legacy accounts — ${esc(legacyMigrationsError)}
+      <div style="margin-top:.6rem"><button class="btn btn-outline btn-xs" data-legacy-retry>${icon("refresh")} Try again</button></div>
+    </div>`);
+  }
+
+  const rows = legacyMigrationsCache;
+  const counts = rows.reduce((m, r) => ((m[r.status] = (m[r.status] || 0) + 1), m), {});
+  const remaining = rows.filter((r) => !["migrated", "already_has_account", "declined", "obsolete"].includes(r.status)).length;
+
+  const metrics = [
+    { icon: "users", label: "Detected (all-time)", value: `${rows.length}`, empty: !rows.length, period: "Since this shipped — see the note above", source: "legacy_account_migrations" },
+    { icon: "clock", label: "Awaiting migration", value: `${remaining}`, empty: !remaining, period: "Detected or invited, not yet resolved", source: "detected · invited" },
+    { icon: "check", label: "Migrated", value: `${counts.migrated || 0}`, empty: !counts.migrated, period: "All-time", source: "migrated" },
+    { icon: "info", label: "Already had a real account", value: `${counts.already_has_account || 0}`, empty: !counts.already_has_account, period: "No invite needed", source: "already_has_account" },
+  ];
+  const grid = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:1rem">${metrics.map(x360MetricCard).join("")}</div>`;
+
+  const sunsetDate = legacySunsetConfig?.sunset_date;
+  const sunsetBanner = remaining === 0 && rows.length
+    ? `<div class="empty-state" style="border-color:var(--success,#1a7f37)">${icon("check")} Zero legacy accounts remaining out of ${rows.length} detected. The legacy sign-in path (legacyLogin, User management's local rows, hpf_users) can now be considered for removal — a separate, explicit request, not automatic.</div>`
+    : "";
+
+  const list = rows.length
+    ? rows.map((r) => {
+        const canComplete = r.status === "invited";
+        const canRetire = !["migrated", "declined", "obsolete"].includes(r.status);
+        return `<div class="submission"><div style="flex:1;min-width:0">
+          <div class="s-title">${esc(r.full_name || r.identifier)} <span style="opacity:.7">· ${esc(r.identifier)}</span>${r.legacy_role ? " · " + esc(ROLE_LABEL[r.legacy_role] || r.legacy_role) : ""}</div>
+          <div class="s-meta">${r.school ? "School: " + esc(r.school) + " · " : ""}Seen ${r.login_count}× · last ${timeAgo(new Date(r.last_login_at).getTime())}${r.confirmed_email ? " · invited at " + esc(r.confirmed_email) : ""}</div>
+        </div>
+        <span class="pill ${LEGACY_STATUS_PILL[r.status] || "role-pill"}">${esc(LEGACY_STATUS_LABEL[r.status] || r.status)}</span>
+        <div class="utx-actions" style="margin-left:.5rem">
+          ${canComplete ? `<button class="btn btn-primary btn-xs" data-legacy-complete="${r.id}">${icon("userCheck")} Complete migration</button>` : ""}
+          ${canRetire ? `<button class="icon-btn" data-legacy-decline="${r.id}" title="Mark declined — this person isn't migrating">✕</button>
+          <button class="icon-btn danger" data-legacy-obsolete="${r.id}" title="Mark obsolete — no longer in use">${icon("trash")}</button>` : ""}
+        </div></div>`;
+      }).join("")
+    : `<div class="empty-state">No legacy sign-ins detected yet.</div>`;
+
+  const sunsetForm = `
+    <div class="s-meta" style="margin-top:1rem;display:flex;gap:.75rem;flex-wrap:wrap;align-items:center">
+      <strong>Sunset target:</strong> ${sunsetDate ? esc(sunsetDate) : "not set"}
+      <button class="btn btn-outline btn-xs" data-legacy-sunset-toggle>${icon("pen")} ${sunsetDate ? "Change" : "Set a date"}</button>
+    </div>
+    <form id="legacySunsetForm" class="add-user-form" ${legacySunsetEditOpen ? "" : "hidden"}>
+      <div class="form-row">
+        <div class="field"><label>Sunset date</label><input class="input" type="date" name="sunset_date" value="${sunsetDate || ""}"></div>
+        <div class="field" style="flex:2"><label>Note</label><input class="input" name="note" value="${esc(legacySunsetConfig?.note || "")}" placeholder="e.g. target for retiring legacyLogin() once 0 remain"></div>
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="btn btn-primary btn-sm">Save</button>
+        <button type="button" class="btn btn-outline btn-sm" data-legacy-sunset-cancel>Cancel</button>
+      </div>
+    </form>`;
+
+  return wrap(`${grid}${sunsetBanner}${x360Section(`Detected accounts (${rows.length})`, "users", list)}${sunsetForm}`);
+}
+
 /* ---------------------------------------------------------- user management
 
    The account list, with `profiles` (Postgres) as the source of truth.
@@ -3532,7 +3821,7 @@ function userManagementPanel(currentUser) {
       <form id="addUserForm" class="add-user-form" hidden>
         <div class="form-row">
           <div class="field"><label>Full name</label>
-            <input class="input" name="fullName" type="text" required placeholder="e.g. Grace Achieng"></div>
+            <input class="input" name="fullName" type="text" required aria-required="true" placeholder="e.g. Grace Achieng"></div>
           <div class="field"><label>Role</label>
             <select class="select" name="role" data-newuser-role>${roleOpts("teacher")}</select></div>
         </div>
@@ -3610,7 +3899,7 @@ function editUserModal(u, currentUser) {
 
   const localFields = `
     <div class="form-row">
-      <div class="field"><label>Username</label><input class="input" name="username" value="${esc(u.username || "")}" required></div>
+      <div class="field"><label>Username</label><input class="input" name="username" value="${esc(u.username || "")}" required aria-required="true"></div>
       <div class="field"><label>Password</label>
         <div class="pw-edit"><input class="input" name="password" type="password" value="" minlength="6" placeholder="leave blank to keep the current one">
           <button class="btn btn-outline btn-xs" type="button" data-editpw-toggle>${icon("eye")} Show</button></div></div>
@@ -3632,14 +3921,14 @@ function editUserModal(u, currentUser) {
 
   return `
     <div class="modal-overlay" data-edit-overlay>
-      <div class="modal" role="dialog" aria-modal="true">
+      <div class="modal" role="dialog" aria-modal="true" aria-label="Edit ${u.local ? "learner" : "account"}">
         <div class="modal-head">
           <div><h2>Edit ${u.local ? "learner" : "account"}</h2>
             <p class="panel-sub" style="margin:0">${esc(u.fullName || u.username || "")} · ${u.local ? "this device only" : "HPF database"}</p></div>
           <button class="icon-btn" data-edit-close aria-label="Close">✕</button>
         </div>
         <form id="editUserForm" class="modal-body" data-uid="${u.id}" data-local="${u.local ? "1" : "0"}">
-          <div class="field"><label>Full name</label><input class="input" name="fullName" value="${esc(u.fullName || "")}" required></div>
+          <div class="field"><label>Full name</label><input class="input" name="fullName" value="${esc(u.fullName || "")}" required aria-required="true"></div>
           ${u.local ? localFields : remoteFields}
         </form>
         <div class="modal-foot">
@@ -3648,40 +3937,6 @@ function editUserModal(u, currentUser) {
         </div>
       </div>
     </div>`;
-}
-
-/* ---------------------------------------------------------- Kolibri helpers */
-function contentCard(r) {
-  const k = CONTENT_KINDS[r.kind] || CONTENT_KINDS.reading;
-  const done = r.progress >= 100;
-  return `<button class="kcard" data-resource-id="${r.id}" data-title="${esc(r.title)}"
-      data-channel="${esc(r.channel)}" data-kind="${esc(r.kind)}">
-    <div class="kthumb" style="background:${k.color}">
-      ${icon(k.icon)}
-      <span class="kkind">${k.label}</span>
-      ${done ? `<span class="kdone">${icon("check")}</span>` : ""}
-    </div>
-    <div class="kcard-body">
-      <div class="kcard-title">${esc(r.title)}</div>
-      <div class="kcard-meta">${esc(r.channel)} · ${esc(r.duration)}</div>
-      <div class="kprogress" title="${r.progress}% complete">
-        <div class="kprogress-fill" data-kfill style="width:${r.progress}%"></div>
-      </div>
-    </div>
-  </button>`;
-}
-
-function cardRow(items) {
-  return `<div class="kcard-grid">${items.map(contentCard).join("")}</div>`;
-}
-
-function subTabs(tabs, active) {
-  return `<div class="ksubtabs">${tabs
-    .map(
-      (t) =>
-        `<button class="ksubtab ${t.id === active ? "active" : ""}" data-subtab="${t.id}">${t.label}</button>`
-    )
-    .join("")}</div>`;
 }
 
 /* vertical icon rail used down the left of the teacher & learner dashboards.
@@ -3842,7 +4097,7 @@ function digitalLibraryPanel() {
       <form id="libForm" class="add-user-form" ${adminLibOpen ? "" : "hidden"}>
         <div class="form-row">
           <div class="field"><label>Title</label>
-            <input class="input" name="title" required maxlength="120" placeholder="e.g. Grade 4 Numeracy Workbook"></div>
+            <input class="input" name="title" required aria-required="true" maxlength="120" placeholder="e.g. Grade 4 Numeracy Workbook"></div>
           <div class="field"><label>Category</label>
             <select class="select" name="category">${catOpts}</select></div>
         </div>
@@ -4045,6 +4300,68 @@ const RETURN_LABELS = {
 };
 const returnLabel = (k) => RETURN_LABELS[k] || k;
 const showVal = (v) => (v === null || v === undefined || v === "" ? "—" : String(v));
+
+/* ---------------------------------------------------------- attendance provenance (patch-32)
+   school_returns.attendance_rate is no longer a number somebody typed and
+   nobody could check. patch-32's trigger derives it from attendance_records
+   whenever real marks exist for that school+term, and records exactly where
+   the figure came from. These three states are the only ones possible, and
+   every place a rate is shown says which one it is — see supabase/ATTENDANCE.md.
+
+     calculated — computed by hpf_attendance_stats() from real daily marks
+     manual     — typed on the return, with no marks behind it
+     (missing)  — nothing recorded and nothing typed; never rendered as 0% */
+const ATT_SOURCE = {
+  calculated: { label: "Calculated", pill: "synced", icon: "check" },
+  manual: { label: "Manually entered", pill: "role-pill", icon: "pen" },
+};
+const attSourceOf = (r) => (r && r.attendance_source) || null;
+
+/* One line explaining a specific return's attendance figure, in the words
+   the definition itself uses, so the number is always reproducible by hand
+   from what is on screen. */
+function attendanceProvenance(r) {
+  if (!r || r.attendance_rate == null) return "No attendance recorded for this term";
+  if (attSourceOf(r) === "calculated") {
+    const present = r.attendance_present ?? 0;
+    const expected = r.attendance_expected ?? 0;
+    const excused = r.attendance_excused ?? 0;
+    return `Calculated from ${present} attended of ${expected} expected mark${expected === 1 ? "" : "s"}`
+      + `${excused ? ` (${excused} excused, excluded)` : ""}`
+      + `${r.attendance_learners ? ` across ${r.attendance_learners} learner${r.attendance_learners === 1 ? "" : "s"}` : ""}`
+      + " · attendance_records";
+  }
+  return "Manually entered on the termly return — no daily attendance marks recorded for this term";
+}
+
+function attendanceBadge(r) {
+  const s = ATT_SOURCE[attSourceOf(r)];
+  if (!s) return "";
+  return `<span class="pill ${s.pill}" title="${esc(attendanceProvenance(r))}">${icon(s.icon)} ${s.label}</span>`;
+}
+
+/* The attendance field on the termly return form. When the database can
+   already prove the figure from daily marks, the input is replaced by the
+   calculated value — there is nothing to type, and no way to type
+   something that contradicts it (the trigger would discard it anyway; this
+   just stops a head wasting the effort and being confused by the result). */
+function attendanceField(existing) {
+  if (existing && attSourceOf(existing) === "calculated") {
+    return `<div class="field">
+      <label>Average attendance rate (%)</label>
+      <div class="input" style="display:flex;align-items:center;gap:.5rem;background:var(--muted,#f3f4f6)">
+        <strong>${existing.attendance_rate}%</strong> ${attendanceBadge(existing)}
+      </div>
+      <p class="s-meta" style="margin:.35rem 0 0">${esc(attendanceProvenance(existing))}</p>
+    </div>`;
+  }
+  const val = existing && existing.attendance_rate != null ? existing.attendance_rate : "";
+  return `<div class="field">
+    <label>Average attendance rate (%)</label>
+    <input class="input" type="number" min="0" max="100" name="attendance_rate" value="${val === "" ? "" : esc(String(val))}">
+    <p class="s-meta" style="margin:.35rem 0 0">Only needed while this school isn't marking daily attendance — once it does, this is calculated automatically from those records.</p>
+  </div>`;
+}
 const returnsForSchool = (school) => returnsCache.filter((r) => r.school === school);
 const enrolTotal = (r) => (+r.boys || 0) + (+r.girls || 0);
 
@@ -4079,6 +4396,13 @@ function aggregateReturns(rows) {
     dropoutRate: enrolled ? +((dropouts / enrolled) * 100).toFixed(1) : 0,
     reasons: Object.entries(reasons).sort((a, b) => b[1] - a[1]),
     attendance: weighted("attendance_rate"),
+    // patch-32: an aggregate can mix rates derived from real daily marks
+    // with rates a head typed. Averaging them is still the right number to
+    // show, but how much of it is provable is a fact the reader needs —
+    // so it travels with the figure instead of being lost in the mean.
+    attendanceCalculated: rows.filter((r) => r.attendance_rate != null && r.attendance_source === "calculated").length,
+    attendanceManual: rows.filter((r) => r.attendance_rate != null && r.attendance_source !== "calculated").length,
+    attendanceMissing: rows.filter((r) => r.attendance_rate == null).length,
     mean: weighted("mean_score"),
     classrooms: sum("classrooms"), desks: sum("desks"), toilets: sum("toilets"),
     computers: sum("computers"),
@@ -4444,17 +4768,17 @@ function schoolForm(existing) {
   return `<form id="schoolForm" class="add-user-form" data-id="${existing ? esc(existing.id) : ""}">
     <div class="form-row">
       <div class="field"><label>School name</label>
-        <input class="input" name="name" type="text" required placeholder="e.g. Meru Primary School" value="${existing ? esc(existing.name) : ""}"></div>
+        <input class="input" name="name" type="text" required aria-required="true" placeholder="e.g. Meru Primary School" value="${existing ? esc(existing.name) : ""}"></div>
       <div class="field"><label>County</label>
-        <select class="select" name="county" required>
+        <select class="select" name="county" required aria-required="true">
           <option value="">Select county</option>${countyOpts}
         </select></div>
     </div>
     <div class="form-row">
       <div class="field"><label>Latitude</label>
-        <input class="input" name="lat" type="number" step="any" required placeholder="e.g. 0.0463" value="${existing ? existing.lat : ""}"></div>
+        <input class="input" name="lat" type="number" step="any" required aria-required="true" placeholder="e.g. 0.0463" value="${existing ? existing.lat : ""}"></div>
       <div class="field"><label>Longitude</label>
-        <input class="input" name="lng" type="number" step="any" required placeholder="e.g. 37.6559" value="${existing ? existing.lng : ""}"></div>
+        <input class="input" name="lng" type="number" step="any" required aria-required="true" placeholder="e.g. 37.6559" value="${existing ? existing.lng : ""}"></div>
     </div>
     <div class="add-user-actions">
       <button class="btn btn-primary btn-xs" type="submit">${icon("check")} ${existing ? "Save changes" : "Add school"}</button>
@@ -4546,7 +4870,7 @@ function schoolProgrammesPanel(school) {
   const form = programmeFormOpen ? `
     <form id="programmeForm" data-school-id="${esc(school.id)}" style="margin-top:.6rem">
       <div class="form-row">
-        <div class="field"><label>Programme</label><input class="input" name="programme" required placeholder="e.g. Micro Enterprise Programme"></div>
+        <div class="field"><label>Programme</label><input class="input" name="programme" required aria-required="true" placeholder="e.g. Micro Enterprise Programme"></div>
         <div class="field"><label>Status</label>
           <select class="select" name="status">
             <option value="planned">Planned</option>
@@ -4844,9 +5168,13 @@ function kpiCard(k) {
     </div>
 
     <div class="kpi-figures">
-      <span class="kpi-value">${countNum(k.value, k.suffix || "", k.compact)}</span>
+      <span class="kpi-value"${k.missing ? ' style="font-size:1rem;color:var(--muted-foreground);font-weight:600"' : ""}>${
+        k.missing ? "Not recorded" : countNum(k.value, k.suffix || "", k.compact)
+      }</span>
       <span class="kpi-target">${zeroGoal ? "target: clear all" : k.target ? `of ${k.target.toLocaleString()} target` : "no target set"}</span>
     </div>
+    ${k.badge ? `<div style="margin:.35rem 0">${k.badge}</div>` : ""}
+    ${k.note ? `<div class="s-meta" style="opacity:.75">${esc(k.note)}</div>` : ""}
 
     <div class="kpi-bar" role="progressbar" aria-valuenow="${fill}" aria-valuemin="0" aria-valuemax="100"
          aria-label="${esc(k.label)} progress to target">
@@ -5356,7 +5684,12 @@ function returnsScorecardPanel() {
      <div class="scd-kpis" style="margin-top:1rem">
        ${tile("Learners per teacher", a.learnersPerTeacher, `${a.tsc + a.nonTsc} teachers`)}
        ${tile("Learners per classroom", a.learnersPerClassroom, a.classrooms ? `${a.classrooms} classrooms` : "not reported")}
-       ${tile("Attendance", a.attendance === null ? null : a.attendance + "%", "enrolment-weighted")}
+       ${tile("Attendance", a.attendance === null ? null : a.attendance + "%",
+         // patch-32: say how much of this average is provable from daily
+         // marks rather than presenting a mixed figure as uniformly solid.
+         a.attendance === null
+           ? "no attendance recorded"
+           : `enrolment-weighted · ${a.attendanceCalculated} calculated, ${a.attendanceManual} manual${a.attendanceMissing ? `, ${a.attendanceMissing} missing` : ""}`)}
        ${tile("Learners per computer", a.learnersPerComputer, a.computers ? `${a.computers} devices` : "none reported")}
      </div>`,
     "returns",
@@ -5643,9 +5976,9 @@ function adminScorecard(s) {
         <div class="form-row">
           <div class="field"><label>Pillar</label><select class="select" name="pillar">${pillarOpts}</select></div>
           <div class="field"><label>Activity / indicator name</label>
-            <input class="input" name="name" required maxlength="80" placeholder="e.g. Girls' club attendance"></div>
+            <input class="input" name="name" required aria-required="true" maxlength="80" placeholder="e.g. Girls' club attendance"></div>
           <div class="field"><label>Score (0–100)</label>
-            <input class="input" name="value" type="number" min="0" max="100" value="75" required></div>
+            <input class="input" name="value" type="number" min="0" max="100" value="75" required aria-required="true"></div>
         </div>
         <div class="add-user-actions"><button class="btn btn-primary" type="submit">${icon("plus")} Add activity</button></div>
       </form>
@@ -5671,8 +6004,13 @@ function adminScorecard(s) {
    score. Mirrors how the field officer's fake "health score" became a real
    "last visit" fact in an earlier pass: same principle, different data. */
 function schoolStatus(latestReturn) {
-  if (!latestReturn || latestReturn.attendance_rate == null)
-    return { key: "grey", label: "No return filed" };
+  // Two genuinely different greys, separated since patch-32 made "filed but
+  // no attendance recorded" a normal state rather than an oddity: a school
+  // that has filed nothing is a chasing problem, a school whose return
+  // carries no attendance figure is a data-collection one.
+  if (!latestReturn) return { key: "grey", label: "No return filed" };
+  if (latestReturn.attendance_rate == null)
+    return { key: "grey", label: "No attendance recorded" };
   const att = latestReturn.attendance_rate;
   const enrolled = (latestReturn.boys || 0) + (latestReturn.girls || 0);
   const dropoutRate = enrolled ? ((latestReturn.dropouts || 0) / enrolled) * 100 : 0;
@@ -5703,10 +6041,15 @@ function programmeOverview(s) {
     return { school: sch, latest, learners, teachers, status: schoolStatus(latest) };
   });
 
-  const attendanceValues = schoolRows.map((r) => r.latest?.attendance_rate).filter((v) => v != null);
-  const avgAttendance = attendanceValues.length
-    ? Math.round(attendanceValues.reduce((a, b) => a + b, 0) / attendanceValues.length)
+  // Only schools whose latest return actually carries an attendance figure
+  // count toward the programme mean — a school with none is absent from the
+  // average, never folded in as a zero. patch-32 also lets this say how many
+  // of those figures are derived from real daily marks.
+  const attendanceRows = schoolRows.map((r) => r.latest).filter((r) => r && r.attendance_rate != null);
+  const avgAttendance = attendanceRows.length
+    ? Math.round(attendanceRows.reduce((a, r) => a + r.attendance_rate, 0) / attendanceRows.length)
     : null;
+  const attCalculated = attendanceRows.filter((r) => r.attendance_source === "calculated").length;
 
   const tiles = [
     { label: "Schools", icon: "school", value: schools.length },
@@ -5724,15 +6067,21 @@ function programmeOverview(s) {
     { label: "Learning", value: s.subs.length ? s.avgScore : null, color: "oklch(52% 0.14 148)" },
     { label: "Teacher ICT", value: null, color: "oklch(55% 0.15 300)" },
     { label: "Digital Use", value: null, color: "oklch(68% 0.17 155)" },
-    { label: "Attendance", value: avgAttendance, color: "oklch(62% 0.19 250)" },
+    { label: "Attendance", value: avgAttendance, color: "oklch(62% 0.19 250)",
+      note: attendanceRows.length
+        ? `${attendanceRows.length} school${attendanceRows.length === 1 ? "" : "s"} · ${attCalculated} calculated from daily records, ${attendanceRows.length - attCalculated} manually entered`
+        : null },
   ];
   const meterHtml = meters
     .map((m) => (m.value == null
       ? `<div class="hbar"><div class="hbar-top"><span>${esc(m.label)}</span><span class="ov-untracked">not yet tracked</span></div></div>`
-      : hbar(m.label, m.value, 100, m.color, "%")))
+      : hbar(m.label, m.value, 100, m.color, "%")
+        + (m.note ? `<div class="s-meta" style="opacity:.75;margin:-.35rem 0 .6rem">${esc(m.note)}</div>` : "")))
     .join("");
 
-  const statusLabel = { green: "On track", amber: "Needs attention", red: "At risk", grey: "No return filed" };
+  // Grey now covers two distinct facts (see schoolStatus), so the table
+  // shows the status' own label rather than one hardcoded grey string.
+  const statusLabel = { green: "On track", amber: "Needs attention", red: "At risk" };
   const tableHtml = schoolRows.length
     ? schoolRows
         .map(
@@ -5741,7 +6090,7 @@ function programmeOverview(s) {
             <div class="utx-cell">${countNum(r.learners)}</div>
             <div class="utx-cell">${countNum(r.teachers)}</div>
             <div class="utx-cell ov-untracked">—</div>
-            <div class="utx-cell"><span class="status-dot ${r.status.key}" title="${esc(statusLabel[r.status.key])}"></span> ${esc(statusLabel[r.status.key])}</div>
+            <div class="utx-cell"><span class="status-dot ${r.status.key}" title="${esc(statusLabel[r.status.key] || r.status.label)}"></span> ${esc(statusLabel[r.status.key] || r.status.label)}</div>
           </div>`
         )
         .join("")
@@ -5943,6 +6292,7 @@ function adminBody(ctx) {
     ${safeRender("Interventions", () => interventionsPanel())}
     ${safeRender("Data pipeline", () => koboPipelinePanel())}
     ${safeRender("Audit log", () => auditLogPanel())}
+    ${safeRender("Legacy account sunset", () => legacyMigrationPanel(ctx.user))}
     ${safeRender("User management", () => userManagementPanel(ctx.user))}
     ${safeRender("Digital library", () => digitalLibraryPanel())}
     <div class="panel" style="margin-top:1.5rem">
@@ -6163,6 +6513,7 @@ function learnerAssignmentsFolder(userId) {
       ${total ? "" : `<div class="empty-state">Nothing assigned yet.<br>When your teacher publishes a lesson, quiz, assessment, or resource, it appears here right away.</div>`}
       ${summary}
       ${learnerListOpen ? fullList : ""}
+      <div class="s-meta" style="opacity:.75;margin-top:1rem">Source: assignments · assignment_results · assessments · submissions — your own recorded work only</div>
     </div>`;
 }
 
@@ -6244,55 +6595,68 @@ function openAssessModal(classId, assessId, userId, onDone) {
   });
 }
 
-function learnerBody(ctx) {
-  const d = DASH.learner;
-  const k = KOLIBRI.learner;
-  const liveHtml = liveSessionPanel(ctx?.user?.id);
+/* Real learner stats — a rollup of what learnerAssignments() already
+   returns, nothing fabricated. Reuses x360MetricCard (the same
+   read-only, "not yet tracked"-capable tile the Kobo pipeline and legacy
+   sunset panels use) rather than the KPI-with-navigation-action
+   statTiles()/kpiCard(), which expects a real target/href per tile — a
+   shape this data doesn't have and shouldn't pretend to. See
+   supabase/LEARNER-EXPERIENCE-SPEC.md §"6. Progress" and §"12. Achievements"
+   for why there's no streak/badge/course-progress tile here. */
+function learnerRealStats(userId) {
+  const { assignments, assessments, resources } = learnerAssignments(userId);
+  const assignDone = assignments.filter(({ result }) => result.pct >= 100).length;
+  const submitted = assessments.filter(({ submission }) => submission);
+  const scores = submitted.map(({ submission }) => submission.pct).filter((v) => typeof v === "number");
+  const avgScore = scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : null;
+  // The latest real submission across every assessment — an honest
+  // "when was this last true", not a fabricated freshness figure.
+  const lastAt = submitted.map(({ submission }) => submission.at).filter(Boolean).sort((a, b) => b - a)[0] || null;
 
-  // computed insights: nearly-done resource, weakest course, streak nudge
-  const inProgress = k.continue.filter((r) => r.progress > 0 && r.progress < 100);
-  const almostDone = inProgress.sort((a, b) => b.progress - a.progress)[0];
-  const weakest = [...d.courses].sort((a, b) => a.progress - b.progress)[0];
-  const streak = d.stats.find((s) => s.label === "Day streak")?.count || 0;
-  const smart = insights([
-    almostDone && {
-      icon: "target", tone: "good",
-      html: `You're <strong>${100 - almostDone.progress}% away</strong> from finishing “<strong>${esc(almostDone.title)}</strong>” — a quick session will complete it.`,
-    },
-    weakest && {
-      icon: "lightbulb", tone: "warn",
-      html: `<strong>${esc(weakest.name)}</strong> is your least-advanced course (${weakest.progress}%). Try one lesson today to keep it moving.`,
+  return [
+    {
+      icon: "clipboard", label: "Assignments completed",
+      value: `${assignDone} of ${assignments.length}`,
+      empty: !assignments.length,
+      period: assignments.length ? "counted from your own recorded results" : "nothing assigned to you yet",
+      source: "assignment_results · assignments",
     },
     {
-      icon: "flame", tone: "",
-      html: `Your streak is <strong>${streak} days</strong> — learn anything today to make it ${streak + 1}.`,
+      icon: "check", label: "Assessments taken",
+      value: `${scores.length} of ${assessments.length}`,
+      empty: !assessments.length,
+      period: scores.length ? `${scores.length} submitted, ${assessments.length - scores.length} outstanding` : "none submitted yet",
+      source: "submissions · assessments",
+      updated: lastAt,
     },
-  ].filter(Boolean));
+    {
+      icon: "trophy", label: "Average score",
+      value: avgScore === null ? "" : `${avgScore}%`,
+      // Deliberately empty rather than 0% when nothing has been submitted:
+      // "0%" is a claim about performance, "No data yet" is the truth.
+      empty: avgScore === null,
+      period: avgScore === null ? "not yet tracked — no submitted assessments" : `mean of ${scores.length} auto-marked submission${scores.length === 1 ? "" : "s"}`,
+      source: "submissions.pct",
+      updated: lastAt,
+    },
+    {
+      icon: "library", label: "Resources shared with you",
+      value: `${resources.length}`,
+      empty: !resources.length,
+      period: resources.length ? "shared by your teacher to you or your class" : "none shared yet",
+      source: "class resources · digital_learning",
+    },
+  ];
+}
 
-  const classCards = k.classes
-    .map(
-      (c) => `<button class="kclass" data-class="${esc(c.name)}">
-        <span class="kclass-badge" style="background:${c.color}">${icon("graduation")}</span>
-        <span class="kclass-body">
-          <span class="kclass-name">${esc(c.name)}</span>
-          <span class="kclass-meta">${esc(c.teacher)} · ${c.count} resources</span>
-        </span>
-        ${icon("arrowRight")}
-      </button>`
-    )
-    .join("");
-
-  const channelChips = k.channels
-    .map(
-      (c, i) => `<button class="kchip ${i === 0 ? "active" : ""}" data-channel="${esc(c)}">${esc(c)}</button>`
-    )
-    .join("");
-
-  const assignFolder = learnerAssignmentsFolder(ctx?.user?.id);
+function learnerBody(ctx) {
+  const userId = ctx?.user?.id;
+  const statsGrid = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:1rem">${learnerRealStats(userId).map(x360MetricCard).join("")}</div>`;
+  const liveHtml = liveSessionPanel(userId);
+  const assignFolder = learnerAssignmentsFolder(userId);
 
   return `
-    ${statTiles(d.stats)}
-    ${smart}
+    ${statsGrid}
     <div class="dash-shell">
       ${sideNav(
         [
@@ -6308,10 +6672,37 @@ function learnerBody(ctx) {
           ${assignFolder}
         </div>
         <div data-subpanel="resources" hidden>
-          ${learnerResources(ctx?.user?.id)}
+          ${learnerResources(userId)}
         </div>
       </div>
     </div>`;
+}
+
+/* ---------------------------------------------------------- learner kiosk mode (patch-31)
+   Option D from LEARNER-EXPERIENCE-SPEC.md §4: learners hold no
+   credential at all. The device stays signed in as the teacher —
+   kioskLearner below is pure client-side UI state, never a session swap.
+   Contrast with enterAccount()/K_IMPERSONATE just below, which DOES swap
+   K_SESSION and only ever applies to a locally-registered hpf_users
+   learner (a different, older mechanism this doesn't replace or touch).
+
+   Every read/write made while a kiosk is open still goes out under the
+   teacher's own real Supabase session — learnerBody()/learnerAssignments()
+   are called completely unchanged, just with a specific roster learner's
+   real id instead of ctx.user.id. Nothing new was granted to make this
+   possible: owns_class()/teaches_learner()/activity_visible() (already
+   live) are what actually authorize every one of these reads and writes;
+   this only adds a UI path that uses them the way they already anticipate. */
+let kioskLearner = null; // { id, name, school } | null — set from coachLearnerDetail()'s "View their real dashboard"
+
+function learnerKioskShell(learner) {
+  return `
+    <div class="impersonate-banner" data-kiosk-banner>
+      ${icon("userCheck")}
+      <span>Viewing <strong>${esc(learner.name)}</strong>'s real learner dashboard — your own account is still signed in, and every action here is recorded as yours on their behalf.</span>
+      <button class="btn btn-primary btn-xs" data-kiosk-exit>${icon("arrowLeft")} Back to my view</button>
+    </div>
+    ${learnerBody({ user: { id: learner.id, fullName: learner.name, role: "learner", school: learner.school || "" } })}`;
 }
 
 /* Learning Resources for a learner: Digital Library (shared + published),
@@ -6358,6 +6749,7 @@ function learnerResources(userId) {
       <div data-lr-panel="library">${list(libraryRows, "No resources shared yet — your teacher and HPF will add them here.")}</div>
       <div data-lr-panel="numeracy" hidden>${list(numeracyRows, "No numeracy resources yet.")}</div>
       <div data-lr-panel="literacy" hidden>${list(literacyRows, "No literacy resources yet.")}</div>
+      <div class="s-meta" style="opacity:.75;margin-top:1rem">Source: digital_learning (published) + resources your teacher shared with your class</div>
     </div>`;
 }
 
@@ -6592,9 +6984,20 @@ async function syncResults() {
       for (const a of c.assessments) {
         const pending = (a.submissions || []).filter((s) => !s._syncedId);
         if (!pending.length) continue;
+        // patch-33: send the learner id when this device genuinely holds a
+        // real one (c.learners[].id falls back to the enrollment's own id
+        // when a roster entry has no stable identity — sending that would
+        // violate the FK). Otherwise send nothing at all rather than an
+        // explicit null: submissions_resolve_learner() then resolves it
+        // against the class roster, and files a review row if it cannot.
+        // Passing null explicitly would be identical here, but omitting it
+        // keeps the intent honest — the database decides, not this client.
+        const realLearnerRowIds = new Set(c.learners.filter((l) => l.id !== l._enrollmentId).map((l) => l.id));
         const { data: rows, error } = await supabase.from("submissions").insert(
           pending.map((s) => ({
-            assessment_id: a.id, learner_id: null, name: s.name,
+            assessment_id: a.id,
+            ...(s.learnerId && realLearnerRowIds.has(s.learnerId) ? { learner_id: s.learnerId } : {}),
+            name: s.name,
             answers: s.answers, correct: s.correct, total: s.total, pct: s.pct,
             created_at: s.at ? new Date(s.at).toISOString() : undefined,
           }))
@@ -6908,7 +7311,7 @@ function planForm(cls, classes, editing) {
           <div class="field"><label>Type</label>
             <select class="select" name="type">${typeOpts}</select></div>
           <div class="field"><label>Title</label>
-            <input class="input" name="title" required value="${esc(editing.title)}"></div>
+            <input class="input" name="title" required aria-required="true" value="${esc(editing.title)}"></div>
         </div>
         <div class="form-row">
           <div class="field"><label>Detail</label>
@@ -6937,7 +7340,7 @@ function planForm(cls, classes, editing) {
         <div class="field"><label>Type</label>
           <select class="select" name="type">${typeOpts}</select></div>
         <div class="field"><label>Title</label>
-          <input class="input" name="title" required placeholder="e.g. Fractions — Part 2"></div>
+          <input class="input" name="title" required aria-required="true" placeholder="e.g. Fractions — Part 2"></div>
       </div>
       <div class="form-row">
         <div class="field"><label>Assign to grade / class</label>
@@ -7249,6 +7652,13 @@ function coachLearnerDetail(list, learners, id, cls) {
     })
     .join("");
 
+  // A real learners.id exists only once a roster entry has been linked
+  // (l.id falls back to the enrollment's own id otherwise — see
+  // loadClasses()). Only then is there anything real for the kiosk to
+  // show: no real learners row means no assignment_results/submissions
+  // row could ever reference this person either.
+  const hasRealLearnerId = l.id !== l._enrollmentId;
+
   return `
     <div class="panel">
       <button class="btn btn-ghost btn-xs" data-learner-back style="margin-bottom:1rem">${icon("arrowLeft")} All learners</button>
@@ -7258,6 +7668,9 @@ function coachLearnerDetail(list, learners, id, cls) {
           <h2 style="margin:0">${esc(l.name)}</h2>
           <p class="panel-sub" style="margin:0">Last active ${esc(l.active)} · ${mine.length} assignments</p>
         </div>
+        ${hasRealLearnerId
+          ? `<button class="btn btn-outline btn-sm" style="margin-left:auto" data-view-as-learner="${l.id}" data-view-as-name="${esc(l.name)}" data-view-as-school="${esc(cls.school || "")}">${icon("externalLink")} View their real dashboard</button>`
+          : `<span class="pill" style="margin-left:auto" title="This roster entry has no linked learners row yet, so there is nothing real to show them">${icon("info")} Not yet linked to a learner record</span>`}
       </div>
       <div class="stat-row" style="margin:1.25rem 0">
         <div class="stat-tile"><div class="st-label">${icon("check")} Overall completion</div><div class="st-num">${countNum(overall, "%")}</div></div>
@@ -7324,7 +7737,7 @@ function assessBuilder(cls) {
   return `
     <form id="assessForm" class="add-user-form" ${coachState.openAssessForm ? "" : "hidden"}>
       <div class="field"><label>Assessment title</label>
-        <input class="input" name="title" required maxlength="80" placeholder="e.g. Fractions Test 1"></div>
+        <input class="input" name="title" required aria-required="true" maxlength="80" placeholder="e.g. Fractions Test 1"></div>
       <div id="assessQuestions">${questionBlock(1, "correct-q0")}</div>
       <button type="button" class="btn btn-outline btn-xs" data-add-question style="margin-bottom:1rem">${icon("plus")} Add question</button>
       <div class="add-user-actions">
@@ -7688,13 +8101,13 @@ function teacherEditUserModal(u) {
   if (!u) return "";
   return `
     <div class="modal-overlay" data-tedit-overlay>
-      <div class="modal" role="dialog" aria-modal="true">
+      <div class="modal" role="dialog" aria-modal="true" aria-label="Edit ${esc(ROLE_LABEL[u.role] || u.role)}">
         <div class="modal-head">
           <div><h2>Edit ${esc(ROLE_LABEL[u.role] || u.role)}</h2><p class="panel-sub" style="margin:0">${esc(u.fullName || u.username || "")}</p></div>
           <button class="icon-btn" data-tedit-close aria-label="Close">✕</button>
         </div>
         <form id="tEditForm" class="modal-body" data-uid="${u.id}">
-          <div class="field"><label>Full name</label><input class="input" name="fullName" value="${esc(u.fullName || "")}" required></div>
+          <div class="field"><label>Full name</label><input class="input" name="fullName" value="${esc(u.fullName || "")}" required aria-required="true"></div>
           <div class="field"><label>Username</label><input class="input" name="username" value="${esc(u.username || "")}"></div>
           <div class="field"><label>Password</label>
             <div class="pw-edit"><input class="input" name="password" type="password" value="${esc(u.password || "")}" minlength="6">
@@ -7721,7 +8134,7 @@ function classSwitcher(classes, cls) {
          <input class="input" value="${esc(locked)}" disabled>
          <input type="hidden" name="school" value="${esc(locked)}"></div>`
     : `<div class="field"><label>School (HPF-supported)</label>
-         <select class="select" name="school" required>
+         <select class="select" name="school" required aria-required="true">
            <option value="" disabled selected>Select your school</option>
            ${SCHOOLS.map((s) => `<option>${esc(s)}</option>`).join("")}
          </select></div>`;
@@ -7733,7 +8146,7 @@ function classSwitcher(classes, cls) {
     <form id="newClassForm" class="add-user-form" ${coachState.openClassForm ? "" : "hidden"}>
       <div class="form-row">
         <div class="field"><label>Class / grade name</label>
-          <input class="input" name="name" required maxlength="60" placeholder="e.g. Grade 4 — Red"></div>
+          <input class="input" name="name" required aria-required="true" maxlength="60" placeholder="e.g. Grade 4 — Red"></div>
         ${schoolField}
       </div>
       <div class="add-user-actions">
@@ -7884,7 +8297,7 @@ function addUserForm(cls) {
             <option value="learner">Learner</option>
           </select></div>
         <div class="field"><label>Full name</label>
-          <input class="input" name="fullName" required maxlength="80" placeholder="e.g. Grace Achieng"></div>
+          <input class="input" name="fullName" required aria-required="true" maxlength="80" placeholder="e.g. Grace Achieng"></div>
       </div>
       <div class="form-row">
         <div class="field" data-adduser-email><label>Email</label>
@@ -7892,7 +8305,7 @@ function addUserForm(cls) {
         <div class="field" data-adduser-username hidden><label>Username</label>
           <input class="input" name="username" maxlength="40" placeholder="e.g. grace_a"></div>
         <div class="field"><label>Password</label>
-          <input class="input" name="password" type="password" minlength="6" required placeholder="min. 6 characters"></div>
+          <input class="input" name="password" type="password" minlength="6" required aria-required="true" placeholder="min. 6 characters"></div>
       </div>
       <div class="field" data-adduser-school><label>School (required for teachers)</label>
         <select class="select" name="school">
@@ -8016,9 +8429,9 @@ function schoolReturnForm(existing, school, county) {
     <h4 class="dash-section">${icon("clipboard")} Reporting period</h4>
     <div class="form-row">
       <div class="field"><label>Term</label>
-        <select class="select" name="term" required>${sel("term", HPF_TERMS, v("term", HPF_TERMS[0]))}</select></div>
+        <select class="select" name="term" required aria-required="true">${sel("term", HPF_TERMS, v("term", HPF_TERMS[0]))}</select></div>
       <div class="field"><label>Year</label>
-        <select class="select" name="year" required>${sel("year", years, v("year", y))}</select></div>
+        <select class="select" name="year" required aria-required="true">${sel("year", years, v("year", y))}</select></div>
     </div>
 
     <h4 class="dash-section">${icon("userCheck")} Head of institution</h4>
@@ -8028,7 +8441,7 @@ function schoolReturnForm(existing, school, county) {
           ${HEAD_TITLES.map((t) => `<option ${v("head_title", leaderUser().head_title || "") === t ? "selected" : ""}>${esc(t)}</option>`).join("")}
         </select></div>
       <div class="field"><label>Full name</label>
-        <input class="input" name="head_name" required value="${esc(v("head_name", leaderUser().fullName || ""))}" placeholder="e.g. Kuyuni Sailepu"></div>
+        <input class="input" name="head_name" required aria-required="true" value="${esc(v("head_name", leaderUser().fullName || ""))}" placeholder="e.g. Kuyuni Sailepu"></div>
     </div>
     <div class="form-row">
       <div class="field"><label>Phone</label>
@@ -8060,7 +8473,7 @@ function schoolReturnForm(existing, school, county) {
     </div>
     <div class="form-row">
       ${num("learners_with_disability", "Learners with a disability", v("learners_with_disability", 0))}
-      ${num("attendance_rate", "Average attendance rate (%)", v("attendance_rate", ""), "max=100")}
+      ${attendanceField(existing)}
     </div>
 
     <h4 class="dash-section">${icon("users")} Teaching staff</h4>
@@ -8139,7 +8552,7 @@ function schoolReturnForm(existing, school, county) {
       <div class="form-row">
         <div class="field" style="grid-column:1/-1">
           <label>Why is this being corrected?</label>
-          <input class="input" name="correction_reason" required
+          <input class="input" name="correction_reason" required aria-required="true"
                  placeholder="e.g. register recount after the end-of-term audit">
           <p class="hint">This return already feeds the HPF scorecard, so the change is recorded against your name.</p>
         </div>
@@ -8286,7 +8699,9 @@ function schoolReturnsPanel(school, county) {
         <div class="utx-cell">${enrolTotal(r).toLocaleString()}<div class="utx-email">${r.boys}b · ${r.girls}g</div></div>
         <div class="utx-cell">${(+r.tsc_teachers || 0) + (+r.non_tsc_teachers || 0)}<div class="utx-email">${r.tsc_teachers} TSC</div></div>
         <div class="utx-cell">${r.dropouts || 0}<div class="utx-email">${esc(r.dropout_reason || "—")}</div></div>
-        <div class="utx-cell">${r.attendance_rate === null || r.attendance_rate === undefined ? "—" : r.attendance_rate + "%"}</div>
+        <div class="utx-cell" title="${esc(attendanceProvenance(r))}">${
+          r.attendance_rate == null ? "—" : r.attendance_rate + "%"
+        }${r.attendance_rate == null ? "" : `<div class="utx-email">${attSourceOf(r) === "calculated" ? "calculated" : "manual"}</div>`}</div>
         <div class="utx-cell utx-actions">
           <button class="icon-btn" data-return-edit="${esc(r.id)}" title="Correct this return">${icon("pen")}</button>
           <button class="icon-btn danger" data-return-delete="${esc(r.id)}" title="Delete">${icon("trash")}</button>
@@ -8348,12 +8763,19 @@ function schoolLeaderBody() {
   const stats = latest ? [
     { label: "Enrolled learners", count: latest.boys + latest.girls, icon: "graduation", href: "/assessment", actionLabel: "School progress" },
     { label: "Teaching staff", count: latest.tsc_teachers + latest.non_tsc_teachers, icon: "users", href: "/curriculum", actionLabel: "Review staff" },
-    { label: "Attendance rate", count: latest.attendance_rate ?? 0, suffix: latest.attendance_rate != null ? "%" : "", icon: "userCheck", href: "/assessment", actionLabel: "View attendance" },
+    // patch-32: never renders as 0% when missing — a term with no
+    // attendance recorded is not a term with no attendance. The card
+    // itself carries whether this figure was calculated or typed.
+    { label: "Attendance rate", count: latest.attendance_rate ?? 0, suffix: "%",
+      missing: latest.attendance_rate == null,
+      icon: "userCheck", href: "/assessment", actionLabel: "View attendance",
+      note: attendanceProvenance(latest), badge: attendanceBadge(latest) },
   ] : [];
 
   // Chronological (oldest first) across whatever terms have actually been
-  // filed — the only real "trend" this data supports; there's no daily
-  // attendance record to draw a weekly chart from.
+  // filed. Now that patch-32 derives the rate from attendance_records, a
+  // point on this trend may be calculated or manually entered; the two are
+  // labelled in the table below rather than silently mixed here.
   const chrono = [...returns].reverse().filter((r) => r.attendance_rate != null).slice(-8);
   const attTrend = chrono.map((r) => r.attendance_rate);
   const attLabels = chrono.map((r) => `${r.term} ${r.year}`);
@@ -8428,6 +8850,42 @@ export function dashboardBody(role, ctx) {
   return roleBanner(role) + (BODIES[role] || learnerBody)(ctx);
 }
 
+/* ---------------------------------------------------------- legacy migration banner
+   Shown only to a session legacyLogin() itself flagged (user.legacy — see
+   app.js). Self-service on purpose, and safe to be: signInWithOtp() with
+   shouldCreateUser:true grants nothing beyond the same self-serve role
+   public sign-up already grants (patch-01 clamps it either way) — the
+   actual role/school restoration only ever happens later, from the admin-
+   gated "Legacy account sunset" panel, via profiles.update() under
+   guard_profile_role()'s existing permission check. This banner only ever
+   starts that process; it cannot finish it on its own. */
+function legacyMigrateBanner(user) {
+  if (!user.legacy) return "";
+  if (user.legacyInviteSent) {
+    return `<div data-legacy-banner><div class="impersonate-banner">
+      ${icon("mail")}
+      <span>Check <strong>${esc(user.legacyInviteEmail || "your email")}</strong> for a link to finish setting up your account. Your role and school will be restored once an HPF Admin confirms it.</span>
+    </div></div>`;
+  }
+  return `<div data-legacy-banner>
+    <div class="impersonate-banner">
+      ${icon("alert")}
+      <span>You're signed in through the old local sign-in system — it only works on this device. <strong>Migrate to a real HPF account</strong> to sign in anywhere.</span>
+      <button class="btn btn-primary btn-xs" data-legacy-migrate-toggle>${icon("userCheck")} Migrate now</button>
+    </div>
+    <form id="legacyMigrateForm" class="add-user-form" hidden>
+      <div class="form-row">
+        <div class="field" style="flex:2"><label>Email to send your account link to</label>
+          <input class="input" type="email" name="email" value="${esc(user.email && user.email.includes("@") ? user.email : "")}" required aria-required="true"></div>
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="btn btn-primary btn-sm">Send me a link</button>
+        <button type="button" class="btn btn-outline btn-sm" data-legacy-migrate-cancel>Not now</button>
+      </div>
+    </form>
+  </div>`;
+}
+
 /* ---------------------------------------------------------- page shell */
 export function myDashboardMain(user, events) {
   const impersonator = read(K_IMPERSONATE, null);
@@ -8454,9 +8912,12 @@ export function myDashboardMain(user, events) {
       ? `Signed in as <strong>${esc(ROLE_LABEL[user.role] || user.role)}</strong>${placeBit}. Switch the view below${user.role === "teacher" ? " between your Teacher and Learner workspaces" : ""}.`
       : `Signed in as <strong>${esc(ROLE_LABEL[user.role] || user.role)}</strong>${placeBit}.`;
 
-  const topBtn = impersonator
+  // patch-34: the alerts bell sits beside sign-out, outside #dashBody, so
+  // it survives role-tab re-renders — wired in wireMyDashboard alongside
+  // the other header controls rather than in wireBody.
+  const topBtn = `<div style="display:flex;gap:.5rem;align-items:center">${notificationBell()}${impersonator
     ? `<button class="btn btn-outline" data-exit-account>${icon("login")} Exit account</button>`
-    : `<button class="btn btn-outline" data-logout>${icon("logout")} Sign out</button>`;
+    : `<button class="btn btn-outline" data-logout>${icon("logout")} Sign out</button>`}</div>`;
 
   const banner = impersonator
     ? `<div class="impersonate-banner">
@@ -8470,6 +8931,7 @@ export function myDashboardMain(user, events) {
     <section class="dash">
       <div class="container">
         ${banner}
+        ${legacyMigrateBanner(user)}
         <div class="dash-head">
           <div>
             <span class="eyebrow">My Dashboard</span>
@@ -8479,6 +8941,7 @@ export function myDashboardMain(user, events) {
           ${topBtn}
         </div>
         ${switcher}
+        <div id="notifHost">${notificationPanel()}</div>
         <div id="dashBody">${dashboardBody(current, { user, events })}</div>
       </div>
     </section>`;
@@ -8977,7 +9440,7 @@ export function wireMyDashboard(user, events) {
     // of the dashboard visibly shaking/blinking non-stop).
     if (!programmeDataLoaded) {
       const classesPromise = classesLoaded ? Promise.resolve(classesCache) : loadClasses();
-      Promise.allSettled([loadSchools(), loadReturns(), loadRevisions(), loadGrades(), loadFieldReports(), classesPromise, loadDeviceIssues(), loadMeIndicators(), loadSchoolFacilities(), loadDevices(), loadPeopleExt(), loadInterventions(), loadAuditLog(), loadKoboPipeline()]).then(() => {
+      Promise.allSettled([loadSchools(), loadReturns(), loadRevisions(), loadGrades(), loadFieldReports(), classesPromise, loadDeviceIssues(), loadMeIndicators(), loadSchoolFacilities(), loadDevices(), loadPeopleExt(), loadInterventions(), loadAuditLog(), loadKoboPipeline(), loadLegacyMigrations()]).then(() => {
         programmeDataLoaded = true;
         // Full re-render, not just renderAnalytics(): Programme Overview (a
         // sibling of the analytics panel, not inside it) reads the same
@@ -9737,6 +10200,103 @@ export function wireMyDashboard(user, events) {
       });
     }
     safeWire("Data pipeline", wireKoboPipeline);
+
+    // --- legacy account sunset ---
+    function renderLegacyMigrations() {
+      const holder = body.querySelector("[data-legacy-panel]");
+      if (!holder) return;
+      holder.outerHTML = legacyMigrationPanel(ctx.user);
+      wireLegacyMigrations();
+    }
+    function wireLegacyMigrations() {
+      const panel = body.querySelector("[data-legacy-panel]");
+      if (!panel) return;
+      panel.querySelector("[data-legacy-retry]")?.addEventListener("click", () => {
+        legacyMigrationsLoaded = false;
+        renderLegacyMigrations();
+        loadLegacyMigrations().then(renderLegacyMigrations);
+      });
+      panel.querySelectorAll("[data-legacy-complete]").forEach((btn) =>
+        btn.addEventListener("click", async () => {
+          const row = legacyMigrationsCache.find((r) => r.id === btn.dataset.legacyComplete);
+          if (!row) return;
+          btn.disabled = true;
+          try {
+            await completeLegacyMigration(row);
+            await loadLegacyMigrations();
+            toast("Migrated", `${row.full_name || row.identifier} now has a real HPF account with their role and school restored.`, "success");
+            renderLegacyMigrations();
+          } catch (err) {
+            btn.disabled = false;
+            toast("Could not complete migration", err.message, "error");
+          }
+        })
+      );
+      panel.querySelectorAll("[data-legacy-decline]").forEach((btn) =>
+        btn.addEventListener("click", async () => {
+          const row = legacyMigrationsCache.find((r) => r.id === btn.dataset.legacyDecline);
+          if (!row) return;
+          btn.disabled = true;
+          try {
+            await setLegacyStatus(row.id, "declined");
+            await loadLegacyMigrations();
+            toast("Marked declined", `${row.full_name || row.identifier} will not be migrated.`, "success");
+            renderLegacyMigrations();
+          } catch (err) {
+            btn.disabled = false;
+            toast("Could not update", err.message, "error");
+          }
+        })
+      );
+      panel.querySelectorAll("[data-legacy-obsolete]").forEach((btn) =>
+        btn.addEventListener("click", async () => {
+          const row = legacyMigrationsCache.find((r) => r.id === btn.dataset.legacyObsolete);
+          if (!row) return;
+          btn.disabled = true;
+          try {
+            await setLegacyStatus(row.id, "obsolete");
+            await loadLegacyMigrations();
+            toast("Marked obsolete", `${row.full_name || row.identifier} removed from the active migration list.`, "success");
+            renderLegacyMigrations();
+          } catch (err) {
+            btn.disabled = false;
+            toast("Could not update", err.message, "error");
+          }
+        })
+      );
+      panel.querySelector("[data-legacy-sunset-toggle]")?.addEventListener("click", () => {
+        legacySunsetEditOpen = true;
+        renderLegacyMigrations();
+        panel.querySelector('#legacySunsetForm [name="sunset_date"]')?.focus();
+      });
+      panel.querySelector("[data-legacy-sunset-cancel]")?.addEventListener("click", () => {
+        legacySunsetEditOpen = false;
+        renderLegacyMigrations();
+      });
+      panel.querySelector("#legacySunsetForm")?.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const data = Object.fromEntries(new FormData(e.target).entries());
+        const submit = e.target.querySelector('[type="submit"]');
+        if (submit) submit.disabled = true;
+        try {
+          const { error } = await supabase.from("legacy_sunset_config").update({
+            sunset_date: data.sunset_date || null,
+            note: data.note || null,
+            updated_by: ctx.user.id,
+          }).eq("id", true);
+          if (error) throw new Error(authMessage(error));
+          await loadLegacyMigrations();
+          legacySunsetEditOpen = false;
+          toast("Saved", "Sunset target updated.", "success");
+          renderLegacyMigrations();
+        } catch (err) {
+          toast("Could not save", err.message, "error");
+        } finally {
+          if (submit) submit.disabled = false;
+        }
+      });
+    }
+    safeWire("Legacy account sunset", wireLegacyMigrations);
     safeWire("Master Data Management", wireMasterData);
 
     // --- edit an account (database) or a local learner (this device) ---
@@ -9993,27 +10553,6 @@ export function wireMyDashboard(user, events) {
       })
     );
 
-    // content cards — "open"/resume a resource (progress advances)
-    body.querySelectorAll("[data-resource-id]").forEach((card) =>
-      card.addEventListener("click", () => {
-        const fill = card.querySelector("[data-kfill]");
-        if (fill) {
-          const pct = Math.min(100, (parseInt(fill.style.width, 10) || 0) + 20);
-          fill.style.width = pct + "%";
-          if (pct >= 100 && !card.querySelector(".kdone")) {
-            const thumb = card.querySelector(".kthumb");
-            thumb.insertAdjacentHTML("beforeend", `<span class="kdone">${icon("check")}</span>`);
-          }
-        }
-        toast("Opening resource", `Resuming “${card.dataset.title}”.`);
-      })
-    );
-
-    // learner class cards
-    body.querySelectorAll(".kclass[data-class]").forEach((btn) =>
-      btn.addEventListener("click", () => toast("Opening class", `“${btn.dataset.class}” lessons & quizzes.`))
-    );
-
     // learner: join a live session started by their teacher
     body.querySelectorAll("[data-join-session]").forEach((btn) =>
       btn.addEventListener("click", () => {
@@ -10048,28 +10587,6 @@ export function wireMyDashboard(user, events) {
         });
       })
     );
-
-    // library: channel chips + search filter
-    const grid = body.querySelector("[data-library-grid]");
-    const chips = [...body.querySelectorAll("[data-channel].kchip")];
-    const searchEl = body.querySelector("[data-library-search]");
-    function filterLibrary() {
-      if (!grid) return;
-      const active = body.querySelector(".kchip.active")?.dataset.channel || "All";
-      const q = (searchEl?.value || "").toLowerCase().trim();
-      grid.querySelectorAll(".kcard").forEach((card) => {
-        const okChan = active === "All" || card.dataset.channel === active;
-        const okText = !q || card.dataset.title.toLowerCase().includes(q);
-        card.style.display = okChan && okText ? "" : "none";
-      });
-    }
-    chips.forEach((chip) =>
-      chip.addEventListener("click", () => {
-        chips.forEach((c) => c.classList.toggle("active", c === chip));
-        filterLibrary();
-      })
-    );
-    searchEl?.addEventListener("input", filterLibrary);
 
     // coach: tab switching (full re-render preserves builder/detail state)
     body.querySelectorAll("[data-coach-tab]").forEach((tab) =>
@@ -10609,30 +11126,19 @@ export function wireMyDashboard(user, events) {
       const btn = form.querySelector("[type=submit]");
       if (btn) { btn.disabled = true; btn.textContent = "Adding…"; }
 
-      // A real learners row per name-only entry, so attendance (patch-18+)
-      // and any future per-learner record has something valid to reference
-      // — learners.id never needed a profiles row, unlike the old reasoning
-      // above assumed before this table existed. Best-effort: learners' RLS
-      // scopes a write by the inserting teacher's OWN profile.school
-      // matching, not by class ownership, so this can fail for a mismatched
-      // profile without that being a reason to block the roster entry
-      // itself — learner_id just stays null then, exactly as it always has.
-      const nameOnlyRows = rows.filter((r) => !r.is_account);
-      if (nameOnlyRows.length) {
-        const { data: school } = await supabase.from("schools").select("id").eq("name", cls.school).maybeSingle();
-        if (school?.id) {
-          const { data: newLearners, error: learnerErr } = await supabase
-            .from("learners")
-            .insert(nameOnlyRows.map((r) => ({ full_name: r.name, school_id: school.id })))
-            .select();
-          if (learnerErr) console.warn("Could not create learners rows (roster entry still added, just without one):", learnerErr.message);
-          else newLearners.forEach((l, i) => { nameOnlyRows[i].learner_id = l.id; });
-        }
-      }
-
+      // patch-33: this used to create a learners row per name here, then
+      // pass its id. That bypassed identity resolution entirely and created
+      // a SECOND learner for anyone enrolled in a second class. The
+      // database now owns it: enrollments_resolve_learner() links to the
+      // existing learner when the name unambiguously identifies one within
+      // the school, creates one when it identifies nobody, and — where two
+      // learners share the name — leaves learner_id null and files a row in
+      // learner_identity_reviews rather than guessing. Deliberately not
+      // reimplemented here: whichever client writes an enrollment gets the
+      // same guarantee. .select() reads back the id the trigger assigned.
       const { data: inserted, error } = await supabase
         .from("enrollments")
-        .insert(rows.map((r) => ({ class_id: cls.id, name: r.name, is_account: r.is_account, learner_id: r.learner_id ?? null })))
+        .insert(rows.map((r) => ({ class_id: cls.id, name: r.name, is_account: r.is_account })))
         .select();
 
       if (error) {
@@ -10643,7 +11149,11 @@ export function wireMyDashboard(user, events) {
       inserted.forEach((e, i) => {
         const src = rows[i];
         cls.learners.push({
-          id: src._localId || src.learner_id || e.id, name: e.name, active: e.active_label || "just now",
+          // e.learner_id is what the trigger resolved. It is null only when
+          // identity was genuinely ambiguous — the roster entry still works,
+          // and the kiosk view keys off id !== _enrollmentId to know there
+          // is no stable identity behind it yet.
+          id: src._localId || e.learner_id || e.id, name: e.name, active: e.active_label || "just now",
           account: e.is_account, _enrollmentId: e.id,
         });
       });
@@ -11384,6 +11894,11 @@ export function wireMyDashboard(user, events) {
         dropout_reason_other: txt("dropout_reason_other"),
         transfers_in: int("transfers_in") || 0,
         transfers_out: int("transfers_out") || 0,
+        // patch-32: the form only renders this input when there are no
+        // daily marks to derive from (see attendanceField). When it IS
+        // derived the field is absent, so int() yields null and the
+        // trigger recomputes the real figure — the client never gets to
+        // send a value that would contradict attendance_records.
         attendance_rate: int("attendance_rate"),
         mean_score: dec("mean_score"),
         classrooms: int("classrooms"), desks: int("desks"), toilets: int("toilets"),
@@ -11460,6 +11975,24 @@ export function wireMyDashboard(user, events) {
         enterAccount(btn.dataset.enterAccount);
       })
     );
+    // Learner kiosk mode (patch-31) — a real, database-backed view of one
+    // roster learner, opened from coachLearnerDetail(). Unlike
+    // data-enter-account above, this never touches K_SESSION/K_IMPERSONATE.
+    body.querySelectorAll("[data-view-as-learner]").forEach((btn) =>
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        kioskLearner = {
+          id: btn.dataset.viewAsLearner,
+          name: btn.dataset.viewAsName,
+          school: btn.dataset.viewAsSchool || "",
+        };
+        renderRole(role);
+      })
+    );
+    body.querySelector("[data-kiosk-exit]")?.addEventListener("click", () => {
+      kioskLearner = null;
+      renderRole(role);
+    });
     // The library is read by admin (manage), teacher (share) and learner
     // (browse) alike, so it loads here rather than in any one role's wiring.
     // loadLibrary() sets libraryLoaded even on failure, so this fires once per
@@ -11471,7 +12004,7 @@ export function wireMyDashboard(user, events) {
 
   function renderRole(role) {
     tabs.forEach((t) => t.classList.toggle("active", t.dataset.role === role));
-    body.innerHTML = dashboardBody(role, ctx);
+    body.innerHTML = kioskLearner ? learnerKioskShell(kioskLearner) : dashboardBody(role, ctx);
     wireBody(role);
     body.classList.remove("fade-in");
     void body.offsetWidth; // restart animation
@@ -11482,6 +12015,131 @@ export function wireMyDashboard(user, events) {
   document.querySelectorAll("[data-exit-account]").forEach((btn) =>
     btn.addEventListener("click", exitAccount)
   );
+
+  // legacy-account migrate-now banner — also outside the re-rendered body,
+  // same reason. Re-wired after its own outerHTML swap below rather than
+  // depending on the whole page re-rendering.
+  function wireLegacyBanner() {
+    const wrap = document.querySelector("[data-legacy-banner]");
+    if (!wrap) return;
+    const form = wrap.querySelector("#legacyMigrateForm");
+    wrap.querySelector("[data-legacy-migrate-toggle]")?.addEventListener("click", () => {
+      if (!form) return;
+      form.hidden = !form.hidden;
+      if (!form.hidden) form.querySelector('[name="email"]')?.focus();
+    });
+    wrap.querySelector("[data-legacy-migrate-cancel]")?.addEventListener("click", () => {
+      if (form) form.hidden = true;
+    });
+    form?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const email = (new FormData(form).get("email") || "").toString().trim().toLowerCase();
+      if (!email) return toast("Email required", "", "error");
+      const submit = form.querySelector('[type="submit"]');
+      if (submit) submit.disabled = true;
+      try {
+        // Same anon-callable call createStaffAccount() already uses for an
+        // admin-created invite (see the header comment above) — triggering
+        // it from the legacy user's own, JWT-less session grants nothing
+        // beyond the ordinary self-serve role public sign-up already gets.
+        const { error } = await adminClient().auth.signInWithOtp({
+          email,
+          options: {
+            shouldCreateUser: true,
+            data: {
+              full_name: user.fullName || "", username: null,
+              school: user.school || null, county: user.region || user.county || null,
+              org_type: null, project: user.project || null,
+            },
+          },
+        });
+        if (error) throw new Error(authMessage(error));
+        const { error: rpcErr } = await supabase.rpc("mark_legacy_invited", {
+          p_identifier: user.legacyIdentifier || user.email || user.username || "",
+          p_email: email,
+        });
+        if (rpcErr) console.warn("mark_legacy_invited failed:", rpcErr.message); // the invite itself already succeeded — this only updates the admin panel's status
+        const sess = read(K_SESSION, null);
+        if (sess) { sess.legacyInviteSent = true; sess.legacyInviteEmail = email; write(K_SESSION, sess); }
+        const users = read(K_USERS, []);
+        const row = users.find((u) => u.id === user.id);
+        if (row) { row.migrationRequested = true; write(K_USERS, users); }
+        wrap.outerHTML = legacyMigrateBanner({ ...user, legacyInviteSent: true, legacyInviteEmail: email });
+        wireLegacyBanner();
+        toast("Invite sent", `Check ${email} for a link to finish setting up your account.`, "success");
+      } catch (err) {
+        toast("Could not send invite", err.message, "error");
+      } finally {
+        if (submit) submit.disabled = false;
+      }
+    });
+  }
+  wireLegacyBanner();
+
+  /* notifications (patch-34) — header bell + panel. Both live outside
+     #dashBody so they survive role-tab re-renders; re-wired after each of
+     their own swaps rather than relying on a full page render. */
+  function renderNotifications() {
+    const host = document.getElementById("notifHost");
+    if (host) host.innerHTML = notificationPanel();
+    const bell = document.querySelector("[data-notif-toggle]");
+    if (bell) bell.outerHTML = notificationBell();
+    wireNotifications();
+  }
+  function wireNotifications() {
+    document.querySelector("[data-notif-toggle]")?.addEventListener("click", () => {
+      notificationsOpen = !notificationsOpen;
+      renderNotifications();
+      if (notificationsOpen && !notificationsLoaded) loadNotifications().then(renderNotifications);
+    });
+    const host = document.getElementById("notifHost");
+    if (!host) return;
+    host.querySelector("[data-notif-close]")?.addEventListener("click", () => {
+      notificationsOpen = false;
+      renderNotifications();
+    });
+    host.querySelector("[data-notif-retry]")?.addEventListener("click", () => {
+      notificationsLoaded = false;
+      renderNotifications();
+      loadNotifications().then(renderNotifications);
+    });
+    host.querySelectorAll("[data-notif-filter]").forEach((b) =>
+      b.addEventListener("click", () => {
+        notificationsFilter = b.dataset.notifFilter;
+        renderNotifications();
+      })
+    );
+    // Marking read goes through hpf_mark_notifications_read(), which is
+    // SECURITY INVOKER — it can only ever touch rows whose recipient_id is
+    // this session's own uid, enforced by RLS rather than by this code.
+    host.querySelectorAll("[data-notif-read]").forEach((b) =>
+      b.addEventListener("click", async () => {
+        const id = b.dataset.notifRead;
+        b.disabled = true;
+        const { error } = await supabase.rpc("hpf_mark_notifications_read", { p_ids: [id] });
+        if (error) { b.disabled = false; return toast("Could not mark as read", authMessage(error), "error"); }
+        const row = notificationsCache.find((n) => n.id === id);
+        if (row) row.read_at = new Date().toISOString();
+        renderNotifications();
+      })
+    );
+    host.querySelector("[data-notif-mark-all]")?.addEventListener("click", async (e) => {
+      const unread = unreadNotifications();
+      if (!unread.length) return toast("Nothing to mark", "You have no unread notifications.");
+      e.currentTarget.disabled = true;
+      const { data, error } = await supabase.rpc("hpf_mark_notifications_read", { p_ids: null });
+      if (error) { e.currentTarget.disabled = false; return toast("Could not mark as read", authMessage(error), "error"); }
+      const now = new Date().toISOString();
+      notificationsCache.forEach((n) => { if (!n.read_at) n.read_at = now; });
+      toast("Marked read", `${data ?? unread.length} notification(s).`, "success");
+      renderNotifications();
+    });
+  }
+  wireNotifications();
+  // Load once on mount so the unread count is real before the panel is
+  // ever opened. A failure sets notificationsLoaded either way, so this
+  // can never re-arm itself on the re-render below.
+  if (!notificationsLoaded) loadNotifications().then(renderNotifications);
 
   tabs.forEach((t) => t.addEventListener("click", () => renderRole(t.dataset.role)));
   const current = tabs.find((t) => t.classList.contains("active"))?.dataset.role || user.role;

@@ -1,6 +1,11 @@
 /* Inline SVG icon set (Lucide-style, stroke-based) */
 
-const P = 'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"';
+/* aria-hidden + focusable="false" on every icon: these are decorative —
+   the accessible name always comes from the text or aria-label of the
+   control they sit inside. Without this a screen reader announces 123
+   anonymous graphics per page, and IE/Edge legacy put each one in the tab
+   order. Set here rather than at 123 call sites so a new icon inherits it. */
+const P = 'aria-hidden="true" focusable="false" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"';
 
 export const ICONS = {
   book: `<svg viewBox="0 0 24 24" ${P}><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>`,
@@ -29,7 +34,7 @@ export const ICONS = {
   clock: `<svg viewBox="0 0 24 24" ${P}><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>`,
   send: `<svg viewBox="0 0 24 24" ${P}><path d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z"/><path d="m21.854 2.147-10.94 10.939"/></svg>`,
   graduation: `<svg viewBox="0 0 24 24" ${P}><path d="M21.42 10.922a1 1 0 0 0-.019-1.838L12.83 5.18a2 2 0 0 0-1.66 0L2.6 9.08a1 1 0 0 0 0 1.832l8.57 3.908a2 2 0 0 0 1.66 0z"/><path d="M22 10v6"/><path d="M6 12.5V16a6 3 0 0 0 12 0v-3.5"/></svg>`,
-  play: `<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M6 4.5v15a1 1 0 0 0 1.53.848l12-7.5a1 1 0 0 0 0-1.696l-12-7.5A1 1 0 0 0 6 4.5Z"/></svg>`,
+  play: `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="currentColor" stroke="none"><path d="M6 4.5v15a1 1 0 0 0 1.53.848l12-7.5a1 1 0 0 0 0-1.696l-12-7.5A1 1 0 0 0 6 4.5Z"/></svg>`,
   headphones: `<svg viewBox="0 0 24 24" ${P}><path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M18 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2z"/><path d="M21 16v-3a9 9 0 0 0-18 0v3"/></svg>`,
   puzzle: `<svg viewBox="0 0 24 24" ${P}><path d="M15.39 4.39a1 1 0 0 0 1.68-.474 2.5 2.5 0 1 1 3.014 3.015 1 1 0 0 0-.474 1.68l1.683 1.682a2.414 2.414 0 0 1 0 3.414L19.61 19.61a2.414 2.414 0 0 1-3.414 0l-1.683-1.683a1 1 0 0 0-1.68.474 2.5 2.5 0 1 1-3.014-3.015 1 1 0 0 0 .474-1.68l-1.683-1.682a2.414 2.414 0 0 1 0-3.414L10.39 4.39a2.414 2.414 0 0 1 3.414 0z"/></svg>`,
   target: `<svg viewBox="0 0 24 24" ${P}><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>`,

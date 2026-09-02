@@ -622,7 +622,8 @@ button.portal-card {
   height: 20px;
 }
 
-.portal-card h3 {
+.portal-card h3,
+.portal-card h2 {
   font-size: 1.125rem;
   line-height: 1.75rem;
   font-weight: 600;
@@ -4757,3 +4758,118 @@ textarea.input:focus {
   font-size: 0.7rem; line-height: 1; cursor: pointer; padding: 0;
 }
 .pill-x:hover { background: rgb(0 0 0 / 0.3); }
+
+/* ============================================================
+   Accessibility remediation — audit of 2026-09-02.
+   Presentation only; no application logic is affected by anything here.
+   ============================================================ */
+
+/* ---- CRITICAL: visible keyboard focus -------------------------------
+   The audit found no focus indicator on the great majority of focusable
+   elements across all 8 routes — a keyboard user could not tell where
+   they were. A handful of components already defined :focus-visible
+   (.hero-dot, .kpi-action, .ds-item, .cem-pillar, .cs-area); this is the
+   baseline they were the exception to. :focus-visible (not :focus) so a
+   mouse click does not leave a ring behind. */
+:where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 3px solid var(--primary, #1f6feb);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+/* On dark surfaces the primary blue ring is hard to see — use the light
+   token those areas already carry. */
+:where(.site-footer, .cem-pillar, .hero, .cs-hero, .dash-side)
+  :where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline-color: #fff;
+}
+/* Never remove the indicator without replacing it. */
+:focus:not(:focus-visible) { outline: none; }
+
+/* ---- HIGH: skip link ------------------------------------------------
+   Off-screen until focused, then pinned top-left. Without it a keyboard
+   user tabs the whole header on every route before reaching content. */
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 200;
+  padding: 0.7rem 1.1rem;
+  background: var(--primary, #1f6feb);
+  color: #fff;
+  font-weight: 700;
+  border-radius: 0 0 0.5rem 0;
+  text-decoration: none;
+}
+.skip-link:focus {
+  left: 0;
+  outline: 3px solid #fff;
+  outline-offset: -3px;
+}
+
+/* ---- HIGH: contrast -------------------------------------------------
+   Measured on a composited background (the footer is a 40%-alpha dark
+   layer over white, so the effective backdrop is light grey, not dark).
+   --muted at oklch(0.5 …) gave 2.37:1 against it. Darkened to clear
+   4.5:1 for body text without changing the palette's hue or the design's
+   intent. */
+/* :not(.footer-mark) matters: the HPF badge carries its own dark --primary
+   background and white text. An unscoped .site-footer span rule darkened
+   it to dark-on-dark (1.19:1) — worse than the problem being fixed. Only
+   the text sitting directly on the footer's own light backdrop is
+   darkened. */
+.site-footer .footer-meta,
+.site-footer .footer-tag,
+.site-footer span:not(.footer-mark):not(.footer-mark *) {
+  color: oklch(0.30 0.02 150);
+}
+.site-footer .footer-mark { color: #fff; }
+.contact .contact-note,
+.contact p {
+  color: oklch(0.32 0.02 150);
+}
+
+/* ---- MEDIUM: touch targets -----------------------------------------
+   Header nav links measured 21px tall and the carousel dots 8px. WCAG
+   2.5.8 asks for 24px minimum. Padding only — nothing reflows, because
+   the header row is already taller than the new minimum. */
+.main-nav a,
+.nav-links a,
+.site-nav a,
+.back-link {
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+}
+.hero-dot {
+  min-width: 24px;
+  min-height: 24px;
+  background-clip: content-box;
+  padding: 8px;
+  box-sizing: border-box;
+}
+
+/* ---- Reduced motion -------------------------------------------------
+   Six component-level blocks already existed. This is the catch-all for
+   everything they did not name (fade-ins, toasts, chart transitions),
+   so a new animated component is covered by default rather than by
+   remembering to add another block. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Visually-hidden utility for text that must exist for assistive tech
+   but not on screen (live-region wrappers, table captions). */
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}

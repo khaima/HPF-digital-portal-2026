@@ -308,113 +308,33 @@ export const PROJECTS = ["Micro Enterprise Programme", "ICT Academy", "Infrastru
 /* flat list of every school (teacher class creation, scorecard, etc.) */
 export const SCHOOLS = Object.values(REGIONS).flat();
 
-/* Field Officer data-collection form: visit types */
+/* Field Officer data-collection form: visit types. Each maps to the M&E
+   scorecard pillar (me_indicators.scorecard_pillar) that the form's "Form"
+   dropdown is filtered by once this visit type is picked — see
+   supabase/FIELD-REPORT-FORMS.md. */
 export const VISIT_TYPES = [
-  "Monitoring & Evaluation Visit",
-  "School Support Visit",
-  "Teacher Coaching Session",
-  "Baseline Data Collection",
-  "Classroom Observation",
-  "Infrastructure Assessment",
+  { pillar: "education", label: "Learning" },
+  { pillar: "infrastructure", label: "Infrastructure" },
+  { pillar: "ict", label: "ICT" },
+  { pillar: "mep", label: "MEP" },
 ];
 
 /* ============================================================
-   Simulated data for the role-based "My Dashboard".
-
-   Only `learner` remains here. admin/teacher/field_officer/school_leader
-   were removed once every widget that read them was rewired to a real
-   Supabase source (or, where no real source exists yet — a per-school
-   "health" score, teacher coaching ratings, per-grade competency scores —
-   an honest "not yet tracked" state instead of an invented number). See
-   dashboards.js: computeAdminStats(), fieldOfficerBody(), schoolLeaderBody().
-
-   `learner` is still simulated: course progress, streak and badges have no
-   real data behind them yet, and won't until the assignments/assessments/
-   submissions Postgres migration lands and a product decision is made about
-   what a "streak" or "badge" means in a real database.
+   DASH / KOLIBRI (the last simulated "My Dashboard" data — admin, teacher,
+   field_officer and school_leader's DASH entries, and KOLIBRI.coach, were
+   already removed once real Supabase sources existed) were deleted
+   outright on 2026-09-01: the trigger condition their own removal comment
+   named — "won't [be real] until the assignments/assessments/submissions
+   Postgres migration lands and a product decision is made about what a
+   streak or badge means in a real database" — is met. That migration
+   shipped (patch-13 onward; `submissions.learner_id` fixed to reference
+   `learners(id)` in patch-31), and the product decision is in
+   supabase/LEARNER-EXPERIENCE-SPEC.md §"12. Achievements": not genuinely
+   required — no HPF outcome indicator this programme tracks (attendance,
+   dropout, learning outcomes) is a streak or a badge, and neither had any
+   real data behind it. `learnerBody()` in dashboards.js now computes its
+   stats from real `assignments`/`assessments`/`submissions` data via
+   learnerAssignments(), not from a constant here. See LEARNER-EXPERIENCE-
+   SPEC.md for the full design this replaces it with.
    ============================================================ */
-
-export const DASH = {
-  learner: {
-    stats: [
-      { label: "Courses enrolled", count: 6, suffix: "", icon: "book",
-        target: 8, freshMins: 30, href: "/resources", actionLabel: "Browse courses" },
-      { label: "Lessons completed", count: 48, suffix: "", icon: "check", trend: 14,
-        target: 60, freshMins: 15, href: "/curriculum", actionLabel: "Continue learning" },
-      { label: "Day streak", count: 12, suffix: "", icon: "flame", trend: 9,
-        target: 30, freshMins: 5, href: "/resources", actionLabel: "Keep it going" },
-      { label: "Badges earned", count: 9, suffix: "", icon: "award", trend: 2,
-        target: 15, freshMins: 120, href: "/assessment", actionLabel: "View progress" },
-    ],
-    courses: [
-      { name: "Foundational Literacy", progress: 82 },
-      { name: "Numeracy & Problem Solving", progress: 64 },
-      { name: "Science Discovery", progress: 45 },
-      { name: "Life Skills", progress: 90 },
-    ],
-    assignments: [
-      { title: "Reading comprehension worksheet", due: "Today", done: false },
-      { title: "Numeracy quiz — fractions", due: "Tomorrow", done: false },
-      { title: "Science project outline", due: "In 3 days", done: false },
-      { title: "Vocabulary practice", due: "Completed", done: true },
-    ],
-    weekly: [2, 3, 1, 4, 3, 5, 6],
-  },
-
-};
-
-/* ============================================================
-   Kolibri-style learning data — powers the Learn (learner) and
-   Coach (teacher) dashboards.
-   ============================================================ */
-
-/* kind → colour + icon used on content thumbnails */
-export const CONTENT_KINDS = {
-  video: { label: "Video", icon: "play", color: "oklch(62% 0.24 27)" },
-  exercise: { label: "Exercise", icon: "target", color: "oklch(52% 0.14 148)" },
-  reading: { label: "Reading", icon: "book", color: "oklch(55% 0.15 300)" },
-  audio: { label: "Audio", icon: "headphones", color: "oklch(68% 0.17 155)" },
-  interactive: { label: "Interactive", icon: "puzzle", color: "oklch(78% 0.15 75)" },
-};
-
-/* shared content pool */
-const R = (id, title, channel, kind, duration, progress) => ({
-  id, title, channel, kind, duration, progress,
-});
-
-export const KOLIBRI = {
-  learner: {
-    classes: [
-      { name: "Grade 6 — Blue", teacher: "Mr. Otieno", count: 24, color: "oklch(58% 0.2 264)" },
-      { name: "Numeracy Club", teacher: "Ms. Achieng", count: 12, color: "oklch(60% 0.14 190)" },
-    ],
-    continue: [
-      R("c1", "Adding & Subtracting Fractions", "Khan Academy", "video", "6:24", 60),
-      R("c2", "Place Value — Practice", "Khan Academy", "exercise", "15 questions", 40),
-      R("c3", "The Water Cycle", "CK-12 Science", "reading", "8 min read", 25),
-    ],
-    library: [
-      R("l1", "Introduction to Fractions", "Khan Academy", "video", "5:10", 100),
-      R("l2", "Multiplication Tables", "Khan Academy", "exercise", "20 questions", 80),
-      R("l3", "Reading Comprehension: Folktales", "Global Digital Library", "reading", "12 min read", 0),
-      R("l4", "Story Time: The Clever Hare", "African Storybook", "audio", "9:45", 0),
-      R("l5", "Balancing Forces", "PhET Simulations", "interactive", "Simulation", 30),
-      R("l6", "Shapes & Angles", "CK-12 Math", "video", "7:32", 0),
-      R("l7", "Spelling Challenge", "Blockly Games", "exercise", "10 questions", 55),
-      R("l8", "Photosynthesis Explained", "TED-Ed", "video", "4:18", 0),
-      R("l9", "Counting Money", "Khan Academy", "interactive", "Activity", 0),
-    ],
-    bookmarks: [
-      R("b1", "Balancing Forces", "PhET Simulations", "interactive", "Simulation", 30),
-      R("b2", "Photosynthesis Explained", "TED-Ed", "video", "4:18", 0),
-    ],
-    channels: ["All", "Khan Academy", "CK-12", "Global Digital Library", "PhET Simulations", "TED-Ed"],
-  },
-  // coach (teacher-facing) was removed: the coach dashboard has run on real
-  // class/assignment/assessment data (hpf_classes, now Postgres-backed for
-  // the class shell) since the classes/enrollments migration. The one line
-  // that still read this — "Class activity" on the Overview tab — now
-  // computes from real local submissions instead (dashboards.js,
-  // coachOverview()).
-};
 

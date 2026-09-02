@@ -11,33 +11,41 @@ established — same shared `x360*` rendering helpers, same load → cache →
 gate → render shell. What's new here is the **Progress** tab: the first
 "360" tab that doesn't just list activity, it states a computed trend.
 
-## The identity gap this view has to work around
+## Identity — resolved (patch-33)
 
-`learners` (patch-13/MDM — what this view is keyed on, and what Attendance
-and Digital Engagement read from directly) and the class-roster/assessment
-system (`enrollments`, `assessments`, `submissions`) are **two ID spaces
-that were never connected**:
+**Every tab in this view now resolves through `learners.id` alone.**
+Attendance, Digital Engagement, enrolments and Assessments are all direct
+`learner_id` joins; there is no name matching anywhere in this view.
 
-- `attendance_records.learner_id`, `kolibri_activity.learner_id`,
-  `library_activity.learner_id`, and `learning_activity.learner_id` all
-  reference `learners(id)` — a real foreign key. Attendance and Digital
-  Engagement below are exact, direct joins.
-- `enrollments.learner_id` and `submissions.learner_id` both reference
-  `profiles(id)` instead, and are hard-coded `null` on every insert this
-  app makes today — confirmed by reading both write paths: the
-  `#addLearnerForm` submit handler's own comment says local learner
-  accounts "have no matching row in profiles... there is no id
-  enrollments.learner_id could validly reference," and the quiz-sync code
-  inserts every `submissions` row with `learner_id: null`. A roster
-  entry's only real identity is its typed `name` field.
+This section previously documented a real gap: `attendance_records`,
+`kolibri_activity`, `library_activity` and `learning_activity` referenced
+`learners(id)` properly, but `enrollments.learner_id` and
+`submissions.learner_id` were nullable and never populated, so a roster
+entry's only identity was its typed `name`. The Assessments tab had to
+bridge by matching that name within the learner's school — best-effort,
+and capable of attributing one child's results to another wherever two
+learners shared a name.
 
-So Assessments can't be reached by id at all. The Assessments tab instead
-matches `enrollments.name` / `submissions.name` against this learner's own
-`full_name`, scoped to classes at their own school (`classes.school =
-schools.name` — the same name-based bridge School 360 already uses for
-`classes`/`field_reports`, a documented pre-existing limitation, see
-`SCHEMA.md`). This is a best-effort match, not a guaranteed identity link,
-and the tab says so in the UI rather than presenting borrowed precision.
+[patch-33](patch-33-learner-identity.sql) closed it:
+
+- `learners.id` stays canonical; `learners.learner_code` (`HPF-L-000001`)
+  is its portable, human-quotable form.
+- Database triggers guarantee every **new** enrollment and submission
+  carries a stable `learner_id`, whichever client writes it.
+- A reconciliation pass linked the historical rows it could prove, and
+  **flagged rather than guessed** the rest — ambiguous names and unknown
+  people land in `learner_identity_reviews` with every candidate recorded.
+
+Consequence worth stating plainly: a learner whose records are still
+unresolved shows **no** records here. That is the truth, and it is visible
+and fixable in the review queue — which is strictly better than showing
+someone else's data with borrowed precision.
+
+See [LEARNER-IDENTITY.md](LEARNER-IDENTITY.md) for the full strategy.
+
+(The separate `classes.school = schools.name` text bridge that School 360
+also uses is unrelated to learner identity and still stands — see
+`SCHEMA.md`.)
 
 ## Tabs
 
@@ -48,7 +56,7 @@ literal pipeline this feature was requested as.
 |---|---|
 | Attendance | `attendance_records`, direct `learner_id` join |
 | Digital Engagement | `kolibri_activity` + `library_activity` + `learning_activity`, direct `learner_id` join, merged and sorted |
-| Assessments | `assessments` + `submissions`, name-matched through this learner's school's classes (see above) |
+| Assessments | `assessments` + `submissions`, direct `learner_id` join through this learner's enrolled classes |
 | Progress | Computed from the same attendance and submission rows — no new data, no new table |
 
 **Digital Engagement here is a direct measurement, not a proxy** — unlike
@@ -63,7 +71,7 @@ on every kolibri/library/learning-activity row being read.
 |---|---|---|---|
 | Attendance rate | % present, all recorded sessions | observed date range | `attendance_records` |
 | Digital engagement | Event count | observed date range | `kolibri_activity` / `library_activity` / `learning_activity` |
-| Assessments taken | Count + average score | observed date range | `submissions` (name-matched) |
+| Assessments taken | Count + average score | observed date range | `submissions`, joined on `learner_id` |
 | Attendance trend | Improving / Declining / Stable, previous month → latest month | "Month over month" | computed from `attendance_records` |
 | Assessment score trend | Improving / Declining / Stable, previous month → latest month | "Month over month" | computed from `submissions` |
 
@@ -109,12 +117,12 @@ that reads left-to-right, not most-recent-first.
 ## Loading
 
 Learner → [attendance + digital engagement + this school's classes, in
-parallel] → [enrollments matched by name, to find which classes this
-learner is actually in] → [assessments for those matched classes] →
-[submissions matched by name against those assessments]. Four sequential
-stages rather than two — one stage more than School/Teacher 360 need,
-because bridging the name/id gap for Assessments takes an extra
-round-trip School and Teacher 360's fully-id-based joins didn't require.
+parallel] → [enrollments `where learner_id = …`, to find which classes this
+learner is in] → [assessments for those classes] → [submissions
+`where learner_id = …`]. Four sequential stages: the extra round-trips
+exist because a learner's classes must be known before their assessments
+can be, not because of any name bridge — every stage joins on ids
+(patch-33).
 
 ## Authorization
 

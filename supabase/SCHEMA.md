@@ -74,10 +74,14 @@ client-side concern this table doesn't touch.
 | `submissions` | A learner's assessment attempt | `assessment_id` → `assessments`, `learner_id` → `learners` |
 | `attendance_records` **(new, patch-18)** | One row per learner per class per day | `learner_id` → `learners`, `class_id` → `classes`, `recorded_by` → `profiles` |
 
-`attendance_records` is schema-only so far — nothing reads it yet, and
-`school_returns.attendance_rate` keeps working exactly as it does today. A
-future pass could compute the aggregate from real rows here instead of a
-typed-in percentage; building that pass is a separate, later decision.
+`attendance_records` is the single store for attendance. Since
+**patch-32** it is also what `school_returns.attendance_rate` is derived
+from: `hpf_attendance_stats()` computes the termly rate, a BEFORE trigger
+on `school_returns` writes it, and a trigger on `attendance_records`
+re-derives affected returns when marks change. The return additionally
+carries `attendance_source` (`calculated` / `manual` / null) plus the
+numerator, denominator, excused count and learner count behind each
+calculated figure — see [`ATTENDANCE.md`](ATTENDANCE.md).
 
 ## Field operations
 
@@ -221,9 +225,10 @@ tables.
 The remaining 9 — `roles`, `teacher_training`, `subjects`, `field_visits` +
 `field_visit_findings`, `kolibri_activity`, `library_activity`,
 `learning_activity`, `notifications` — are real, RLS-complete schema with
-zero client wiring. `school_returns.attendance_rate` also still stands
-alone; nothing yet computes it from the now-real `attendance_records`
-rows. Building UI against any of these is a separate, future decision.
+zero client wiring. (`school_returns.attendance_rate` used to be listed
+here as standing alone; patch-32 now derives it from `attendance_records`
+— see above.) Building UI against any of the remaining nine is a separate,
+future decision.
 
 `kobo_submissions`/`kobo_raw_payloads`/`kobo_sync_runs` (patch-29) are a
 third category: real client wiring, but not the browser-writes-directly

@@ -45,10 +45,20 @@ export function toast(title, desc = "", type = "default") {
   if (!region) {
     region = document.createElement("div");
     region.className = "toast-region";
+    /* Without these the toast container is an ordinary div: every
+       success and error message in the app was silent to a screen
+       reader. aria-live on the CONTAINER (which exists before the
+       message is inserted) is what makes the insertion announced —
+       putting it on the toast itself would be too late. */
+    region.setAttribute("role", "status");
+    region.setAttribute("aria-live", "polite");
+    region.setAttribute("aria-atomic", "true");
     document.body.appendChild(region);
   }
   const el = document.createElement("div");
   el.className = `toast ${type}`;
+  // Errors interrupt; everything else waits for a pause.
+  if (type === "error") el.setAttribute("role", "alert");
   el.innerHTML = `<div class="t-title">${esc(title)}</div>${
     desc ? `<div class="t-desc">${esc(desc)}</div>` : ""
   }`;

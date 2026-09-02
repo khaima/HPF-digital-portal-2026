@@ -11,7 +11,7 @@ import {
 } from "./data.js";
 import {
   $, $$, read, write, esc, initials, uid, BASE,
-  startGlobalCounters, runCounters, toast,
+  startGlobalCounters, runCounters, toast, timeAgo,
 } from "./util.js";
 import { myDashboardMain, wireMyDashboard } from "./dashboards.js";
 import { supabase, adminClient, authMessage } from "./supabase.js";
@@ -20,13 +20,21 @@ import {
   openStaffInvite, resumeUsernameRecovery, recoveryOwnsSession,
   recoveryHtml, recoveryTitle, wireRecovery,
 } from "./recovery.js";
+import {
+  SYNC, KIND, flushOutbox, enqueue, outboxAll, retryRecord, migrateLegacyOutbox,
+  cachePut, cacheGet, cacheMeta, getLastSuccessfulSync, syncHistory, isSyncing, isOnline,
+} from "./offline.js";
 
 /* ------------------------------------------------------------ storage keys */
 const K_USERS = "hpf_users";
 const K_SESSION = "hpf_session";
 const K_EVENTS = "hpf_login_events"; // dummy repository of all login requests
 const ADMIN_EMAIL = "patrick@humanpractice.org";
-const K_FO_OUTBOX = "hpf_fo_outbox"; // field reports written offline, waiting to sync
+// The pre-PWA outbox key. Nothing writes it any more — the outbox lives in
+// IndexedDB (offline.js) — but it is still READ once at boot by
+// migrateLegacyOutbox(), so a device that queued visits before this deploy
+// carries them across instead of losing them.
+const K_FO_OUTBOX_LEGACY = "hpf_fo_outbox";
 
 /* ------------------------------------------------------------ officer's assigned schools
    Which schools this field officer covers — school_officer_assignments,
@@ -37,13 +45,93 @@ const K_FO_OUTBOX = "hpf_fo_outbox"; // field reports written offline, waiting t
    here would just produce a confusing RLS rejection instead of a clear list. */
 let foSchoolsCache = [];
 let foSchoolsLoaded = false;
+/* schoolName -> county, resolved against the real schools table (patch-02).
+   school_officer_assignments only carries the school's NAME, not a county,
+   so the county cascade below needs this separate lookup. Cached the same
+   way as foSchoolsCache, for the same offline reason. */
+let foSchoolCounties = {};
 
+/* Cached into IndexedDB on every successful online fetch, and read back
+   from there when the fetch fails. This is what makes the visit form
+   usable offline at all: without the assigned-school list there is
+   nothing to pick, and an officer in the field cannot file anything.
+   Postgres stays authoritative — the cache is only ever a fallback, and
+   the UI says when it is being used and how old it is. */
 async function loadFoSchools() {
   const { data, error } = await supabase
     .from("school_officer_assignments").select("school").order("school");
+
+  if (!error) {
+    foSchoolsCache = (data || []).map((r) => r.school);
+    await loadFoSchoolCounties(foSchoolsCache);
+    try {
+      await cachePut("fo_schools", foSchoolsCache);
+      foSchoolsCachedAt = Date.now();
+    } catch (err) { console.warn("could not cache schools:", err.message); }
+    foSchoolsLoaded = true;
+    return foSchoolsCache;
+  }
+
+  // Offline (or the fetch failed): fall back to the cached list.
+  try {
+    const cached = await cacheGet("fo_schools");
+    if (Array.isArray(cached) && cached.length) {
+      foSchoolsCache = cached;
+      const meta = await cacheMeta("fo_schools");
+      foSchoolsCachedAt = meta ? meta.at : null;
+    }
+  } catch (err) { console.warn("no cached schools:", err.message); }
+  try {
+    const cachedCounties = await cacheGet("fo_school_counties");
+    if (cachedCounties && typeof cachedCounties === "object") foSchoolCounties = cachedCounties;
+  } catch (err) { console.warn("no cached school counties:", err.message); }
+
+  /* Set LAST, not before the cache read. loadFoReports() also fails
+     immediately when offline and calls render() too, so two renders are in
+     flight; if this flag flipped early, the other one could paint "No
+     schools assigned yet" over a list that was about to arrive — which is
+     exactly what happened in the offline reopen test. Flipping it only
+     once the answer is known means an intervening render shows
+     "Loading…", never a wrong answer. */
   foSchoolsLoaded = true;
-  if (!error) foSchoolsCache = (data || []).map((r) => r.school);
   return foSchoolsCache;
+}
+
+/* Resolves each assigned school's county from the real schools table, by
+   name (school_officer_assignments has no FK to join on). Best-effort: a
+   failure here still leaves the school picker itself working, it just
+   falls back to an unfiltered county list (see countyOptions below) rather
+   than blocking the page. */
+async function loadFoSchoolCounties(names) {
+  if (!names.length) { foSchoolCounties = {}; return; }
+  const { data, error } = await supabase.from("schools").select("name, county").in("name", names);
+  if (!error) {
+    foSchoolCounties = Object.fromEntries((data || []).map((s) => [s.name, s.county || ""]));
+    try { await cachePut("fo_school_counties", foSchoolCounties); } catch (err) { console.warn("could not cache school counties:", err.message); }
+  }
+}
+
+/* All M&E indicators (patch-19), the "form" a field visit fills in once a
+   visit type is picked — filtered client-side by scorecard_pillar so
+   switching visit type needs no extra round trip. field_officer holds
+   has_perm('me','view'), so this read is real, not a bypass. */
+let foIndicatorsCache = [];
+let foIndicatorsLoaded = false;
+
+async function loadFoIndicators() {
+  const { data, error } = await supabase
+    .from("me_indicators").select("id, name, unit, scorecard_pillar").order("name");
+  if (!error) {
+    foIndicatorsCache = (data || []).filter((i) => i.scorecard_pillar);
+    try { await cachePut("fo_indicators", foIndicatorsCache); } catch (err) { console.warn("could not cache indicators:", err.message); }
+  } else {
+    try {
+      const cached = await cacheGet("fo_indicators");
+      if (Array.isArray(cached)) foIndicatorsCache = cached;
+    } catch (err) { console.warn("no cached indicators:", err.message); }
+  }
+  foIndicatorsLoaded = true;
+  return foIndicatorsCache;
 }
 
 /* ------------------------------------------------------------ field reports
@@ -71,36 +159,55 @@ async function loadFoReports() {
    loads. A report Postgres refuses for any OTHER reason (no JWT, RLS) is a
    problem retrying can never fix, so it is never queued — see
    foReportIsConnectivityFailure below. */
-const foOutbox = () => read(K_FO_OUTBOX, []);
-const foReportIsConnectivityFailure = (error) =>
-  // A genuine network failure never reaches PostgREST, so supabase-js has no
-  // structured error to hand back — only a message like "Failed to fetch".
-  // An RLS refusal (42501) or any other structured Postgres error is real: the
-  // request arrived and was declined, which offline retry cannot change.
-  !error.code && /fetch|network/i.test(error.message || "");
+/* The outbox now lives in IndexedDB (offline.js) so it survives more than
+   localStorage does and can carry explicit per-record sync state. The
+   render path here is synchronous, so it reads this in-memory mirror —
+   the same cache-and-re-render pattern foReportsCache, classesCache and
+   every other async source in this app already use. offline.js is the
+   single source of truth; this is only a view of it. */
+let foOutboxCache = [];
+let foLastSync = null;
+let foSchoolsCachedAt = null;
+
+const foOutbox = () => foOutboxCache;
+const foPending = () => foOutboxCache.filter((o) => o.state === SYNC.LOCAL || o.state === SYNC.PENDING_SYNC || o.state === SYNC.SYNCING);
+const foBlocked = () => foOutboxCache.filter((o) => o.state === SYNC.FAILED || o.state === SYNC.CONFLICT);
+
+async function refreshOfflineState() {
+  try {
+    foOutboxCache = await outboxAll();
+    foLastSync = await getLastSuccessfulSync();
+    const meta = await cacheMeta("fo_schools");
+    foSchoolsCachedAt = meta ? meta.at : null;
+  } catch (err) {
+    console.warn("offline state unavailable:", err.message);
+  }
+}
 
 /* Returns { synced, changed } rather than just a sync count. A pending item
    that turns out to be blocked is not a sync, but the outbox state still
    changed — the row needs to stop showing as "pending" and start showing why
    it's stuck, so callers must re-render on either, not only on success. */
+/* Thin wrapper over offline.js's sync engine, keeping this function's
+   existing contract (`{ synced, changed }`) so every caller below is
+   unchanged. The behaviour the original had, preserved deliberately:
+   connectivity failures stay queued and retry silently; a real refusal
+   becomes FAILED, is surfaced rather than dropped, and raises the
+   patch-34 self-notification once per person per day. */
 async function flushFoOutbox() {
-  const queue = foOutbox();
-  if (!queue.length) return { synced: 0, changed: false };
-  const remaining = [];
-  let synced = 0, newlyBlocked = 0;
-  for (const item of queue) {
-    const { error } = await supabase.from("field_reports").insert(item.row);
-    if (error) {
-      if (foReportIsConnectivityFailure(error)) remaining.push(item);
-      // else: a real refusal (e.g. the session lost its JWT) — surfacing this
-      // silently on every page load would be noise; it shows next time the
-      // officer opens the field portal and sees it still pending.
-      else { remaining.push({ ...item, blocked: authMessage(error) }); newlyBlocked++; }
-    } else synced++;
+  const res = await flushOutbox(supabase, {
+    onChange: () => { /* mirror refreshed once below; per-record re-render would thrash */ },
+  });
+  await refreshOfflineState();
+  if (res.synced) await loadFoReports();
+  if (res.failed) {
+    supabase
+      .rpc("hpf_notify_offline_sync_failed", {
+        p_detail: `${res.failed} field report(s) were refused by the server and are still on this device.`,
+      })
+      .then(({ error }) => { if (error) console.warn("offline-sync notification failed:", error.message); });
   }
-  write(K_FO_OUTBOX, remaining);
-  if (synced) await loadFoReports();
-  return { synced, changed: synced > 0 || newlyBlocked > 0 };
+  return { ...res, changed: res.changed || res.synced > 0 || res.failed > 0 || res.conflicts > 0 };
 }
 
 /* ------------------------------------------------------------ user shape
@@ -160,16 +267,60 @@ const isLearnerRole = (role) => role === "learner";
    as they always did; anything served from the database stays empty. `legacy`
    lets the UI say that plainly instead of leaving someone staring at blank
    panels wondering what broke. */
-function legacyLogin(id, password) {
-  const user = Auth.users().find(
+/* patch-30: legacy accounts are being sunset, one real login at a time —
+   see supabase/LEGACY-SUNSET.md and supabase/patch-30-legacy-account-sunset.sql.
+   This function is now async for exactly one reason: before granting a
+   session off a local password match, it asks Postgres whether this
+   identifier has already been migrated (is_legacy_migrated(), anon-
+   callable, returns a bare boolean — nothing else about the ledger is
+   exposed to an unauthenticated caller). A migrated account's local
+   credential must stop working; the real Supabase account is what's
+   authoritative from that point on. A network failure here degrades to
+   "proceed as before" — the same offline-first posture every other
+   best-effort call in this file already takes — never to a lockout. */
+async function legacyLogin(id, password) {
+  const users = Auth.users();
+  const user = users.find(
     (u) => !isLearnerRole(u.role) &&
       ((u.email || "").toLowerCase() === id || (u.username || "").toLowerCase() === id)
   );
-  if (!user || user.password !== password) return null;
+  if (!user) return null;
+
+  // Already known-migrated on THIS device (set below, or by the check
+  // just below on an earlier attempt) — refuse instantly, no round trip.
+  if (user.migrated) return null;
+  if (user.password !== password) return null;
+
+  try {
+    const { data: migrated } = await supabase.rpc("is_legacy_migrated", { p_identifier: id });
+    if (migrated) {
+      user.migrated = true;
+      write(K_USERS, users);
+      return null;
+    }
+  } catch { /* offline or unreachable — the local credential still governs */ }
+
   const { password: _p, ...safe } = user;
   safe.legacy = true;
+  safe.legacyIdentifier = id; // the exact matched identifier — reused by the migrate-now banner
   write(K_SESSION, safe);
   Repo.recordLocal(safe, "login");
+
+  // Best-effort: this is the one moment a legacy account is verifiably
+  // real (a correct password just matched), so it's recorded server-side
+  // here — but a failed write must never block the sign-in itself. Missing
+  // this moment just means detection happens on the next login instead.
+  supabase
+    .rpc("record_legacy_login", {
+      p_identifier: id,
+      p_full_name: user.fullName || "",
+      p_role: user.role || "",
+      p_school: user.school || "",
+      p_county: user.region || user.county || "",
+      p_project: user.project || "",
+    })
+    .then(({ error }) => { if (error) console.warn("record_legacy_login failed:", error.message); });
+
   return safe;
 }
 
@@ -343,7 +494,7 @@ const Auth = {
     // No email means this cannot be a Supabase sign-in, but it may still be a
     // staff account created here before the migration.
     if (!id.includes("@")) {
-      const legacy = legacyLogin(id, password);
+      const legacy = await legacyLogin(id, password);
       if (legacy) return legacy;
       throw new Error("Staff sign in with their email address. Learners use their username.");
     }
@@ -361,7 +512,7 @@ const Auth = {
     // rate limit must surface as itself — silently treating those as "try the
     // old account" would hand someone a degraded session during an outage.
     if ((error.message || "").toLowerCase().includes("invalid login credentials")) {
-      const legacy = legacyLogin(id, password);
+      const legacy = await legacyLogin(id, password);
       if (legacy) return legacy;
     }
     // The password was right; the address was never confirmed. Flag it so the UI
@@ -460,7 +611,10 @@ function footer() {
 }
 
 function shell(path, main) {
-  return `${header(path)}<main class="fade-in">${main}</main>${footer()}`;
+  /* Skip link first in DOM order so it is the first tab stop, and an id on
+     <main> for it to target. Markup only — the router, the header and the
+     page functions are untouched. */
+  return `<a class="skip-link" href="#main-content">Skip to main content</a>${header(path)}<main id="main-content" class="fade-in" tabindex="-1">${main}</main>${footer()}`;
 }
 
 /* the floating badge that sits on the hero image — changes with each slide */
@@ -487,7 +641,7 @@ function cardsGrid(items) {
       (c) => `
       <a class="portal-card${c.variant === "primary" ? " primary" : ""}" href="${c.href || "#"}" ${c.href ? "data-link" : ""}>
         <div class="card-icon">${icon(c.icon)}</div>
-        <h3>${esc(c.title)}</h3>
+        <h2>${esc(c.title)}</h2>
         <p>${esc(c.desc)}</p>
         <span class="card-link">
           ${esc(c.cta || "Open")} ${icon("arrowUpRight")}
@@ -503,7 +657,7 @@ function resourceGrid(items, cols = "cols-3") {
       (c) => `
       <button class="portal-card" type="button" data-resource="${esc(c.title)}">
         <div class="card-icon">${icon(c.icon)}</div>
-        <h3>${esc(c.title)}</h3>
+        <h2>${esc(c.title)}</h2>
         <p>${esc(c.desc)}</p>
         <span class="card-link plain">Open ${icon("arrowUpRight")}</span>
       </button>`
@@ -742,7 +896,7 @@ function pageAuth(mode = "login") {
   if (isRecoveryOpen()) {
     const { h1, sub } = recoveryTitle();
     return authShell(`
-      <main class="auth-main">
+      <main id="main-content" class="auth-main" tabindex="-1">
         <h1 data-recover-h1>${esc(h1)}</h1>
         <p data-recover-sub>${esc(sub)}</p>
         ${recoveryHtml()}
@@ -760,7 +914,7 @@ function pageAuth(mode = "login") {
     PROJECTS.map((p) => `<option>${p}</option>`).join("");
 
   const main = `
-      <main class="auth-main">
+      <main id="main-content" class="auth-main" tabindex="-1">
         <h1>Welcome, educator</h1>
         <p>Sign in or create an account to save resources and request audience access.</p>
 
@@ -772,11 +926,11 @@ function pageAuth(mode = "login") {
         <form id="loginForm" ${mode === "login" ? "" : "hidden"}>
           <div class="field">
             <label for="li_id">Username or email</label>
-            <input class="input" id="li_id" name="identifier" type="text" autocomplete="username" required>
+            <input class="input" id="li_id" name="identifier" type="text" autocomplete="username" required aria-required="true">
           </div>
           <div class="field">
             <label for="li_pw">Password</label>
-            <input class="input" id="li_pw" name="password" type="password" autocomplete="current-password" required>
+            <input class="input" id="li_pw" name="password" type="password" autocomplete="current-password" required aria-required="true">
           </div>
           <button class="btn btn-primary btn-block" type="submit">Login</button>
           <div class="auth-foot">
@@ -788,7 +942,7 @@ function pageAuth(mode = "login") {
         <form id="signupForm" ${mode === "signup" ? "" : "hidden"}>
           <div class="field">
             <label for="su_name">Full name</label>
-            <input class="input" id="su_name" name="fullName" type="text" required>
+            <input class="input" id="su_name" name="fullName" type="text" required aria-required="true">
           </div>
           <div class="field">
             <label for="su_role">Role</label>
@@ -807,7 +961,7 @@ function pageAuth(mode = "login") {
           </div>
           <div class="field">
             <label for="su_pw">Password</label>
-            <input class="input" id="su_pw" name="password" type="password" minlength="6" required>
+            <input class="input" id="su_pw" name="password" type="password" minlength="6" required aria-required="true">
           </div>
           <div class="field">
             <label for="su_region">County / region</label>
@@ -886,6 +1040,92 @@ async function pageDashboard() {
 }
 
 /* ------------------------------------------------------------ field officer */
+
+/* ------------------------------------------------------------ sync status UI (PWA)
+   The five facts the brief requires an officer to be able to see at a
+   glance, all from real state rather than assumption: whether the device
+   is online, whether anything is waiting, whether the last attempt
+   succeeded and when, and whether anything failed. */
+const SYNC_PILL = {
+  LOCAL: { label: "On device", cls: "role-pill" },
+  PENDING_SYNC: { label: "Pending sync", cls: "pending" },
+  SYNCING: { label: "Syncing…", cls: "role-pill" },
+  SYNCED: { label: "Synced", cls: "synced" },
+  FAILED: { label: "Failed", cls: "danger-pill" },
+  CONFLICT: { label: "Conflict", cls: "danger-pill" },
+};
+
+function syncStatusPanel() {
+  const online = isOnline();
+  const pending = foPending();
+  const blocked = foBlocked();
+  const busy = isSyncing();
+
+  const conn = online
+    ? `<span class="pill synced">${icon("cloud")} Online</span>`
+    : `<span class="pill danger-pill">${icon("cloud")} Offline — working on this device</span>`;
+
+  const busyPill = busy ? `<span class="pill role-pill">${icon("refresh")} Syncing…</span>` : "";
+
+  const pendingPill = pending.length
+    ? `<span class="pill pending">${icon("clock")} ${pending.length} pending synchronisation</span>`
+    : `<span class="pill synced">${icon("check")} Nothing pending</span>`;
+
+  const failedPill = blocked.length
+    ? `<span class="pill danger-pill">${icon("alert")} ${blocked.length} failed</span>`
+    : "";
+
+  const lastPill = foLastSync
+    ? `<span class="s-meta">Last successful synchronisation ${esc(timeAgo(foLastSync))}</span>`
+    : `<span class="s-meta">No successful synchronisation yet on this device</span>`;
+
+  const cacheLine = foSchoolsCachedAt
+    ? `<span class="s-meta">Assigned schools cached ${esc(timeAgo(foSchoolsCachedAt))} · ${foSchoolsCache.length} school(s) available offline</span>`
+    : `<span class="s-meta">Assigned schools not yet cached for offline use</span>`;
+
+  const failedRows = blocked.length
+    ? blocked.map((r) => `<div class="submission">
+        <span class="s-icon">${icon("alert")}</span>
+        <div style="flex:1;min-width:0">
+          <div class="s-title">${esc(r.label || r.row?.school || "Visit")}</div>
+          <div class="s-meta">${esc(SYNC_PILL[r.state].label)} after ${r.attempts} attempt(s)${r.lastError ? " · " + esc(r.lastError) : ""}</div>
+        </div>
+        <button class="btn btn-outline btn-xs" data-sync-retry="${esc(r.id)}">${icon("refresh")} Retry</button>
+      </div>`).join("")
+    : "";
+
+  return `
+    <div class="panel" data-sync-panel style="margin-bottom:1.5rem">
+      <div class="panel-head-row">
+        <div>
+          <h2>${icon("refresh")} Synchronisation</h2>
+          <p class="panel-sub" style="margin-bottom:0">Nothing you record is lost when the connection drops — it is stored on this device and uploaded when you reconnect.</p>
+        </div>
+        <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
+          <button class="btn btn-primary btn-xs" data-sync-now ${!online || busy ? "disabled" : ""}>${icon("upload")} Sync now</button>
+          <button class="btn btn-outline btn-xs" data-sync-history>${icon("clock")} History</button>
+        </div>
+      </div>
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-bottom:.5rem">
+        ${conn}${busyPill}${pendingPill}${failedPill}
+      </div>
+      <div style="display:flex;flex-direction:column;gap:.15rem">${lastPill}${cacheLine}</div>
+      ${failedRows ? `<div style="margin-top:.75rem">${failedRows}</div>` : ""}
+      ${foSyncHistoryOpen ? foSyncHistoryHtml() : ""}
+    </div>`;
+}
+
+let foSyncHistoryOpen = false;
+let foSyncHistoryRows = [];
+
+function foSyncHistoryHtml() {
+  if (!foSyncHistoryRows.length) return `<div class="empty-state" style="margin-top:.75rem">No synchronisation history recorded on this device yet.</div>`;
+  return `<div style="margin-top:.75rem;max-height:16rem;overflow-y:auto">${foSyncHistoryRows.map((h) => `
+    <div class="s-meta" style="padding:.3rem 0;border-bottom:1px solid var(--border,#eee)">
+      <strong>${esc(h.event)}</strong> · ${esc(new Date(h.at).toLocaleString())}${h.detail ? " · " + esc(h.detail) : ""}${h.serverId ? " · server id " + esc(String(h.serverId).slice(0, 8)) : ""}
+    </div>`).join("")}</div>`;
+}
+
 function pageFieldOfficer() {
   const user = Auth.current();
   if (!user) return pageAuth("login");
@@ -898,8 +1138,8 @@ function pageFieldOfficer() {
   // Postgres already scopes this to the signed-in officer via RLS (admins see
   // everyone's), so no client-side filter by user is needed the way the old
   // localStorage version required.
-  const outboxPending = foOutbox().filter((o) => !o.blocked);
-  const outboxBlocked = foOutbox().filter((o) => o.blocked);
+  const outboxPending = foPending();
+  const outboxBlocked = foBlocked();
   const syncedCount = foReportsCache.length;
   const totalCount = syncedCount + outboxPending.length + outboxBlocked.length;
 
@@ -917,16 +1157,37 @@ function pageFieldOfficer() {
   // for a school in their own assignment list — offering anything wider would
   // just be a form that sometimes fails with a database error instead of a
   // clear reason.
+  // County -> school cascade (non-admin). Admin keeps the free-text bypass
+  // below, so it isn't restricted to a county list built from assignments.
+  // The cascade only switches on once every assigned school's county is
+  // actually known — an empty foCounties (lookup still loading, failed, or
+  // schools with no county on file) falls back to the full county list and
+  // an unfiltered school list, same as before this feature existed, rather
+  // than a county dropdown with nothing pickable and no way through it.
+  const foCounties = user.role === "admin"
+    ? []
+    : [...new Set(foSchoolsCache.map((s) => foSchoolCounties[s]).filter(Boolean))].sort();
+  const foCascadeAvailable = foCounties.length > 0;
+  // Which county the school list should start filtered to: the officer's
+  // own county if they're actually assigned a school there, else whichever
+  // county comes first — either way the school select below never opens on
+  // an unfiltered dump of every assigned school across every county.
+  const foInitialCounty = foCascadeAvailable
+    ? (foCounties.includes(user.county) ? user.county : foCounties[0])
+    : null;
+  const schoolsForCounty = (county) =>
+    foCascadeAvailable ? foSchoolsCache.filter((s) => foSchoolCounties[s] === county) : foSchoolsCache;
+
   const schoolField = user.role === "admin"
-    ? `<input class="input" id="fo_school" name="school" type="text" required placeholder="e.g. Nyeri Hill Primary School">`
+    ? `<input class="input" id="fo_school" name="school" type="text" required aria-required="true" placeholder="e.g. Nyeri Hill Primary School">`
     : !foSchoolsLoaded
-    ? `<input class="input" disabled placeholder="Loading your assigned schools…">`
+    ? `<input class="input" id="fo_school" disabled aria-label="School" placeholder="Loading your assigned schools…">`
     : foSchoolsCache.length
-    ? `<select class="select" id="fo_school" name="school" required>
+    ? `<select class="select" id="fo_school" name="school" required aria-required="true">
          <option value="" disabled selected>Select a school</option>
-         ${foSchoolsCache.map((s) => `<option>${esc(s)}</option>`).join("")}
+         ${schoolsForCounty(foInitialCounty).map((s) => `<option>${esc(s)}</option>`).join("")}
        </select>`
-    : `<input class="input" disabled placeholder="No schools assigned yet">`;
+    : `<input class="input" id="fo_school" disabled aria-label="School" placeholder="No schools assigned yet">`;
   const noAssignmentsNotice = (user.role !== "admin" && foSchoolsLoaded && !foSchoolsCache.length)
     ? `<div class="notice">${icon("info")}
         <span>You have no assigned schools yet, so there is nowhere to file a new report.
@@ -935,28 +1196,56 @@ function pageFieldOfficer() {
     : "";
 
   const dbNotice = !foReportsLoaded
-    ? `<div class="empty-state">Loading your reports…</div>`
+    ? `<div class="empty-state" role="status" aria-live="polite">Loading your reports…</div>`
     : foReportsError
-    ? `<div class="notice">${icon("info")}
+    ? `<div class="notice" role="alert">${icon("info")}
         <span>Could not load past reports — ${esc(foReportsError)}</span>
         <button class="btn btn-outline btn-xs" data-fo-retry style="margin-left:.6rem">${icon("refresh")} Try again</button>
       </div>`
     : "";
 
-  const visitOptions = VISIT_TYPES.map((v) => `<option>${v}</option>`).join("");
-  const countyOptions =
-    `<option value="" disabled ${user.county ? "" : "selected"}>Select county</option>` +
-    COUNTIES.map(
-      (c) => `<option ${user.county === c ? "selected" : ""}>${c}</option>`
-    ).join("");
+  // value carries the pillar (me_indicators.scorecard_pillar), data-label
+  // carries the human name saved as visit_type — kept apart so the "Form"
+  // dropdown can filter on the pillar while field_reports.visit_type still
+  // stores readable text, exactly as it always has.
+  const visitOptions =
+    `<option value="" disabled selected>Select visit type</option>` +
+    VISIT_TYPES.map((v) => `<option value="${v.pillar}" data-label="${esc(v.label)}">${esc(v.label)}</option>`).join("");
+  const countyOptions = foCascadeAvailable
+    ? foCounties.map((c) => `<option ${c === foInitialCounty ? "selected" : ""}>${esc(c)}</option>`).join("")
+    : `<option value="" disabled ${user.county ? "" : "selected"}>Select county</option>` +
+      COUNTIES.map((c) => `<option ${user.county === c ? "selected" : ""}>${esc(c)}</option>`).join("");
+
+  // "Form": me_indicators filtered to the selected visit type's pillar. No
+  // visit type is chosen at first render, so this starts empty and hidden;
+  // wireFieldOfficer()'s change listener fills and reveals it client-side
+  // (no extra round trip — every indicator is already in foIndicatorsCache).
+  const indicatorsForPillar = (pillar) => foIndicatorsCache.filter((i) => i.scorecard_pillar === pillar);
+  const foIndicatorOptions = (pillar) =>
+    `<option value="" disabled selected>Select a form</option>` +
+    indicatorsForPillar(pillar).map((i) => `<option value="${esc(i.id)}">${esc(i.name)}${i.unit ? ` (${esc(i.unit)})` : ""}</option>`).join("");
 
   // Three sources merged into one list: synced (Postgres, authoritative),
   // queued (offline, waiting for a connection), blocked (Postgres refused it
   // for a reason offline retry can't fix — surfaced rather than hidden).
+  /* Three sources merged into one list. Postgres rows are authoritative and
+     always read "Synced"; everything else carries its real IndexedDB state,
+     so an officer sees the difference between "on this device", "pending",
+     "failed" and "conflict" rather than one undifferentiated "pending". A
+     record already confirmed SYNCED is dropped from the outbox side of the
+     merge — loadFoReports() has the server's own copy by then, and showing
+     both would double-count the same visit. */
   const allRows = [
-    ...foReportsCache.map((s) => ({ ...s, _status: "synced" })),
-    ...outboxPending.map((o) => ({ ...o.row, _status: "pending" })),
-    ...outboxBlocked.map((o) => ({ ...o.row, _status: "blocked", _reason: o.blocked })),
+    ...foReportsCache.map((s) => ({ ...s, _status: "synced", _label: "Synced" })),
+    ...foOutbox()
+      .filter((o) => o.state !== SYNC.SYNCED)
+      .map((o) => ({
+        ...o.row,
+        created_at: o.row?.created_at || new Date(o.createdAt).toISOString(),
+        _status: o.state === SYNC.FAILED || o.state === SYNC.CONFLICT ? "blocked" : "pending",
+        _label: SYNC_PILL[o.state].label,
+        _reason: o.lastError || "",
+      })),
   ].sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
 
   const subsList = allRows.length
@@ -971,7 +1260,7 @@ function pageFieldOfficer() {
             s.created_at ? new Date(s.created_at).toLocaleDateString() : "not yet uploaded"
           }${s._status === "blocked" ? ` · ${esc(s._reason)}` : ""}</div>
           </div>
-          <span class="pill ${s._status}">${s._status}</span>
+          <span class="pill ${s._status}">${esc(s._label || s._status)}</span>
         </div>`
         )
         .join("")
@@ -995,6 +1284,7 @@ function pageFieldOfficer() {
         ${gateNotice}
         ${dbNotice}
         ${noAssignmentsNotice}
+        ${syncStatusPanel()}
 
         <div class="stat-row">
           <div class="stat-tile">
@@ -1021,18 +1311,25 @@ function pageFieldOfficer() {
             <p class="panel-sub">Record a school visit, coaching session, or data-collection activity.</p>
             <form id="foForm">
               <div class="field">
+                <label for="fo_county">County</label>
+                <select class="select" id="fo_county" name="county" required aria-required="true">${countyOptions}</select>
+              </div>
+              <div class="field">
                 <label for="fo_school">School / institution name</label>
                 ${schoolField}
               </div>
-              <div class="form-row">
-                <div class="field">
-                  <label for="fo_visit">Visit type</label>
-                  <select class="select" id="fo_visit" name="visitType">${visitOptions}</select>
-                </div>
-                <div class="field">
-                  <label for="fo_county">County</label>
-                  <select class="select" id="fo_county" name="county" required>${countyOptions}</select>
-                </div>
+              <div class="field">
+                <label for="fo_visit">Visit type</label>
+                <select class="select" id="fo_visit" name="visitType" required aria-required="true">${visitOptions}</select>
+              </div>
+              <div class="field" id="fo_indicator_wrap" hidden>
+                <label for="fo_indicator">Form</label>
+                <select class="select" id="fo_indicator" name="meIndicatorId">${foIndicatorOptions("")}</select>
+                <p class="hint" id="fo_indicator_hint" hidden>No forms have been set up for this visit type yet — ask an M&amp;E officer to add one. You can still submit this report without a linked measurement.</p>
+              </div>
+              <div class="field" id="fo_value_wrap" hidden>
+                <label for="fo_value" id="fo_value_label">Value</label>
+                <input class="input" id="fo_value" name="meValue" type="number" step="any" inputmode="decimal">
               </div>
               <div class="form-row">
                 <div class="field">
@@ -1096,7 +1393,7 @@ function pageCommunityResources() {
         <div class="cs-hero">
           <div class="section-head">
             <span class="eyebrow">Community resources</span>
-            <h2 class="cs-greeting">Jambo, How may I support you today?</h2>
+            <h1 class="cs-greeting">Jambo, How may I support you today?</h1>
             <p>Choose an area below, or type your own question — the assistant covers Maasai community &amp; culture, education, healthcare, and Maa translation.</p>
           </div>
         </div>
@@ -1125,7 +1422,7 @@ function pageCommunityResources() {
             </div>
           </div>
           <form class="cs-composer" data-cs-form>
-            <input class="input" data-cs-input placeholder="Type your question…" autocomplete="off">
+            <input class="input" data-cs-input aria-label="Type your question for the HPF assistant" placeholder="Type your question…" autocomplete="off">
             <button class="btn btn-primary" type="submit">${icon("send")} Send</button>
           </form>
           <p class="cs-note">${icon("info")} This assistant can make mistakes. For urgent health or safety matters, contact HPF or a local clinic directly.</p>
@@ -1448,6 +1745,7 @@ function wireRecoveryPanel() {
 
 /* ------------------------------------------------------------ field officer wiring */
 let foOnlineListenerAttached = false; // attach the retry-on-reconnect listener once, ever
+let foOfflineBooted = false;          // migrate + hydrate the IndexedDB store once, ever
 
 function wireFieldOfficer() {
   const form = $("#foForm");
@@ -1460,25 +1758,146 @@ function wireFieldOfficer() {
   if (!foSchoolsLoaded && user.role !== "admin") {
     loadFoSchools().then(() => { if (onFieldOfficerPage()) render(); });
   }
+  if (!foIndicatorsLoaded) {
+    loadFoIndicators().then(() => { if (onFieldOfficerPage()) render(); });
+  }
   // A visit saved while offline waits in the outbox; try it again on every
   // mount in case connectivity came back since. Re-render on any change, not
   // only a successful sync — a pending item that turns out blocked still
   // needs its pill and reason to update, or it would sit mislabeled "pending"
   // forever even though flushFoOutbox already found out otherwise.
-  if (foOutbox().some((o) => !o.blocked)) {
+  /* Boot sequence for the offline store, in this order deliberately:
+     migrate anything still in the pre-PWA localStorage outbox FIRST (so a
+     device that queued visits before this deploy does not lose them), then
+     load the mirror, then flush if we are online. */
+  if (!foOfflineBooted) {
+    foOfflineBooted = true;
+    (async () => {
+      try {
+        await migrateLegacyOutbox();
+        await refreshOfflineState();
+        if (onFieldOfficerPage()) render();
+        if (isOnline() && foPending().length) {
+          const { changed } = await flushFoOutbox();
+          if (changed && onFieldOfficerPage()) render();
+        }
+      } catch (err) { console.warn("offline boot:", err.message); }
+    })();
+  } else if (isOnline() && foPending().length) {
+    // Same intent as before: retry on every mount in case connectivity came
+    // back. Re-render on ANY change, not just success — a pending item that
+    // turns out failed still needs its pill and reason to update.
     flushFoOutbox().then(({ changed }) => { if (changed && onFieldOfficerPage()) render(); });
   }
+
   if (!foOnlineListenerAttached) {
     foOnlineListenerAttached = true;
     window.addEventListener("online", async () => {
+      await refreshOfflineState();
+      if (onFieldOfficerPage()) render();
       const { changed } = await flushFoOutbox();
       if (changed && onFieldOfficerPage()) render();
     });
+    // The offline event changes nothing about the data — only what the
+    // status panel should be telling the officer — so it just re-renders.
+    window.addEventListener("offline", () => { if (onFieldOfficerPage()) render(); });
   }
+
+  $("[data-sync-now]")?.addEventListener("click", async (e) => {
+    e.currentTarget.disabled = true;
+    const res = await flushFoOutbox();
+    if (onFieldOfficerPage()) render();
+    if (res.synced) toast("Synchronised", `${res.synced} record(s) confirmed by the server.`, "success");
+    else if (res.failed || res.conflicts) toast("Sync finished with problems", `${res.failed} failed, ${res.conflicts} conflict(s).`, "error");
+    else if (res.attempted === 0) toast("Nothing to sync", "Everything on this device is already confirmed.");
+    else toast("Still offline", "The records stay on this device and will upload when a connection returns.");
+  });
+
+  $("[data-sync-history]")?.addEventListener("click", async () => {
+    foSyncHistoryOpen = !foSyncHistoryOpen;
+    if (foSyncHistoryOpen) foSyncHistoryRows = await syncHistory(50);
+    if (onFieldOfficerPage()) render();
+  });
+
+  $$("[data-sync-retry]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      b.disabled = true;
+      await retryRecord(b.dataset.syncRetry);
+      await refreshOfflineState();
+      if (onFieldOfficerPage()) render();
+      const res = await flushFoOutbox();
+      if (onFieldOfficerPage()) render();
+      if (res.synced) toast("Synchronised", "The record was accepted by the server.", "success");
+      else if (res.failed) toast("Still refused", "The server refused it again — it remains on this device.", "error");
+    })
+  );
 
   $("[data-fo-retry]")?.addEventListener("click", async () => {
     foReportsLoaded = false;
     await render();
+  });
+
+  /* --- the cascade: county -> school, visit type -> form -> value ---
+     Every assigned school's county (foSchoolCounties) and every indicator
+     the officer can see (foIndicatorsCache) are already loaded by the time
+     this page mounts, so each step below is a pure client-side filter —
+     no extra round trip on selection, matching how the rest of this app
+     avoids re-fetching data it already has. */
+  const countySelect = $("#fo_county");
+  const schoolSelect = $("#fo_school"); // a plain <input> for admin — nothing to filter there
+  countySelect?.addEventListener("change", () => {
+    if (!(schoolSelect instanceof HTMLSelectElement)) return;
+    // Same condition pageFieldOfficer() used to decide whether the county
+    // list itself is the assignment-derived one or the full fallback list
+    // — only filter the school picker when it actually is the former.
+    if (!foSchoolsCache.some((s) => foSchoolCounties[s])) return;
+    const county = countySelect.value;
+    const options = foSchoolsCache.filter((s) => foSchoolCounties[s] === county);
+    schoolSelect.innerHTML =
+      `<option value="" disabled selected>Select a school</option>` +
+      options.map((s) => `<option>${esc(s)}</option>`).join("");
+  });
+
+  const visitSelect = $("#fo_visit");
+  const indicatorWrap = $("#fo_indicator_wrap");
+  const indicatorSelect = $("#fo_indicator");
+  const indicatorHint = $("#fo_indicator_hint");
+  const valueWrap = $("#fo_value_wrap");
+  const valueLabel = $("#fo_value_label");
+  const valueInput = $("#fo_value");
+
+  function resetFoValueField() {
+    if (valueWrap) valueWrap.hidden = true;
+    if (valueInput) { valueInput.required = false; valueInput.removeAttribute("aria-required"); valueInput.value = ""; }
+    if (valueLabel) valueLabel.textContent = "Value";
+  }
+
+  visitSelect?.addEventListener("change", () => {
+    const pillar = visitSelect.value;
+    const options = foIndicatorsCache.filter((i) => i.scorecard_pillar === pillar);
+    resetFoValueField();
+    if (!indicatorWrap || !indicatorSelect) return;
+    indicatorWrap.hidden = false;
+    indicatorSelect.innerHTML =
+      `<option value="" disabled selected>Select a form</option>` +
+      options.map((i) =>
+        `<option value="${esc(i.id)}" data-name="${esc(i.name)}" data-unit="${esc(i.unit || "")}">${esc(i.name)}${i.unit ? ` (${esc(i.unit)})` : ""}</option>`
+      ).join("");
+    // Required only when there is actually something to pick — an empty
+    // pillar (no indicators set up yet in M&E) must not block submission
+    // of the report's other fields.
+    const hasOptions = options.length > 0;
+    indicatorSelect.required = hasOptions;
+    indicatorSelect.setAttribute("aria-required", String(hasOptions));
+    if (indicatorHint) indicatorHint.hidden = hasOptions;
+  });
+
+  indicatorSelect?.addEventListener("change", () => {
+    const opt = indicatorSelect.selectedOptions[0];
+    if (!opt || !opt.value) { resetFoValueField(); return; }
+    if (valueWrap) valueWrap.hidden = false;
+    if (valueInput) { valueInput.required = true; valueInput.setAttribute("aria-required", "true"); }
+    if (valueLabel) valueLabel.textContent = `Value for “${opt.dataset.name}”${opt.dataset.unit ? ` (${opt.dataset.unit})` : ""}`;
   });
 
   form?.addEventListener("submit", async (e) => {
@@ -1487,48 +1906,66 @@ function wireFieldOfficer() {
     const county = fd.get("county");
     if (!county) return toast("County required", "Please select a county.", "error");
 
+    const visitLabel = visitSelect?.selectedOptions[0]?.dataset.label || "";
+    if (!visitLabel) return toast("Visit type required", "Please select a visit type.", "error");
+
+    const indicatorId = fd.get("meIndicatorId") || "";
+    const meValueRaw = fd.get("meValue");
+    if (indicatorId && (meValueRaw === null || meValueRaw === "")) {
+      return toast("Value required", "Enter a value for the selected form, or change the visit type to skip it.", "error");
+    }
+
     const row = {
       user_id: user.id,
       school: fd.get("school"),
-      visit_type: fd.get("visitType"),
+      visit_type: visitLabel,
       county,
       teachers: +fd.get("teachers") || 0,
       learners: +fd.get("learners") || 0,
       notes: fd.get("notes") || null,
+      // Optional M&E link: null unless a "form" (indicator) was actually
+      // picked. patch-36's trigger derives the me_indicator_values row
+      // from these two columns once the report itself is inserted.
+      me_indicator_id: indicatorId || null,
+      me_value: indicatorId ? Number(meValueRaw) : null,
       // Explicit, not the column's default: a row only ever reaches this
       // table via a live insert, so its mere presence in Postgres already
       // proves it synced. A queued-but-unsynced visit lives only in this
-      // browser's outbox, never in this table — see K_FO_OUTBOX above.
+      // device's IndexedDB outbox, never in this table (see offline.js).
       status: "synced",
     };
 
     const btn = form.querySelector("[type=submit]");
-    if (btn) { btn.disabled = true; btn.textContent = "Submitting…"; }
+    if (btn) { btn.disabled = true; btn.textContent = "Saving…"; }
 
-    const { error } = await supabase.from("field_reports").insert(row);
+    /* OFFLINE-FIRST, and the one real behaviour change here: the visit is
+       written to IndexedDB BEFORE any network call, not only after one
+       fails. The old order left a window where a visit existed solely
+       inside an in-flight fetch — close the tab there (or lose power, in
+       a field context) and it was gone with no trace. Persisting first
+       means the record survives regardless, and the upload becomes a
+       separate, retryable step. enqueue() stamps the client_id that
+       patch-35's unique index uses to make a retry idempotent. */
+    let rec;
+    try {
+      rec = await enqueue({ kind: KIND.VISIT, table: "field_reports", row, label: row.school });
+    } catch (err) {
+      if (btn) { btn.disabled = false; btn.textContent = "Submit field report"; }
+      return toast("Could not save", `This visit could not be stored on the device — ${err.message}`, "error");
+    }
+    form.reset();
+    await refreshOfflineState();
 
-    if (!error) {
-      form.reset();
-      toast("Report submitted", `${row.school} saved to the HPF database.`, "success");
-      await loadFoReports();
+    if (!isOnline()) {
+      toast("Saved offline", `${row.school} is on this device — it will upload once you're back online.`, "success");
       return render();
     }
 
-    if (foReportIsConnectivityFailure(error)) {
-      // No connection right now — this is not a failure to report as one.
-      // The visit is real and recorded; it just hasn't reached the server yet.
-      const outbox = foOutbox();
-      outbox.push({ id: uid(), row, at: Date.now() });
-      write(K_FO_OUTBOX, outbox);
-      form.reset();
-      toast("Saved offline", `${row.school} is queued — it will upload once you're back online.`, "success");
-      return render();
-    }
-
-    // A real refusal (no JWT, RLS, etc.) — restore the button so the officer
-    // can see the submit failed rather than watching it spin forever.
-    if (btn) { btn.disabled = false; btn.textContent = "Submit field report"; }
-    toast("Could not save report", authMessage(error), "error");
+    const res = await flushFoOutbox();
+    if (res.synced) toast("Report submitted", `${row.school} saved to the HPF database.`, "success");
+    else if (res.failed) toast("Could not upload", `${row.school} is saved on this device but the server refused it. See the sync panel.`, "error");
+    else toast("Saved offline", `${row.school} is queued — it will upload once you're back online.`, "success");
+    return render();
   });
 }
 
